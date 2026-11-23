@@ -24,16 +24,39 @@
 #include "TextSettingsActivity.h"
 #include "activities/network/WifiSelectionActivity.h"
 #include "activities/util/IntervalSelectionActivity.h"
+#include "activities/util/KeyboardEntryActivity.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
 
+// Four tabs, not five: the Reader tab is gone. Its rows still exist in
+// getSettingsList() so settings.json keeps them and the reader keeps working
+// — they are simply not reachable from the device any more
+// (docs/settings-menu.md).
 const StrId SettingsActivity::categoryNames[categoryCount] = {
-    StrId::STR_CAT_DISPLAY, StrId::STR_CAT_MAP, StrId::STR_CAT_READER, StrId::STR_CAT_CONTROLS, StrId::STR_CAT_SYSTEM};
+    StrId::STR_CAT_DISPLAY, StrId::STR_CAT_MAP,
+#if SETTINGS_HAS_GROUP_TAB
+    // Between Map and Controls, because it is about what is drawn on the map
+    // rather than about how the device is held.
+    StrId::STR_CAT_GROUP,
+#endif
+    StrId::STR_CAT_CONTROLS, StrId::STR_CAT_SYSTEM};
+
+const std::vector<SettingInfo>* SettingsActivity::settingsForCategory(const int categoryIndex) const {
+  // Same order as categoryNames[], and the array is sized by the same constant,
+  // so a tab added to one and not the other fails to compile.
+  const std::vector<SettingInfo>* byIndex[categoryCount] = {&displaySettings, &mapSettings,
+#if SETTINGS_HAS_GROUP_TAB
+                                                            &groupSettings,
+#endif
+                                                            &controlsSettings, &systemSettings};
+  if (categoryIndex < 0 || categoryIndex >= categoryCount) return &displaySettings;
+  return byIndex[categoryIndex];
+}
 
 void SettingsActivity::rebuildSettingsLists() {
   displaySettings.clear();
   mapSettings.clear();
-  readerSettings.clear();
+  groupSettings.clear();
   controlsSettings.clear();
   systemSettings.clear();
 
@@ -48,15 +71,24 @@ void SettingsActivity::rebuildSettingsLists() {
 
   for (auto& setting : getSettingsList(&sdFontSystem.registry(), &dictionaries)) {
     if (setting.category == StrId::STR_NONE_OPT) continue;
+    // Reader-only rows that keep being persisted but are no longer offered.
+    if (setting.hiddenFromMenu) continue;
     if (setting.category == StrId::STR_CAT_DISPLAY) {
       displaySettings.push_back(setting);
     } else if (setting.category == StrId::STR_CAT_MAP) {
       mapSettings.push_back(setting);
+    } else if (setting.category == StrId::STR_CAT_GROUP) {
+#if SETTINGS_HAS_GROUP_TAB
+      groupSettings.push_back(setting);
+#else
+      // Unreachable: every row in that category is already behind the same
+      // two build flags the tab is. Here so a row added without its gate
+      // disappears rather than landing in whatever tab came last.
+      continue;
+#endif
     } else if (setting.category == StrId::STR_CAT_READER) {
-      // Settings merged into "Text Settings"
-      // (they stay in the shared list for the web settings API)
-      if (setting.inTextSettings) continue;
-      readerSettings.push_back(setting);
+      // The Reader tab is gone; nothing collects these.
+      continue;
     } else if (setting.category == StrId::STR_CAT_CONTROLS) {
       if (setting.valuePtr == &CrossPointSettings::pwrBtnFootnoteBack &&
           SETTINGS.shortPwrBtn != CrossPointSettings::SHORT_PWRBTN::FOOTNOTES) {
@@ -74,40 +106,34 @@ void SettingsActivity::rebuildSettingsLists() {
                             SettingInfo::Action(StrId::STR_REMAP_FRONT_BUTTONS, SettingAction::RemapFrontButtons));
   }
   systemSettings.push_back(SettingInfo::Action(StrId::STR_WIFI_NETWORKS, SettingAction::Network));
-  systemSettings.push_back(SettingInfo::Action(StrId::STR_KOREADER_SYNC, SettingAction::KOReaderSync));
-  systemSettings.push_back(SettingInfo::Action(StrId::STR_OPDS_SERVERS, SettingAction::OPDSBrowser));
-  systemSettings.push_back(SettingInfo::Action(StrId::STR_CLEAR_READING_CACHE, SettingAction::ClearCache));
-  // TODO: Touch devices need their own firmware update path/artifacts before OTA is exposed.
-  if (!BoardConfig::hasTouch()) {
-    systemSettings.push_back(SettingInfo::Action(StrId::STR_CHECK_UPDATES, SettingAction::CheckForUpdates));
-  }
+  // KOReader Sync, OPDS Servers and Clear Reading Cache used to sit here. All
+  // three are book plumbing — reading-position sync, an e-book catalogue, and
+  // the reader's own pagination cache. The activities are still built and still
+  // reachable from code; only the Settings rows are gone.
+  // Shown on every board since 2026-11-03. It used to be hidden behind
+  // !hasTouch(), under a TODO reading "touch devices need their own firmware
+  // update path/artifacts before OTA is exposed" -- and that hid the row on
+  // BOTH S3 boards, because the X4 Pro carries a GT911 just like the T5 S3 Pro
+  // (BoardConfig.h, XTEINK_X4_PRO). Neither half of the TODO still holds:
+  // OtaUpdateActivity draws and handles Cancel/Update rects under
+  // mappedInput.hasTouch(), and per-board assets have shipped since
+  // explorink-x4pro-v0.2.0-alpha (2026-09-09). Leaving it hidden meant the
+  // only device on the desk that could even reach the row was an X3.
+  systemSettings.push_back(SettingInfo::Action(StrId::STR_CHECK_UPDATES, SettingAction::CheckForUpdates));
+  // Row was hidden 2026-09-14 (T-2008): FirmwareFlasher::validateImageFile()
+  // checked image structure only, so a wrong-board S3 image (x4pro/sticky/
+  // t5s3pro share one chip_id) would pass and flash. Re-enabled now that
+  // validateImageFile() rejects BAD_CHIP and WRONG_BOARD
+  // (FirmwareBoardTag.h/.cpp) before otadata is ever touched.
   systemSettings.push_back(SettingInfo::Action(StrId::STR_SD_FIRMWARE_UPDATE, SettingAction::SdFirmwareUpdate));
   systemSettings.push_back(SettingInfo::Action(StrId::STR_LANGUAGE, SettingAction::Language));
-  readerSettings.insert(readerSettings.begin(),
-                        SettingInfo::Action(StrId::STR_TEXT_SETTINGS, SettingAction::TextSettings));
-  readerSettings.insert(readerSettings.begin() + 1,
-                        SettingInfo::Action(StrId::STR_MANAGE_FONTS, SettingAction::DownloadFonts));
-  readerSettings.push_back(SettingInfo::Action(StrId::STR_CUSTOMISE_STATUS_BAR, SettingAction::CustomiseStatusBar));
+  // Text Settings, Manage Fonts and Customise Status Bar went with the Reader
+  // tab. The status bar they customise is the reader's; the map header draws
+  // its own row and reads none of those fields (docs/map-header-status.md).
 
   // Update currentSettings pointer and count for the active category.
   // Index order must match categoryNames[] above.
-  switch (selectedCategoryIndex) {
-    case 0:
-      currentSettings = &displaySettings;
-      break;
-    case 1:
-      currentSettings = &mapSettings;
-      break;
-    case 2:
-      currentSettings = &readerSettings;
-      break;
-    case 3:
-      currentSettings = &controlsSettings;
-      break;
-    case 4:
-      currentSettings = &systemSettings;
-      break;
-  }
+  currentSettings = settingsForCategory(selectedCategoryIndex);
   settingsCount = static_cast<int>(currentSettings->size());
 }
 
@@ -140,24 +166,7 @@ void SettingsActivity::loop() {
   bool hasChangedCategory = false;
 
   auto applyCategorySelection = [this] {
-    // Same index order as categoryNames[] and rebuildSettingsLists().
-    switch (selectedCategoryIndex) {
-      case 0:
-        currentSettings = &displaySettings;
-        break;
-      case 1:
-        currentSettings = &mapSettings;
-        break;
-      case 2:
-        currentSettings = &readerSettings;
-        break;
-      case 3:
-        currentSettings = &controlsSettings;
-        break;
-      case 4:
-        currentSettings = &systemSettings;
-        break;
-    }
+    currentSettings = settingsForCategory(selectedCategoryIndex);
     settingsCount = static_cast<int>(currentSettings->size());
   };
 
@@ -317,11 +326,31 @@ void SettingsActivity::toggleCurrentSetting() {
   }
 
   const auto& setting = (*currentSettings)[selectedSetting];
-  const bool sleepScreenChanged = setting.valuePtr == &CrossPointSettings::sleepScreen;
+  // A disabled row is a placeholder for work not done yet. It draws dimmed and
+  // Confirm does nothing — render() also blanks the Confirm hint, because the
+  // dimming itself is invisible on the selected row (BaseTheme.cpp:499 skips
+  // it) and a hint that promises an action which never comes is worse than no
+  // hint.
+  if (setting.disabled) return;
+  // By nameId, not valuePtr: the Sleep Screen row is a DynamicEnum now (the
+  // menu narrows its seven stored modes to five, SettingsList.h), so it has no
+  // valuePtr and the old `setting.valuePtr == &CrossPointSettings::sleepScreen`
+  // check would silently stop matching it.
+  const bool sleepScreenChanged = setting.nameId == StrId::STR_SLEEP_SCREEN;
   const bool quickResumeTimeoutChanged = setting.valuePtr == &CrossPointSettings::quickResumeSleepScreen;
 
   if (setting.nameId == StrId::STR_TIME_TO_SLEEP) {
     openSleepTimeoutPicker();
+    return;
+  }
+
+  if (setting.nameId == StrId::STR_FRONTLIGHT) {
+    openFrontlightBrightnessPicker();
+    return;
+  }
+
+  if (setting.nameId == StrId::STR_FRONTLIGHT_COLOR_TEMP) {
+    openFrontlightColorTemperaturePicker();
     return;
   }
 
@@ -367,6 +396,58 @@ void SettingsActivity::toggleCurrentSetting() {
       return;
     }
     setting.valueSetter((cur + 1) % totalValues);
+  } else if (setting.type == SettingType::STRING) {
+    // Confirm on a string row opens the keyboard, prefilled with what the row
+    // shows. Added with the render branch above, and for the same reason: the
+    // row did nothing at all before, which on a reachable tab reads as broken
+    // rather than as unimplemented.
+    //
+    // `stringSetter` wins over the raw field when a row has one -- the Group
+    // tab's node name has to reach the running radio, not just the settings
+    // struct (SettingsList.h, loraPresenceSetName()).
+    // **stringMaxLen is the buffer size, not a character count.** That is the
+    // convention everywhere else -- SettingInfo::String() is handed
+    // sizeof(field), and copyToField() writes maxLen bytes including the NUL
+    // (CrossPointSettings.cpp). The first version of this branch read it as a
+    // character count and wrote maxLen + 1 bytes, one past the end of the
+    // field, into whatever member follows it.
+    std::string current;
+    size_t bufBytes = setting.stringMaxLen;
+    char* dest = nullptr;
+    if (setting.stringGetter) {
+      current = setting.stringGetter();
+      // A DynamicString row keeps its value outside CrossPointSettings, so
+      // there is no field to size against unless the row said so.
+      if (bufBytes == 0) bufBytes = 32;
+    } else if (setting.stringOffset != 0) {
+      dest = reinterpret_cast<char*>(&SETTINGS) + setting.stringOffset;
+      current = dest;
+      if (bufBytes == 0) return;  // misconfigured row; writing blind is worse
+    } else {
+      return;
+    }
+    // What the keyboard may return: characters, so one less than the buffer.
+    const size_t maxChars = bufBytes - 1;
+
+    const StrId title = setting.nameId;
+    auto stringSetter = setting.stringSetter;
+    auto handler = [this, stringSetter, dest, bufBytes](const ActivityResult& result) {
+      if (!result.isCancelled) {
+        const auto& kb = std::get<KeyboardResult>(result.data);
+        if (stringSetter) {
+          stringSetter(kb.text);
+        } else if (dest != nullptr) {
+          snprintf(dest, bufBytes, "%s", kb.text.c_str());
+        }
+        SETTINGS.saveToFile();
+      }
+      rebuildSettingsLists();
+      requestUpdate();
+    };
+    startActivityForResult(std::make_unique<KeyboardEntryActivity>(renderer, mappedInput, I18N.get(title), current,
+                                                                   maxChars, InputType::Text),
+                           handler);
+    return;
   } else if (setting.type == SettingType::VALUE && setting.valuePtr != nullptr) {
     const int8_t currentValue = SETTINGS.*(setting.valuePtr);
     if (currentValue + setting.valueRange.step > setting.valueRange.max) {
@@ -473,6 +554,53 @@ void SettingsActivity::openSleepTimeoutPicker() {
       });
 }
 
+void SettingsActivity::openFrontlightBrightnessPicker() {
+  const uint8_t originalValue = SETTINGS.frontlightBrightness;
+  auto picker = std::make_unique<IntervalSelectionActivity>(renderer, mappedInput, "FrontlightBrightnessInterval",
+                                                            StrId::STR_FRONTLIGHT, originalValue, 10, 100, 5, 20,
+                                                            StrId::STR_BRIGHTNESS_VALUE_FORMAT, false, true);
+  // Same live-preview wiring as the color-temperature picker below: an in-memory
+  // SETTINGS write per drag step, no saveToFile() until Confirm. main.cpp's
+  // loop() already polls frontlightBrightness against the light every frame
+  // (pre-dates this picker -- it originally existed for the in-place cycling
+  // row), so it needs no change to pick up the picker's live writes too.
+  picker->onValueChanged = [](int v) { SETTINGS.frontlightBrightness = static_cast<uint8_t>(v); };
+  startActivityForResult(std::move(picker), [this, originalValue](const ActivityResult& result) {
+    if (result.isCancelled) {
+      SETTINGS.frontlightBrightness = originalValue;
+    } else {
+      SETTINGS.frontlightBrightness = static_cast<uint8_t>(std::get<IntervalResult>(result.data).value);
+      SETTINGS.saveToFile();
+    }
+    requestUpdate();
+  });
+}
+
+void SettingsActivity::openFrontlightColorTemperaturePicker() {
+  const uint8_t originalValue = SETTINGS.frontlightColorTemperature;
+  auto picker = std::make_unique<IntervalSelectionActivity>(renderer, mappedInput, "FrontlightColorTemperatureInterval",
+                                                            StrId::STR_FRONTLIGHT_COLOR_TEMP, originalValue, 0, 100, 5,
+                                                            20, StrId::STR_COLOR_TEMP_VALUE_FORMAT, false, true);
+  // Live preview while dragging: writes straight into SETTINGS (never saveToFile()
+  // here -- rule 8 is no SD write per interaction) so main.cpp's loop() poll, which
+  // already applies a frontlightColorTemperature change to the LED every frame
+  // regardless of which activity is on screen, picks it up and lights the mix the
+  // rider is currently looking at instead of only after Confirm.
+  picker->onValueChanged = [](int v) { SETTINGS.frontlightColorTemperature = static_cast<uint8_t>(v); };
+  startActivityForResult(std::move(picker), [this, originalValue](const ActivityResult& result) {
+    if (result.isCancelled) {
+      // The drag above already wrote interim values into SETTINGS for the live
+      // preview; undo that in memory (the file on disk was never touched) so
+      // Back truly means no change, and the same poll puts the light back too.
+      SETTINGS.frontlightColorTemperature = originalValue;
+    } else {
+      SETTINGS.frontlightColorTemperature = static_cast<uint8_t>(std::get<IntervalResult>(result.data).value);
+      SETTINGS.saveToFile();
+    }
+    requestUpdate();
+  });
+}
+
 void SettingsActivity::render(RenderLock&&) {
   if (optionPopup.processRender(renderer, mappedInput)) return;
 
@@ -510,13 +638,31 @@ void SettingsActivity::render(RenderLock&&) {
           valueText = value ? tr(STR_STATE_ON) : tr(STR_STATE_OFF);
         } else if (setting.type == SettingType::ENUM && setting.valuePtr != nullptr) {
           const uint8_t value = SETTINGS.*(setting.valuePtr);
-          valueText = I18N.get(setting.enumValues[value]);
+          // Bounds-checked, like the valueGetter path two branches down already
+          // is. A stored value can outlive the list that offered it: an older
+          // build's settings.json, or a value a gesture sets that this row does
+          // not list (touchMode's DISABLED). Reading past the vector for a label
+          // is not worth the row.
+          if (value < setting.enumValues.size()) {
+            valueText = I18N.get(setting.enumValues[value]);
+          }
         } else if (setting.type == SettingType::ENUM && setting.valueGetter) {
           const uint8_t value = setting.valueGetter();
           if (!setting.enumStringValues.empty() && value < setting.enumStringValues.size()) {
             valueText = setting.enumStringValues[value];
           } else if (value < setting.enumValues.size()) {
             valueText = I18N.get(setting.enumValues[value]);
+          }
+        } else if (setting.type == SettingType::STRING) {
+          // **There was no STRING branch here at all until 2026-10-30.** Every
+          // string row this list has ever carried was a reader row, and those
+          // left the menu before anyone noticed they drew an empty value
+          // column. The Group tab's "This device's name" was the first string
+          // row on a reachable tab, and it showed nothing.
+          if (setting.stringGetter) {
+            valueText = setting.stringGetter();
+          } else if (setting.stringOffset != 0) {
+            valueText = reinterpret_cast<const char*>(&SETTINGS) + setting.stringOffset;
           }
         } else if (setting.type == SettingType::VALUE && setting.valuePtr != nullptr) {
           if (setting.nameId == StrId::STR_TIME_TO_SLEEP) {
@@ -528,21 +674,34 @@ void SettingsActivity::render(RenderLock&&) {
                        static_cast<unsigned int>(SETTINGS.*(setting.valuePtr)));
               valueText = valueBuffer;
             }
+          } else if (setting.nameId == StrId::STR_FRONTLIGHT) {
+            valueText = std::to_string(SETTINGS.*(setting.valuePtr)) + " %";
+          } else if (setting.nameId == StrId::STR_FRONTLIGHT_COLOR_TEMP) {
+            char valueBuffer[32];
+            snprintf(valueBuffer, sizeof(valueBuffer), tr(STR_COLOR_TEMP_VALUE_FORMAT),
+                     static_cast<unsigned int>(SETTINGS.*(setting.valuePtr)));
+            valueText = valueBuffer;
           } else {
             valueText = std::to_string(SETTINGS.*(setting.valuePtr));
           }
         }
         return valueText;
       },
-      true);
+      true, [&settings](int i) { return settings[i].disabled; });
 
   // Draw help text
-  const auto confirmLabel =
-      (selectedSettingIndex == 0)
-          ? I18N.get(categoryNames[(selectedCategoryIndex + 1) % categoryCount])
-          : (selectedSettingIndex > 0 && (*currentSettings)[selectedSettingIndex - 1].nameId == StrId::STR_TIME_TO_SLEEP
-                 ? tr(STR_SELECT)
-                 : tr(STR_TOGGLE));
+  const char* confirmLabel = nullptr;
+  if (selectedSettingIndex == 0) {
+    confirmLabel = I18N.get(categoryNames[(selectedCategoryIndex + 1) % categoryCount]);
+  } else {
+    const auto& selected = (*currentSettings)[selectedSettingIndex - 1];
+    // Empty label draws no button at all (BaseTheme::drawButtonHints() skips
+    // empty strings), which is the only honest hint for a row that ignores
+    // Confirm.
+    confirmLabel = selected.disabled                             ? ""
+                   : selected.nameId == StrId::STR_TIME_TO_SLEEP ? tr(STR_SELECT)
+                                                                 : tr(STR_TOGGLE);
+  }
 
   const auto labels = mappedInput.mapLabels(tr(STR_BACK), confirmLabel, tr(STR_DIR_UP), tr(STR_DIR_DOWN));
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);

@@ -263,20 +263,148 @@ number is `setMinInterval(0x140)`/`setMaxInterval(0x1E0)` explicitly.
 Connection mode is undirected connectable, general discoverable, no pairing and
 no bonding (`BlePositionServer.cpp:248`).
 
-## The name is wire-visible
+**The second service is not in there, on purpose.** Since 2026-11-07 the GATT
+table also carries the Bluetooth SIG Device Information Service (`0x180A`) with
+the firmware revision and the model number -- the version handshake,
+`../../docs/ble-version-handshake.md` in the parent repo. It is never
+advertised: there is no room (21 of 31 bytes are spent above), nothing needs a
+version before connecting, and a central discovers services once the link is
+up. The map service's fifth characteristic, `...0006`, is the other half of that
+handshake and is likewise invisible until after a connect.
 
-`kBleDeviceName` (`lib/BlePositionServer/include/BlePositionServer.h`) is matched
-by the phone app and shown to the rider in Android's companion-device pairing
-dialog. Changing it breaks an installed app's name filter and makes an existing
-pairing look like a different device. Change it only with the app.
+## What the open channel now demonstrably allows
 
-**Every X4 running this firmware advertises the same name and the same service
-UUID.** Nothing on the air distinguishes one device from another, so the phone
-cannot tell the rider's X4 from another one in range by advertisement alone. The
-app solves this by pinning the MAC address it paired with; the device side has no
-per-device identity to offer yet. Open: an owner-settable device name would fix
-it at the source and would make Android's pairing dialog readable when two X4s
-are present.
+"No pairing and no bonding" above is a one-line fact with consequences that used
+to be theoretical. **They are not any more.** On 2026-08-23 the whole BLE surface
+was driven for the first time, in the desktop simulator (`simulator.md`, "BLE"),
+by a client that could put arbitrary bytes on every characteristic. **Nothing ran
+on hardware; there is no device.** Everything below is therefore
+measured-in-the-simulator or read-off-the-code, and the transport is a TCP socket
+rather than a radio -- but the reachability argument does not depend on the
+transport. It depends on this section: an undirected connectable, generally
+discoverable peripheral with no pairing and no bonding accepts a write from
+whoever connects first.
+
+The threat model is the standing one: the device is carried on a bike or in a
+bag, it gets lost or stolen, and while it is in someone else's hands -- or merely
+in radio range -- they can write anything a phone could.
+
+What it **leaks** to an unauthenticated peer, with no ownership check:
+
+- The rider's current position, heading, speed and clock, and the tile
+  coordinates around them, straight out of `info`. A tile coordinate is a
+  location.
+- The list of tiles the device is missing and the content id of every tile it
+  holds (`missing`, `have`), which is a coarse history of where the device has
+  been asked to draw.
+- **Since 2026-11-07, the firmware revision**, off the Device Information
+  Service (`0x180A`) -- so a peer in range learns which build's defects apply.
+  Accepted deliberately: that is what the SIG service is for and what every BLE
+  product publishes, and it is the price of a rider being able to read their
+  firmware version with a generic BLE app
+  (`../../docs/ble-version-handshake.md`, "Security"). The model number next to
+  it adds nothing, because the advertised name already names the board before a
+  connect. Neither is position, route, pins or wallet data.
+  **On `env:default` that string carries the git branch name and short SHA**
+  (`scripts/git_branch.py`), so a bench board answers something like
+  `0.1.0-dev-feat-map-command-console-05c6cf8` to an unauthenticated read. No
+  release env does this -- `gh_release` sets a plain version and the per-board
+  envs set their own literals -- so it is a development-board exposure, not a
+  shipped one.
+
+What it **lets someone do to the device or the rider**:
+
+- **Kill the map screen from outside.** One 21-byte position packet with
+  `lat = 90` sends the renderer into a 16.7-million-tile scan that the activity
+  loop never returns from: no frame, no redraw, no button, and the BLE link
+  stays up so the device still looks connected. Measured in the simulator;
+  mechanism and citations in
+  [`map-follow.md`](map-follow.md), "Nothing validates a position packet".
+  Treat it as a remotely reachable denial of service on the navigation screen.
+- **Inject a fake position, including a replayed real one.** The redraw gate
+  tests "changed", not "newer", so a packet recorded off the air and written back
+  later moves the rider's displayed position to wherever it was recorded. Same
+  doc.
+- **Make the command channel stop answering, with no trace.** A single write
+  longer than the 256-byte command ring
+  (`lib/BlePositionServer/include/BlePositionServer.h:397`) is discarded whole
+  with **no `ERR`, no reply and no log line**
+  (`lib/BlePositionServer/src/BlePositionServer.cpp:507-523`). Measured with a
+  300-byte write at MTU 517, which is a perfectly legal single ATT write --
+  nothing about it is malformed at the link layer. The peer then waits forever.
+  Compare the line-length overflow, which does answer (`ERR line_too_long`), and
+  the position characteristic, which drops a wrong-length write silently but at
+  least cannot be mistaken for a request. Dropping the write whole rather than
+  truncated is right, and is explained in the code; the silence is the gap.
+- **Freeze the whole main loop for over a minute.** A peer that subscribes to
+  the command channel, issues one `info` at the default MTU and then never
+  acknowledges anything holds the activity task for a measured **69.1 s**, with
+  no `loop()` iteration for 63 s of it -- so no buttons either. Details in
+  [`tile-freshness.md`](tile-freshness.md), "The cap does not bound the freeze".
+- **Write any file under the SD root**, `pins/pins.log` included. The path check
+  holds against every escape tried, so this is the documented design rather than
+  a hole -- but the design is that the channel carries any file, and the channel
+  has no ownership check.
+- **Occupy the transfer slot**, making the rider's own phone see `ERR busy` for
+  30 s, and **create directories without bound** by sending `begin` frames that
+  never write a byte. Both in
+  [`missing-tiles.md`](missing-tiles.md), "The transfer path, driven end to end".
+- **Claim to be any companion app, at any version** (`...0006`, since
+  2026-11-07). Bounded at 31 bytes and sanitised to printable ASCII before it is
+  stored or logged, so it cannot garble a log file -- and nothing branches on it,
+  which is the rule that keeps it harmless rather than an accident of there
+  being no caller yet (`../../docs/ble-version-handshake.md`, "Security").
+
+**None of this is new in kind** -- `MapCommandParser.h` already documents the
+serial and BLE channels as one shared, unauthenticated grammar, and T-222 tracks
+the audit. What changed is that the list is now specific, cited, and reproducible
+without a device, which is what a fix has to be measured against.
+
+**What a hardware pass would still have to settle:** whether the ATT bearer
+refuses any of these earlier than the firmware does (it cannot refuse the
+position packet, which is a legal 21-byte write, and it cannot refuse a 300-byte
+write at MTU 517), and whether the watchdog fires during the map wedge before a
+rider gives up and resets.
+
+## The name is wire-visible, and per board since 2026-09-01
+
+`bleDeviceNameForActiveBoard()` (`lib/BlePositionServer.cpp`) picks the
+advertised name from `BoardConfig::ACTIVE.board`: `XteinkX4Map`, `XteinkX3Map`
+(X3 and the newer Uc8279 panel both read as this -- same device to the phone),
+`XteinkX4ProMap`, `LilyGoT5S3Map`, or `ExplorInkMap` for a board this function
+does not know. Before this it was one hardcoded `kBleDeviceName`
+(`"XteinkX4Map"`) for every board, so an X3 or a T5S3 Pro on the test bench
+advertised as an X4. Every name here is matched by Android's
+`BleLink.KNOWN_DEVICE_NAMES` (`android/`) and shown to the rider in Android's
+companion-device pairing dialog -- adding a board on either side means adding
+its name on the other in the same change.
+
+**On an S3 that name is fixed at compile time, and it is the cheapest check that
+the right branch is on the board.** The only `selectDevice()` calls are in
+`lib/hal/HalGPIO.cpp` inside `#if FREEINK_MCU_C3`, so a T5 S3 Pro never runs the
+runtime swap and keeps whatever `DEFAULT_DEVICE` gave it. `DEFAULT_DEVICE`
+(`freeink-sdk/libs/hardware/BoardConfig/include/BoardConfig.h`, "Compile-time
+default device") picks `LILYGO_T5S3` only when the build defines
+`FREEINK_DEVICE_LILYGO`; a build without it falls through the `#if` chain to
+`XTEINK_X4`.
+
+So **a `develop` build flashed onto a T5 S3 Pro advertises `XteinkX4Map` and runs
+with X4 pins, X4 panel and X4 battery paths on LilyGo hardware.** Seen 2026-09-06:
+the same MAC `7C:2C:67:8A:4C:B5` advertised `LilyGoT5S3Map` at 18:40 and
+`XteinkX4Map` at 18:43 after a reflash from `develop`. It booted, drew maps and
+served BLE over the whole window, so nothing else looked wrong -- the name was the
+only symptom. That board forks from `release/lilygo-t5-s3-pro`
+([`branching.md`](branching.md)), and reading the advertised name off the phone
+catches a wrong-branch flash in a second, with no cable.
+
+**Every device of the *same* board still advertises the same name and the same
+service UUID.** Nothing on the air distinguishes one X4 from a second X4 in
+range -- the per-board name above answers "what kind of device is this",
+not "which one". The app solves the latter by pinning the MAC address it
+paired with; the device side has no per-unit identity to offer yet. Open: an
+owner-settable device name would fix that at the source and would make
+Android's pairing dialog readable when two devices of the same board are
+present.
 
 ## Verification status
 
@@ -289,5 +417,23 @@ are present.
   read). One device answered: `14:63:93:F4:8A:36  local_name='XteinkX4Map'
   rssi=-53  uuids=['5a1e6d00-73a4-4f1e-9b8f-2c6e1a8f0001']`. Before this change
   the same scan returned the service UUID and `local_name=None`.
-- The name showing in Android's companion pairing dialog: **not measured**. Needs
-  a phone. Same scan data underneath, so it is likely, not proven.
+- **The per-board name reaches the phone app -- measured 2026-09-06.** The app's
+  own status line rendered `connected to LilyGoT5S3Map` and, after a reflash from
+  `develop`, `connected to XteinkX4Map`, for the same MAC. That is `BleLink`
+  reading the scan result, so the name survives the whole path from advertising
+  to the rider's screen.
+- The name showing in Android's **companion pairing dialog**: **still not
+  measured**. That dialog is a different surface from the status line above, and
+  nobody has watched it. Same scan data underneath, so it is likely, not proven.
+- Per-board naming (`bleDeviceNameForActiveBoard()`): **measured on a LilyGo
+  T5S3 Pro, 2026-09-01.** Built and flashed `t5s3pro` (cherry-picked onto
+  `release/lilygo-t5-s3-pro`, since the T5S3 build env is not on `develop`
+  yet), reset the device and sent `CMD:GOTO_MAP` inside the ~3 s boot window
+  (docs/power-management.md, "The RX side after idle"). Boot log confirmed
+  `Hardware detect: lilygo_t5s3 (960x540)`; `BlePositionServer::begin()` ran
+  and returned without hanging. Scanned from the laptop with bleak:
+  `7C:2C:67:8A:4C:B5  local_name='LilyGoT5S3Map'  rssi=-44
+  uuids=['5a1e6d00-73a4-4f1e-9b8f-2c6e1a8f0001']` -- the exact name
+  `bleDeviceNameForActiveBoard()` picks for `Board::LilyGoT5S3`.
+  **Not yet measured**: the Android app side (`KNOWN_DEVICE_NAMES` actually
+  matching and connecting), and the other three boards (X4, X3, X4 Pro).

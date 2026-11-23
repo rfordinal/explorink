@@ -19,6 +19,15 @@ class UITheme {
   static UITheme& getInstance() { return instance; }
 
   const ThemeMetrics& getMetrics() const;
+  // The tallest chrome the bottom of the screen carries on this panel, whatever
+  // the touch mode -- the hint band's own height, unreduced.
+  //
+  // getMetrics() reports the *current* mode's height (the band, the padlock
+  // strip, or nothing). A caller that snapshots or window-refreshes that strip
+  // needs one height that covers every mode instead: refreshing the current
+  // mode's height after a change from a taller one leaves a sliver of the old
+  // chrome on the panel, which e-ink then holds indefinitely.
+  int chromeBandHeight() const;
   const BaseTheme& getTheme() const { return *currentTheme; }
   Rect getScreenSafeArea(const GfxRenderer& renderer, bool hasFrontButtonHints = false,
                          bool hasSideButtonHints = false);
@@ -43,7 +52,8 @@ class UITheme {
   std::unique_ptr<BaseTheme> currentTheme;
   mutable ThemeMetrics adjustedMetrics;
   mutable bool metricsValid = false;
-  mutable bool metricsForTouch = false;
+  // 0 = no chrome at the bottom, 1 = the hint boxes, 2 = the touch-lock strip.
+  mutable uint8_t metricsChrome = 0xFF;
 };
 
 // Helper macro to access current theme

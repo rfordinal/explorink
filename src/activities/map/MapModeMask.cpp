@@ -22,8 +22,8 @@ bool mapRideModeFromName(std::string_view name, MapRideMode& outMode) {
     outMode = MapRideMode::Hike;
     return true;
   }
-  if (name == "cycle") {
-    outMode = MapRideMode::Cycle;
+  if (name == "tourist") {
+    outMode = MapRideMode::Tourist;
     return true;
   }
   return false;

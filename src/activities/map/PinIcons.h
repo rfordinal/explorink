@@ -1,5 +1,7 @@
 #pragma once
 
+#include <Icon.h>
+
 #include <cstdint>
 
 #include "PinCatalog.h"
@@ -48,4 +50,28 @@ inline const uint8_t* pinGlyphBits(size_t catalogIndex) {
     default:
       return kPinGlyphPinC1Bits;
   }
+}
+
+// The same glyph, wrapped as a freeink::Icon, for a picker that wants to show
+// a pin type's own mark rather than a second, different symbol for it (the
+// pin-type-add list, MapActivity::openPinsAddList()). opticalCenterY is set to
+// half the glyph -- nothing here reads it; it exists so this table matches the
+// freeink::Icon convention every other icon table in the tree follows.
+inline const freeink::Icon* pinGlyphIcon(size_t catalogIndex) {
+  static const freeink::Icon icons[kPinSlotCount] = {
+      {kPinGlyphPx, kPinGlyphPx, kPinGlyphPx / 2, kPinGlyphPinBaseBits},
+      {kPinGlyphPx, kPinGlyphPx, kPinGlyphPx / 2, kPinGlyphPinParkingBits},
+      {kPinGlyphPx, kPinGlyphPx, kPinGlyphPx / 2, kPinGlyphPinDestBits},
+      {kPinGlyphPx, kPinGlyphPx, kPinGlyphPx / 2, kPinGlyphPinMeetBits},
+      {kPinGlyphPx, kPinGlyphPx, kPinGlyphPx / 2, kPinGlyphPinCampBits},
+      {kPinGlyphPx, kPinGlyphPx, kPinGlyphPx / 2, kPinGlyphPinFavoriteBits},
+      {kPinGlyphPx, kPinGlyphPx, kPinGlyphPx / 2, kPinGlyphPinC1Bits},
+      {kPinGlyphPx, kPinGlyphPx, kPinGlyphPx / 2, kPinGlyphPinC2Bits},
+      {kPinGlyphPx, kPinGlyphPx, kPinGlyphPx / 2, kPinGlyphPinC3Bits},
+      {kPinGlyphPx, kPinGlyphPx, kPinGlyphPx / 2, kPinGlyphPinC4Bits},
+      {kPinGlyphPx, kPinGlyphPx, kPinGlyphPx / 2, kPinGlyphPinC5Bits},
+  };
+  // Same fallback as pinGlyphBits() above: a key this build does not know
+  // shows #1's numeral rather than nothing.
+  return &icons[catalogIndex < kPinSlotCount ? catalogIndex : 6];
 }

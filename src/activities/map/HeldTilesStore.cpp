@@ -60,6 +60,17 @@ void HeldTilesStore::record(uint8_t z, uint32_t col, uint32_t row, uint32_t cont
   e.flags = 0;
 }
 
+bool HeldTilesStore::rearm(uint8_t z, uint32_t col, uint32_t row) {
+  const size_t known = find(z, col, row);
+  if (known == kMaxEntries) return false;
+  // Both bits, not just kChecked: a skip can arrive while the entry is still
+  // stamped asked (the listing that produced it has not been answered yet), and
+  // leaving kAsked set would let that answer's markAskedChecked() settle it
+  // straight back again.
+  entries_[known].flags = 0;
+  return true;
+}
+
 bool HeldTilesStore::forget(uint8_t z, uint32_t col, uint32_t row) {
   const size_t known = find(z, col, row);
   if (known == kMaxEntries) return false;

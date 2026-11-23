@@ -58,4 +58,16 @@ void hatchRing(IMapCanvas& canvas, const int16_t* xs, const int16_t* ys, uint16_
 void outlineRing(IMapCanvas& canvas, const int16_t* xs, const int16_t* ys, uint16_t pointCount, int lineWidth,
                  MapInk ink);
 
+// The same outline, broken into dashes of `dashPx` with `gapPx` between them.
+//
+// The phase runs along the whole ring rather than resetting per segment: a ring
+// has a vertex every pixel or two after simplification, and a per-segment reset
+// would put a dash at every one of them, which is a solid line with a stutter
+// rather than a dashed boundary.
+//
+// `dashPx` or `gapPx` at 0 falls back to the solid outline. That is not a guard
+// against a silly style so much as what "no dash" means.
+void outlineRingDashed(IMapCanvas& canvas, const int16_t* xs, const int16_t* ys, uint16_t pointCount, int lineWidth,
+                       int dashPx, int gapPx, MapInk ink);
+
 }  // namespace MapAreaFill

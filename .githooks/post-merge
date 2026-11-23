@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# Warn when a merge moved the freeink-sdk pin.
+#
+# This is the case nothing else catches. Git resolves a gitlink like any other
+# file, and when one side's commit is an ancestor of the other's it decides it
+# knows the answer: it stages the newer one and prints a single "Fast-forwarding
+# submodule" note. No conflict, nothing to confirm. A develop -> release sync
+# would have carried 209 SDK commits that way on 2026-09-09, while the only
+# conflicts it reported were in documentation.
+#
+# Never fails the merge -- moving the pin is a normal thing to do. It only makes
+# it visible, because the cost is a fuller hardware pass, not a rejected merge.
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+cd "${REPO_ROOT}" || exit 0
+
+if [ -f scripts/sdk_pin_check.py ]; then
+  python3 scripts/sdk_pin_check.py --from ORIG_HEAD --quiet-when-unchanged || true
+fi
+exit 0

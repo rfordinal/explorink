@@ -7,7 +7,6 @@
 
 #include "Epub/css/CssParser.h"
 #include "Page.h"
-#include "hyphenation/Hyphenator.h"
 #include "parsers/ChapterHtmlSlimParser.h"
 
 namespace {
@@ -397,7 +396,6 @@ bool Section::startBuild(const ReaderRenderSpec& spec, const std::function<void(
     return false;
   }
 
-  Hyphenator::setPreferredLanguage(epub->getLanguage());
   build_ = std::move(ctx);
 
   if (!build_->parser->beginParse()) {

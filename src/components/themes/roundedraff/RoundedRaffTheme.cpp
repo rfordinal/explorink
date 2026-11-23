@@ -10,7 +10,9 @@
 #include <vector>
 
 #include "RecentBooksStore.h"
+#include "TouchPolicy.h"
 #include "components/UITheme.h"
+#include "components/themes/HintGeometry.h"
 #include "components/icons/cover.h"
 #include "fontIds.h"
 
@@ -351,26 +353,68 @@ void RoundedRaffTheme::drawList(const GfxRenderer& renderer, Rect rect, int item
   drawScrollBar(renderer, rect, itemCount, pageStartIndex, pageItems);
 }
 
+namespace {
+// The two hint groups, in one place because the drawing and frontHintBox() must
+// agree on where a box is: the tap has to land on the label the user can see.
+// RoundedRaff has no per-device arrays -- its groups are derived from the screen
+// width already, so a wider panel needs nothing but the scaled paddings.
+struct HintBand {
+  int leftX;
+  int rightX;
+  int groupWidth;
+  int y;
+  int height;
+};
+
+inline HintBand hintBand(const int pageWidth, const int pageHeight) {
+  const int sidePadding = HintGeometry::scaleMetric(20);
+  const int groupGap = HintGeometry::scaleMetric(10);
+  const int bottomMargin = HintGeometry::scaleMetricY(10);
+  // 30px total guide height on the X4, where buttonHintsHeight is 40.
+  const int height = UITheme::getInstance().getMetrics().buttonHintsHeight - HintGeometry::scaleMetricY(10);
+  const int groupWidth = (pageWidth - sidePadding * 2 - groupGap) / 2;
+  return HintBand{sidePadding, sidePadding + groupWidth + groupGap, groupWidth, pageHeight - height - bottomMargin,
+                  height};
+}
+}  // namespace
+
+void RoundedRaffTheme::drawTouchLockBox(GfxRenderer& renderer, const Rect box) const {
+  // White backing then the same 2px rounded outline this theme gives its two
+  // hint groups (drawButtonHints above), so the padlock reads as one of them.
+  renderer.fillRect(box.x, box.y, box.width, box.height, false);
+  renderer.drawRoundedRect(box.x, box.y, box.width, box.height, 2, kBottomRadius, true);
+}
+
+bool RoundedRaffTheme::frontHintBox(const int index, const int portraitWidth, const int portraitHeight,
+                                   Rect& out) const {
+  if (!TouchPolicy::hintsVisible() || !frontBoxActive(index)) return false;
+  // Four labels sit at the outer and inner edges of two groups, so a group
+  // splits in half: 0/1 are the left group, 2/3 the right one.
+  const HintBand band = hintBand(portraitWidth, portraitHeight);
+  const int halfWidth = band.groupWidth / 2;
+  const int groupX = (index < 2) ? band.leftX : band.rightX;
+  out = Rect{groupX + (index % 2) * halfWidth, band.y, halfWidth, band.height};
+  return true;
+}
+
 void RoundedRaffTheme::drawButtonHints(GfxRenderer& renderer, const char* btn1, const char* btn2, const char* btn3,
                                        const char* btn4, int fontId, int btn3FontId, int btn4FontId) const {
   if (fontId == 0) fontId = kGuideFontId;
   if (btn3FontId == 0) btn3FontId = fontId;
   if (btn4FontId == 0) btn4FontId = fontId;
-  if (gpio.hasTouch()) {
+  if (!TouchPolicy::hintsVisible()) {
+    drawTouchLockIndicator(renderer);
     return;
   }
+  rememberFrontLabels(btn1, btn2, btn3, btn4);
 
   const GfxRenderer::Orientation origOrientation = renderer.getOrientation();
   renderer.setOrientation(GfxRenderer::Orientation::Portrait);
 
-  const int pageWidth = renderer.getScreenWidth();
-  const int pageHeight = renderer.getScreenHeight();
-  const int sidePadding = 20;
-  const int groupGap = 10;
-  const int bottomMargin = 10;
-  const int hintHeight = RoundedRaffMetrics::values.buttonHintsHeight - 10;  // 30px total guide height
-  const int groupWidth = (pageWidth - sidePadding * 2 - groupGap) / 2;
-  const int hintY = pageHeight - hintHeight - bottomMargin;
+  const HintBand band = hintBand(renderer.getScreenWidth(), renderer.getScreenHeight());
+  const int groupWidth = band.groupWidth;
+  const int hintY = band.y;
+  const int hintHeight = band.height;
   const int textY = hintY + (hintHeight - renderer.getLineHeight(fontId)) / 2;
   // Own vertical centering for the right group: btn3FontId/btn4FontId can be
   // a different size than fontId (MapActivity's Observe mode), and centering
@@ -379,8 +423,8 @@ void RoundedRaffTheme::drawButtonHints(GfxRenderer& renderer, const char* btn1, 
   const int rightTextY = hintY + (hintHeight - renderer.getLineHeight(btn3FontId)) / 2;
 
   const bool backDisabled = (btn1 == nullptr || btn1[0] == '\0');
-  const int leftGroupX = sidePadding;
-  const int rightGroupX = leftGroupX + groupWidth + groupGap;
+  const int leftGroupX = band.leftX;
+  const int rightGroupX = band.rightX;
   const std::string backLabel = backDisabled ? "" : std::string(btn1);
   // Callers should provide the button labels. If a label is not specified, it should render empty.
   const std::string selectText = (btn2 && btn2[0] != '\0') ? std::string(btn2) : "";
@@ -394,7 +438,7 @@ void RoundedRaffTheme::drawButtonHints(GfxRenderer& renderer, const char* btn1, 
   renderer.drawRoundedRect(leftGroupX, hintY, groupWidth, hintHeight, 2, kBottomRadius, true);
   const int selectWidth = renderer.getTextWidth(fontId, selectText.c_str(), EpdFontFamily::REGULAR);
   const int downWidth = renderer.getTextWidth(btn4FontId, downText.c_str(), EpdFontFamily::REGULAR);
-  constexpr int innerEdgePadding = 16;
+  const int innerEdgePadding = HintGeometry::scaleMetric(16);
 
   const int backX = leftGroupX + innerEdgePadding;
   const int selectX = leftGroupX + groupWidth - innerEdgePadding - selectWidth;

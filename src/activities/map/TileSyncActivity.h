@@ -7,6 +7,7 @@
 
 #include "MapBleConsole.h"
 #include "MapCommandConsole.h"
+#include "MapPins.h"
 #include "MapTilePath.h"
 #include "MapTransferReceiver.h"
 #include "activities/Activity.h"
@@ -109,6 +110,11 @@
 // - its own `MapConsoleState` plus a BLE console over it, because the phone
 //   answers in the same ASCII the map console takes: `missing` to read the list,
 //   `skip` to give up on a tile
+// - its own `MapPins` (own `PinStore`, rebuilt from the card in `onEnter()`), so
+//   `pin set`/`pin del`/`pin list`/`pin log` answer here exactly as they do on
+//   the map screen. No popup for it -- the rider manages pins from the phone at
+//   home, over the same wire this screen already runs for tile sync
+//   (`MapCommandParser.h`, `docs/pins.md`).
 //
 // It deliberately does not share MapActivity's console state. Two screens are
 // never up at once, and a shared state would put this screen's skip tally and
@@ -121,7 +127,30 @@
 // pages the list with `missing`, pushes tiles over the transfer channel, and
 // sends `skip` for what it cannot supply. Done when arrivals plus skips reach
 // the count. BACK sends `FETCH_CANCEL` and leaves.
-class TileSyncActivity final : public Activity, public IMapSkipObserver, public IMapStaleObserver {
+//
+// ## A batch the device never asked for
+//
+// Everything above is reactive: the device hatched a square, wrote it down,
+// and asks for it back. Ground the rider has never been on is on no list, so a
+// phone pushing a whole city before a trip finds a screen that has sized
+// itself from an empty missing list -- `rowCount_ == 0`, `onEnter()` says
+// "nothing missing" and goes to Finished, and every progress element is gated
+// on Running. The bytes land anyway (the receiver is attached before the run
+// is armed) and the rider watches a screen saying there is nothing to do for
+// half an hour.
+//
+// `push <n>` on the command channel is the phone announcing that batch before
+// its first begin frame (MapCommandParser.h). The count is all the device
+// needs: it never learns which tiles, only how many files are coming, which is
+// enough for a bar, an ETA and a finish condition. `announced_` holds it and
+// `runTotal()` is what a run is measured against.
+class TileSyncActivity final : public Activity,
+                               public IMapSkipObserver,
+                               public IMapStaleObserver,
+                               public IMapPushObserver,
+                               public IMapPointShardsSource,
+                               public IMapGoneObserver,
+                               public IMapPointSkipObserver {
  public:
   TileSyncActivity(GfxRenderer& renderer, MappedInputManager& mappedInput);
 
@@ -147,6 +176,26 @@ class TileSyncActivity final : public Activity, public IMapSkipObserver, public 
   // unasked on the transfer channel (docs/tile-freshness.md).
   void onTileStale(uint8_t z, uint32_t col, uint32_t row) override;
   void onCheckFinished(bool known, uint16_t staleCount) override;
+
+  // IMapPushObserver -- the phone announcing a batch it is about to send.
+  // Flags only; the work happens in loop(). This runs inside the console's
+  // dispatch of `push`, before its terminating `OK`, which is the one place a
+  // repaint must not be started (see freshnessRedrawPending_).
+  void onPushAnnounced(uint16_t count) override;
+
+  // IMapPointShardsSource -- does the card hold this z10 point shard. A plain
+  // existence check, same rootDir the tile/point sources already use
+  // (kTileRoot); no header parse, since `points` only asks have-or-absent.
+  bool hasPointShard(uint32_t col, uint32_t row) const override;
+
+  // IMapGoneObserver -- the phone says the CDN has no such shard, so delete
+  // the card's copy if it has one.
+  void onPointShardGone(uint32_t col, uint32_t row) override;
+
+  // IMapPointSkipObserver -- the phone cannot supply this shard right now.
+  // Logged only; no store to update (see the interface's own doc for why
+  // this must not reach the tile skip path).
+  void onPointShardSkipped(uint32_t col, uint32_t row, const char* reason) override;
 
  private:
   // Waiting means the device is advertising and nothing has subscribed to the
@@ -179,8 +228,24 @@ class TileSyncActivity final : public Activity, public IMapSkipObserver, public 
   // summary line while the bytes of the tile in flight climb.
   void updateProgress();
   RowState stateOf(int index, uint32_t& received, uint32_t& total) const;
+  // The file on the wire: its tile coordinate and its own byte progress, or the
+  // verify stage when the bytes are all in. False when nothing is in flight.
+  //
+  // Separate from the summary line because they answer different questions. The
+  // summary is about the run -- how many, how fast, how long left -- and on a
+  // batch of city tiles one file is 30 to 130 s of it (258 kB average, 1173 kB
+  // worst, measured off the CDN 2026-09-02). A run line alone holds completely
+  // still for all of that.
+  bool formatActiveFile(char* out, size_t outSize) const;
   void gridRect(int& x, int& y, int& w, int& h) const;
+  // The live block: the run's summary line and the per-file line under it. Two
+  // lines and not one because both change per chunk and both are rate-capped
+  // together -- one windowed repaint, not two (updateProgress).
   void summaryRect(int& x, int& y, int& w, int& h) const;
+  // Where the standing "leaving cancels this" warning sits: the bottom of the
+  // page, above the button hints. Reserved by gridRect() whether or not it is
+  // drawn, so the grid does not jump as the phase changes.
+  void warningRect(int& x, int& y, int& w, int& h) const;
   // The whole grid, cleared and redrawn. Every square that is still missing,
   // nothing for the ones that landed. `top` is the floor to start at, or 0 for
   // the running screen's own -- the finished screen writes more above it.
@@ -188,6 +253,17 @@ class TileSyncActivity final : public Activity, public IMapSkipObserver, public 
   // One z11 parent and everything of it that has not arrived. Returns false
   // when the parent is empty, so the caller can leave its frame off too.
   bool drawParent(int px, int py, int size, uint16_t pc, uint16_t pr);
+  // One square per file this run is still waiting for, laid out plainly.
+  //
+  // **Only before the first tile's position is known.** `push <n>` says how
+  // many files are coming and nothing about where they are -- there is no
+  // missing-tile list behind it and nothing to place on a map yet. So the
+  // squares are the count, not geography, until the first file's own BEGIN
+  // frame names a real tile (trackPushTiles()); from that point on
+  // interestCount() is nonzero and drawGrid() draws the real grid instead, so
+  // this is only ever seen in the gap between a batch being announced and its
+  // first byte arriving.
+  void drawAnnouncedGrid(int gx, int gy, int gw, int gh);
 
   // Clears MissingTilesStore entries for tiles that have landed.
   //
@@ -209,6 +285,13 @@ class TileSyncActivity final : public Activity, public IMapSkipObserver, public 
   // Sends NEED_TILES and moves to Running. Called when the phone subscribes,
   // and again if it leaves and comes back.
   void askForTiles();
+  // Moves to Running and arms every clock a run is measured by. One place, so
+  // a second entry into a run cannot start with one of them left over from the
+  // last one.
+  void beginRunning();
+  // Acts on a `push <n>`. Adds to the run already on screen, or starts a new
+  // one -- see its .cpp for which and why.
+  void startAnnouncedBatch(uint32_t count);
   // Watches the command channel's subscription and moves between Waiting and
   // Running. A phone that walks out of range mid-sync takes the transfer with
   // it, so the screen goes back to waiting rather than pretending.
@@ -219,13 +302,35 @@ class TileSyncActivity final : public Activity, public IMapSkipObserver, public 
   // (SETTINGS.mapTileFreshnessMode). Preparation at home is exactly where
   // spending the phone's data belongs, which is why this mode exists separately
   // from the map screen's live one.
-  void askAboutFreshness();
+  //
+  // Returns true exactly when a CHECK_TILES just went out this call -- a new
+  // conversation opened on the command channel. Every caller uses this to
+  // hold askAboutPoints() back for the same tick: firing both indications
+  // together reproduces the 2026-08-11 collision (see askAboutPoints()'s own
+  // doc), found in code review 2026-09-13 before it ever reached a device.
+  bool askAboutFreshness();
   // Writes the one line that says what the freshness check is doing, or
   // returns false when there is nothing to say (Freshness::Idle). Separate from
   // the fetch's own status line because the two answer different questions --
   // "did the tiles I lack arrive" and "are the tiles I have still right" -- and
   // a rider who cannot tell them apart reads a check as a download.
   bool formatFreshness(char* out, size_t size) const;
+  // Sends NEED_POINTS once per visit, the same settle-point askAboutFreshness()
+  // fires at (docs/point-layer-lifecycle.md, decision 2: "SyncScreen ... syncs
+  // there, after that visit's tile fetch has settled"). This screen has no
+  // viewport, so the shard range is centred on SETTINGS.mapLastLatE7/LonE7 --
+  // the persisted fix, same source MapMissingAnchor.h reads for the same
+  // reason. Only the ask; what happens to the reply (push/skip/gone) is T-561's
+  // next step.
+  //
+  // **Never call this in the same tick as a CHECK_TILES that just went out**
+  // -- every call site does `if (!askAboutFreshness()) askAboutPoints();` and
+  // onCheckFinished() calls this again once that conversation closes. Two
+  // conversations opened together is the exact fault measured on hardware
+  // 2026-08-11 (see askAboutFreshness()): the phone reads one listing as
+  // empty because the other's `OK` lands first. Found reproduced for
+  // NEED_POINTS in code review, 2026-09-13, before it ever reached a device.
+  void askAboutPoints();
 
   // Snapshots the missing list and zeroes everything one run reports, so a second
   // run on the same visit starts where a fresh entry would. False means the
@@ -235,7 +340,10 @@ class TileSyncActivity final : public Activity, public IMapSkipObserver, public 
   // (docs/zoom-rungs.md), so this is a shift down, never up.
   static void parentOf(const MapTileCoord& tile, uint16_t& pc, uint16_t& pr);
   // Places the viewport over the densest patch of the snapshot. Called once per
-  // run, from armRun() -- see the header comment.
+  // run, from armRun() -- see the header comment. Returns without touching the
+  // window (and without setting windowChosen_) when interestCount() == 0 at
+  // armRun() time -- choosePushWindow() gets the first word on a run that
+  // starts with nothing known.
   void chooseWindow();
 
   // Stale tiles this visit, for the ping-pong guard and the log. Not persisted
@@ -244,6 +352,12 @@ class TileSyncActivity final : public Activity, public IMapSkipObserver, public 
   // True once CHECK_TILES has gone out this visit. One check per visit: this
   // screen draws no map, so nothing adds to the held-tile store while it is up.
   bool freshnessAsked_ = false;
+  // True once NEED_POINTS has gone out this visit, or once askAboutPoints()
+  // decided there was nothing to ask about (no last fix). Same one-shot shape
+  // as freshnessAsked_, and for the same reason: this screen draws no map, so
+  // there is nothing that would make a second ask this visit answer
+  // differently.
+  bool pointsAsked_ = false;
 
   // What the screen says about the check, so a rider can tell a freshness pass
   // from a plain fetch. It could not before: the check ran, tiles moved over
@@ -280,6 +394,16 @@ class TileSyncActivity final : public Activity, public IMapSkipObserver, public 
   // screen needs after a check settles.
   bool freshnessAskPending_ = false;
   bool freshnessRedrawPending_ = false;
+  // Set by onCheckFinished() the moment the freshness conversation closes for
+  // good (no further round coming, `known` or not), consumed by loop() after
+  // poll() returns -- same reason as freshnessAskPending_: onCheckFinished()
+  // runs inside the console's dispatch of `checked`, before its terminating
+  // `OK`, and askAboutPoints() sends its own indication (NEED_POINTS), which
+  // must not start there. This is what gives askAboutPoints() its one chance
+  // to run when the visit opened with something pending -- without it,
+  // nothing ever called askAboutPoints() again after the first
+  // askAboutFreshness() took the tick for itself (code review, 2026-09-13).
+  bool pointsAskPending_ = false;
 
   // When something last landed or was skipped, for the stall verdict below.
   // Armed by askForTiles(), so a screen that never asked cannot time out.
@@ -316,6 +440,58 @@ class TileSyncActivity final : public Activity, public IMapSkipObserver, public 
   std::unique_ptr<Row[]> rows_;
   uint32_t rowCount_ = 0;
 
+  // Files the phone has announced with `push <n>` for this run and not yet
+  // delivered a count for. Zeroed by armRun(), because a re-ask is a new run.
+  //
+  // **Not rows -- not in advance.** The phone never says which tiles a push
+  // will carry, only how many, so there is no snapshot to take when the batch
+  // is announced. But each file's own BEGIN frame does name a tile
+  // (`MapTransferReceiver::Status::activeTile`), and that is real geography the
+  // device learns for free as the transfer runs. `trackPushTiles()` (called
+  // from loop()) watches for a tile this run has not seen before and appends it
+  // here -- so a burst grows the same real grid a fetch shrinks, one square per
+  // file, instead of the placeholder count `drawAnnouncedGrid()` falls back to
+  // before the first one is known.
+  //
+  // Heap, not a member array, same reasoning as rows_ above, and allocated only
+  // once a push is actually seen. 128 entries at ~14 bytes each is ~1.75 KB:
+  // generous headroom over the 48 z11 parents the window can ever show at once
+  // (kMaxWindowCols * kMaxWindowRows), even if a burst mixes in some z13-leaf
+  // entries alongside whole z11 parents. Past the cap, a newly discovered tile
+  // is simply not added -- the numeric bar (`runTotal()`/`announced_`) still
+  // counts it, only the grid undercounts. Freed in onExit().
+  static constexpr uint32_t kMaxPushRows = 128;
+  std::unique_ptr<Row[]> pushRows_;
+  uint32_t pushRowCount_ = 0;
+  // Called once, by whichever of chooseWindow() (real interest already known
+  // at armRun()) or choosePushWindow() (seeded from the first push tile
+  // discovered live) sets a real window first. Guards against the window
+  // silently staying at a previous run's stale value: chooseWindow() returns
+  // early when interestCount() == 0 at armRun() time, which used to be
+  // harmless because drawGrid() never read windowCols_/windowRows_ in that
+  // case either -- but a live-discovered push tile now can make
+  // interestCount() go from 0 to nonzero mid-run, and at that point the window
+  // has to mean something.
+  bool windowChosen_ = false;
+  // Watches transfer_.status().activeTile for a coordinate not already in
+  // rows_ or pushRows_, and appends it. See pushRows_ above.
+  void trackPushTiles();
+  // Seeds the window from one point instead of chooseWindow()'s
+  // densest-cluster search over a whole snapshot -- there is only one point to
+  // go on the first time a push tile's position is known. Centres the same
+  // kMaxWindowCols x kMaxWindowRows box on that tile's z11 parent, clamped so
+  // it never reaches a negative parent coordinate.
+  void choosePushWindow(const MapTileCoord& tile);
+
+  uint32_t announced_ = 0;
+  // Set by onPushAnnounced(), consumed by loop(), for the reason
+  // freshnessAskPending_ exists: the observer runs inside the console's
+  // dispatch of `push`, before the `OK` the phone is waiting for, and a repaint
+  // started there is 500-1700 ms in front of that reply. Accumulates rather
+  // than overwrites, so two announcements between two loop() ticks cannot lose
+  // one.
+  uint32_t pushPending_ = 0;
+
   // The drawn viewport, in z11 parent coordinates: top-left corner and extent.
   // Set by chooseWindow(), read only by the grid. Four scalars rather than a
   // second snapshot -- the tiles themselves are already in rows_.
@@ -345,6 +521,11 @@ class TileSyncActivity final : public Activity, public IMapSkipObserver, public 
   // Gap between a square and its neighbour, so blocks read as separate squares
   // rather than one blot. Drawn as an inset on the fill.
   static constexpr int kTileInset = 2;
+  // Below this an announced batch's squares stop being squares and become
+  // grit. A batch that will not fit legibly simply gets no grid -- the bar is
+  // the indicator, and a smear of dots would be a worse toy and no better
+  // instrument (see the header on the window).
+  static constexpr int kMinAnnouncedCellPx = 8;
 
   // A stale tile is a dot, not an outlined square, and the two are drawn on the
   // same grid on purpose: they answer different questions about the same ground
@@ -365,32 +546,39 @@ class TileSyncActivity final : public Activity, public IMapSkipObserver, public 
   static constexpr int kMaxDotPx = 16;
   static constexpr int kMinDotPx = 8;
 
-  // Every tile this screen still owes the rider an answer about, in three
+  // Every tile this screen still owes the rider an answer about, in four
   // groups, drawn as one grid:
   //
   //   [0, rowCount_)                 missing, being fetched      outlined square
-  //   then every unsettled held tile queued for a freshness check    dot
-  //   then every stale tile awaiting its replacement                 dot
+  //   then every stale tile awaiting its replacement              outlined square
+  //   then every push tile discovered live (pushRows_)            outlined square
+  //   then every unsettled held tile queued for a freshness check     dot
   //
-  // A dot means "not settled yet", whichever half of the work it is waiting on.
-  // It goes out when the phone answers that the tile is current, or -- for one
-  // that came back stale -- when the replacement has actually landed. So the
-  // grid empties as the check works through it, which is the thing worth
-  // watching on this screen.
+  // A dot means "not settled yet", waiting on an answer rather than on bytes.
+  // It goes out when the phone answers that the tile is current. A frame means
+  // waiting on bytes -- missing, stale or a burst's own discovery all read the
+  // same, and it goes out the same way: gone from the source that is tracking
+  // it (MissingTilesStore, StaleTilesList, or -- for a push tile -- never; see
+  // pushRows_ above). So the grid empties as a fetch works through it and
+  // fills in as a burst runs, which is the thing worth watching on this
+  // screen either way.
   //
-  // The three cannot overlap: a missing tile has no content_id so it is never
-  // in the held store (HeldTilesStore::record ignores content_id 0), and a
-  // stale tile has already been settled in the store by the `checked` that
-  // reported it, so it is no longer pending.
+  // The four cannot overlap: a missing tile has no content_id so it is never
+  // in the held store (HeldTilesStore::record ignores content_id 0), a stale
+  // tile has already been settled in the store by the `checked` that reported
+  // it so it is no longer pending, and a push tile is only ever added once its
+  // own BEGIN frame names it -- which is also the moment MissingTilesStore
+  // would already have it if it were a missing tile, so trackPushTiles() skips
+  // anything already in rows_.
   //
   // interestAt() walks the held store to find the nth pending entry, so it is
   // O(store) per call. chooseWindow()'s O(n^2) placement pass is the only
   // caller that could feel that, and only on the rare path where the tiles are
   // spread wider than the window; the common clustered case exits early.
   size_t interestCount() const;
-  // The head of that sequence: missing tiles then stale ones, i.e. everything
-  // waiting on bytes rather than on an answer. Drawn as frames; the rest as
-  // dots.
+  // The head of that sequence: missing tiles, stale ones, then push tiles --
+  // i.e. everything waiting on bytes rather than on an answer. Drawn as
+  // frames; the rest (held) as dots.
   size_t downloadCount() const;
   // The denominator of the "N / M" line: every tile this visit will pull down.
   // **Not rowCount_.** A stale tile's replacement lands in transfer.completed
@@ -398,7 +586,16 @@ class TileSyncActivity final : public Activity, public IMapSkipObserver, public 
   // rowCount_ -- so a visit that replaced 24 stale tiles against 12 missing
   // ones printed "24 / 12", a ratio above one, on the panel 2026-08-13. The
   // earlier fix only covered rowCount_ == 0 and left this.
-  uint32_t transferTotal() const { return rowCount_ + freshnessStale_; }
+  uint32_t transferTotal() const { return runTotal() + freshnessStale_; }
+  // What this run is waiting for: the missing tiles it snapshotted plus any
+  // batch the phone announced. The finish condition, the bar's denominator and
+  // the ETA's remainder are all against this -- **not** transferTotal(), which
+  // adds the freshness half of the visit and is only a display total.
+  uint32_t runTotal() const { return rowCount_ + announced_; }
+  // Files of this run that have not landed yet. Skips are not subtracted: a
+  // tile the supplier does not have is still not on the card, so its square
+  // stays drawn -- the same rule the real grid follows.
+  uint32_t runRemaining() const;
   MapTileCoord interestAt(size_t index) const;
 
   // Tiles the phone has given up on. Counted here as well as in the console's
@@ -461,4 +658,9 @@ class TileSyncActivity final : public Activity, public IMapSkipObserver, public 
   MapConsoleState consoleState_;
   MapBleConsole ble_{consoleState_};
   MapTransferReceiver transfer_;
+
+  // Same object MapActivity uses, rebuilt independently here: no heap, ~450
+  // bytes, one PinStore per screen (MapPins.h). Two screens are never up at
+  // once, so there is never a second copy of the active set in RAM.
+  MapPins pins_;
 };

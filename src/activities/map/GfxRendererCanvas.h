@@ -1,11 +1,15 @@
 #pragma once
 
+#include <Logging.h>
+
 #include <algorithm>
 #include <cmath>
 
 #include "GfxRenderer.h"
 #include "IMapCanvas.h"
+#include "MapChrome.h"
 #include "MapStroke.h"
+#include "MapTextMask.h"
 #include "fontIds.h"
 
 // Real-firmware IMapCanvas implementation: forwards each call to the real
@@ -39,10 +43,19 @@
 // reads as a road that continues off the panel. A **label** painted over is a
 // name with half its letters gone, which reads as a different name -- so the
 // placer has to stay out of those bands, while the road under them does not.
+// `chrome` is where the screen furniture registered itself for this frame
+// (MapChrome.h), and it answers areaReserved(). A null pointer answers "nothing
+// is reserved", which is what every caller outside the map screen wants and what
+// this class did before the register existed.
 class GfxRendererCanvas : public IMapCanvas {
  public:
-  explicit GfxRendererCanvas(GfxRenderer& renderer, int minY = 0, int bottomReservedPx = 0, int rightReservedPx = 0)
-      : renderer_(renderer), minY_(minY), bottomReserved_(bottomReservedPx), rightReserved_(rightReservedPx) {}
+  explicit GfxRendererCanvas(GfxRenderer& renderer, int minY = 0, int bottomReservedPx = 0, int rightReservedPx = 0,
+                             const MapChromeRegister* chrome = nullptr)
+      : renderer_(renderer),
+        minY_(minY),
+        bottomReserved_(bottomReservedPx),
+        rightReserved_(rightReservedPx),
+        chrome_(chrome) {}
 
   void drawLine(int x1, int y1, int x2, int y2, int lineWidth, MapInk ink) override {
     const int maxX = renderer_.getScreenWidth() - 1;
@@ -116,8 +129,19 @@ class GfxRendererCanvas : public IMapCanvas {
       renderer_.fillRectDither(x1, y, x2 - x1 + 1, 1, colorFor(tone));
       return;
     }
-    // Stipple has no GfxRenderer equivalent, so it is painted pixel by pixel.
-    // Only every third pixel is touched, which is what makes that affordable.
+    // A dot grid has no GfxRenderer equivalent, so it is painted by hand. Not
+    // pixel by pixel though: the period is known, so a row with no dots on it is
+    // skipped whole and a row with dots is walked in strides. At 1 in 16 that is
+    // one drawPixel per sixteen columns rather than sixteen tests -- which makes
+    // the lightest tone the cheapest to paint, not the dearest.
+    const int period = MapTone::dotPeriod(tone);
+    if (period > 0) {
+      if ((y % period) != 0) return;
+      for (int x = MapTone::firstInkedX(x1, y, tone); x <= x2; x += period) {
+        renderer_.drawPixel(x, y, true);
+      }
+      return;
+    }
     for (int x = x1; x <= x2; ++x) {
       if (MapTone::inkAt(x, y, tone)) renderer_.drawPixel(x, y, true);
     }
@@ -176,9 +200,9 @@ class GfxRendererCanvas : public IMapCanvas {
   // still declared, so they stay here for builds that do carry them, and
   // fontIdForSize() skips whatever the renderer has not been given -- see the
   // note there, this cost a log flood once.
-  static constexpr int kLabelFontIds[] = {SMALL_FONT_ID,       UI_10_FONT_ID,       UI_12_FONT_ID,
-                                          NOTOSANS_12_FONT_ID, NOTOSANS_14_FONT_ID, NOTOSANS_16_FONT_ID,
-                                          NOTOSANS_18_FONT_ID};
+  static constexpr int kLabelFontIds[] = {MAP_SMALL_FONT_ID,   SMALL_FONT_ID,       UI_10_FONT_ID,
+                                          UI_12_FONT_ID,       NOTOSANS_12_FONT_ID, NOTOSANS_14_FONT_ID,
+                                          NOTOSANS_16_FONT_ID, NOTOSANS_18_FONT_ID};
 
   // GfxRenderer::drawText's y is the top of the ascender box (it adds the
   // ascender itself), which is exactly IMapCanvas's top-left contract.
@@ -189,11 +213,97 @@ class GfxRendererCanvas : public IMapCanvas {
     renderer_.drawText(fontId, x, y, utf8, ink == MapInk::Black, styleFor(bold));
   }
 
+  // Freely rotated text: GfxRenderer rasterises the string into a mask, and the
+  // rotation is MapTextMask's, shared with the host canvas so the preview and the
+  // panel run the same arithmetic rather than merely agreeing in intent.
+  bool drawTextRotated(int centreX, int centreY, const char* utf8, int sizePx, bool bold, MapInk ink, int outline,
+                       int rightX, int rightY, int downX, int downY) override {
+    if (utf8 == nullptr || *utf8 == '\0') return false;
+    const int fontId = fontIdForSize(sizePx);
+    if (fontId == 0) {
+      LOG_ERR("MAPCANVAS", "rotated text: no face for %d px", sizePx);
+      return false;
+    }
+    // **Static, not stack.** Two masks are 656 bytes, and this sits at the deepest
+    // point of the render chain (MapActivity::render -> MapRenderer::render ->
+    // drawContourLabels -> here) against the project's 256-byte local-variable
+    // rule. One render task, serialised by RenderLock, so a single pair is enough;
+    // the cost is 656 bytes of DRAM held for the life of the firmware instead of
+    // 656 bytes of a stack that is already carrying a deep call chain.
+    static MapTextMask mask;
+    static MapTextMask grown;
+    // Sets the extents; the zeroing it also does is redundant since
+    // renderTextMask clears the buffer itself (GfxRenderer.h).
+    mask.reset(MapTextMask::kMaxW, MapTextMask::kMaxH);
+    int w = 0, h = 0;
+    if (!renderer_.renderTextMask(fontId, utf8, styleFor(bold), mask.bits, MapTextMask::kMaxW, MapTextMask::kMaxW,
+                                  MapTextMask::kMaxH, w, h)) {
+      LOG_ERR("MAPCANVAS", "rotated text '%s' at %d px exceeds the %dx%d mask", utf8, sizePx, MapTextMask::kMaxW,
+              MapTextMask::kMaxH);
+      return false;
+    }
+    mask.w = w;
+    mask.h = h;
+    const bool black = ink == MapInk::Black;
+    if (outline > 0) {
+      if (mask.dilateInto(grown, outline)) {
+        mapTextMaskBlit(grown, centreX, centreY, rightX, rightY, downX, downY,
+                        [this, black](const int x, const int y) { renderer_.drawPixel(x, y, !black); });
+      } else {
+        // Refuse the whole label rather than ink digits with no outline. An
+        // outline was asked for because the number sits on the line it names;
+        // without it the digits are black on black and unreadable, which is worse
+        // than no number -- the next contour along carries the same information.
+        LOG_ERR("MAPCANVAS", "rotated text '%s': halo %d does not fit the %dx%d mask, label dropped", utf8, outline,
+                MapTextMask::kMaxW, MapTextMask::kMaxH);
+        return false;
+      }
+    }
+    mapTextMaskBlit(mask, centreX, centreY, rightX, rightY, downX, downY,
+                    [this, black](const int x, const int y) { renderer_.drawPixel(x, y, black); });
+    return true;
+  }
+
   void drawableRect(int& outX, int& outY, int& outWidth, int& outHeight) const override {
     outX = 0;
     outY = minY_;
     outWidth = renderer_.getScreenWidth() - rightReserved_;
     outHeight = renderer_.getScreenHeight() - minY_ - bottomReserved_;
+  }
+
+  // Ink already on the panel under this box, for the label placer's
+  // least-ink-wins test (IMapCanvas::inkCoverage). Straight off the
+  // framebuffer, which at label time holds the whole finished map: names are
+  // drawn last (MapRenderer::render).
+  //
+  // Reports 0/0 -- "unknown" -- when the framebuffer cannot be read, which is
+  // the framebuffer being lent out for a build or a grayscale strip target
+  // being active. The placer then falls back to first-fit, the layout this
+  // firmware had before the test existed.
+  void inkCoverage(const int x, const int y, const int width, const int height, const int stepPx, int& outInked,
+                   int& outSamples) const override {
+    outInked = 0;
+    outSamples = 0;
+    if (!renderer_.readbackAvailable()) return;
+
+    const int step = stepPx < 1 ? 1 : stepPx;
+    // Clamped to the panel, not to drawableRect: the reserved bands hold real
+    // ink and a box is never placed into them anyway, while clamping to a
+    // narrower rect would silently count the clipped part as clean.
+    const int x0 = x < 0 ? 0 : x;
+    const int y0 = y < 0 ? 0 : y;
+    const int xEnd = std::min(x + width, renderer_.getScreenWidth());
+    const int yEnd = std::min(y + height, renderer_.getScreenHeight());
+    for (int py = y0; py < yEnd; py += step) {
+      for (int px = x0; px < xEnd; px += step) {
+        ++outSamples;
+        if (renderer_.isPixelInked(px, py)) ++outInked;
+      }
+    }
+  }
+
+  bool areaReserved(int x, int y, int width, int height) const override {
+    return chrome_ != nullptr && chrome_->hits(x, y, width, height);
   }
 
  private:
@@ -256,8 +366,10 @@ class GfxRendererCanvas : public IMapCanvas {
         return Color::DarkGray;
       case MapAreaTone::Light:
         return Color::LightGray;
-      case MapAreaTone::Stipple:
-      case MapAreaTone::None:
+      default:
+        // Every dot grid, and None. Only the three above have a GfxRenderer
+        // dither behind them; the rest are painted by fillSpan and never reach
+        // here, which hasNativeDither is what guarantees.
         break;
     }
     return Color::Clear;
@@ -350,6 +462,9 @@ class GfxRendererCanvas : public IMapCanvas {
   int minY_ = 0;
   int bottomReserved_ = 0;
   int rightReserved_ = 0;
+  // Not owned: it lives in MapActivity and is rebuilt at the top of every
+  // frame, which is before this canvas is constructed.
+  const MapChromeRegister* chrome_ = nullptr;
   // Last resolved (size -> font id). Mutable because measureText/drawText are the
   // callers and the canvas is handed around by reference; the memo changes no
   // pixel. 0 is never a valid font id (fontIds.h reserves it as the not-found

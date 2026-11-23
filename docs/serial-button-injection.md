@@ -1,0 +1,252 @@
+# Pressing the buttons from the host: `CMD:BUTTON`
+
+Devel builds accept a serial command that presses a hardware button.
+
+```
+CMD:BUTTON down          ->  BUTTON_OK:down:0
+CMD:BUTTON back 1500     ->  BUTTON_OK:back:1500
+CMD:BUTTON middle        ->  BUTTON_ERR:unknown:back,confirm,left,right,up,down,power
+```
+
+Names: `back` `confirm` `left` `right` `up` `down` `power`. Case insensitive.
+Second argument is the hold in milliseconds, 0 (a tap) to 10000.
+
+Host side: `tools/press.py` in the parent repo.
+
+On the T5 S3 Pro this is worth more than on the X4: that board has one user
+switch plus the capacitive home key, so `up`, `down`, `left` and `right` have
+no thumb at all there (`docs/lilygo-t5s3-bringup.md`, and the button map in the
+parent repo's `docs/devices/lilygo-t5-s3-pro.md`).
+
+## Why
+
+Before this, a laptop could reach two screens and no more. `CMD:GOTO_MAP` and
+`CMD:GOTO_TILESYNC` put the map and the sync screen up; `CMD:SCREENSHOT` reads
+the panel back. Home, the file browser, the reader, settings, the map menu and
+every confirm prompt in between need a thumb on the device.
+
+Two costs came out of that. A screen nobody can walk to gets reviewed when
+somebody is standing at the device and not otherwise -- the same gap
+`CMD:GOTO_TILESYNC` was added to close (`docs/tile-freshness.md`, "The check
+queue is dots"). And a bug report that starts "press back twice in the reader"
+cannot be reproduced without the hardware in hand. The simulator has no thumb
+either, and still does not -- see "The simulator compiles it but cannot reach
+it" below.
+
+## Where it is injected
+
+`MappedInputManager::rawButton()` (`src/MappedInputManager.cpp`), in front of
+the real read:
+
+```
+hintButton(index, fn) || injectedButton(index, fn) || (gpio.*fn)(index)
+```
+
+The touch hint boxes already sit there, so an injected press is the second
+synthetic source on a path activities cannot tell from a thumb.
+
+Not in `HalGPIO`, deliberately. `lib/hal/` is replaced wholesale by the
+simulator's own `HalGPIO` (`docs/simulator.md`), so a HAL-level injector would
+have to be written twice and kept in sync. `src/` is compiled by both.
+
+The price of that choice: **three places read `HalGPIO` directly and never see
+an injected press.**
+
+| what | where | effect |
+|---|---|---|
+| long-press-to-sleep | `src/main.cpp`, `getPowerButtonHeldTime()` | `CMD:BUTTON power 5000` cannot sleep the device -- **read off the code, not measured** |
+| POWER+DOWN screenshot combo | `src/main.cpp` | not reachable; `CMD:SCREENSHOT` already is |
+| the reader's own POWER+DOWN check | `src/activities/reader/EpubReaderActivity.cpp` | not reachable |
+
+The first one is the good half. A host script cannot drop the port it is
+talking through.
+
+The short power press *is* covered: `main.cpp`'s force-refresh path reads
+`mappedInputManager.wasReleased(Power)`.
+
+## A press into an unknown screen is a write to persisted state
+
+**Paid for 2026-09-10.** A release pass sent `CMD:BUTTON confirm` and a run of
+`down` presses without a screenshot between them, to walk from the wait screen to
+Settings. The presses did not land where the script assumed. Afterwards the board
+came up with its GNSS wait limit reading "no limit" on a fresh boot, and a map
+session running on BLE.
+
+**What caused which is not established, and the first version of this section
+said it was.** The BLE session is equally explained by a stray Confirm activating
+the wait screen's own "Take position from the phone" row, which changes nothing
+persisted; the wait limit reading zero has no such explanation and does point at
+a menu. Calling both "the injection flipped two settings" was a cause named from
+one observation.
+
+What would settle it: read those two rows on the panel before pressing anything,
+and again after.
+
+The cost was not the settings either way. It was that the next screenshot showed
+a map session on BLE and a wait screen with no countdown, and **both read as
+defects in code written the same hour**. Ten minutes went into looking for a bug
+that was a button press.
+
+So: **one press, one screenshot, or do not press.** A queue of presses is only
+safe on a screen whose layout is already on the glass in front of you. This is
+also why the injector is worth having at all -- it is the only way to reach
+Settings from a laptop -- and why it must be driven like a thumb rather than like
+a script.
+
+## The timing model
+
+`src/DebugInput.cpp`. One press at a time, the rest queued (8 deep), each press
+advanced one step per input frame -- a frame being one `gpio.update()` in
+`loop()`, about 10 ms.
+
+```
+frame N     wasPressed + isPressed, held time 0
+frame N+k   isPressed, held time = now - down
+frame N+m   wasReleased once, held time = the total (>= the requested hold)
+frame N+m+1 idle; the next queued press may start
+```
+
+Three things in that shape are load-bearing:
+
+- **The release frame carries the total held time.** Half the UI reads
+  `wasReleased(X) && getHeldTime() < N` -- the reader's back button is one
+  (`src/activities/reader/ReaderUtils.h`). A release frame reporting zero would
+  make every long press look short.
+- **`getHeldTime()` answers the injected time while a press is down.**
+  `MappedInputManager::getHeldTime()` returns `DebugInput::heldMs()` whenever an
+  injected press owns the frame. Otherwise the real hardware time under it is a
+  stale zero and no `isPressed(X) && getHeldTime() >= N` path can ever fire.
+- **The idle frame after a release.** Without it two queued taps run into each
+  other as one long press, and `back back` would long-press to Home instead of
+  stepping up two levels.
+
+An injected press also counts as user input in `loop()`, for both the
+auto-sleep deadline and the CPU throttle. A host walking the UI otherwise
+watches the device throttle and then sleep under it.
+
+## Security
+
+Devel builds only: `ENABLE_BUTTON_CMD`, set in `default`, `sticky`, `t5s3pro`
+and `simulator`, absent from `gh_release`, `gh_release_rc` and `slim`. The release
+build has no injector compiled in at all -- `DebugInput.cpp` is empty there and
+the call sites inline to `false`.
+
+**Measured 2026-09-08**, not only reasoned from the `#ifdef`: a `gh_release`
+build carries no `BUTTON_OK` or `BUTTON_ERR` string and no `DebugInput` symbol,
+while the archived devel build carries one and three. So the check could have
+failed.
+
+**That is true of the ENV and false of what we actually ship.** Two boards,
+each running an image confirmed byte-identical to its published asset by
+`esp_app_desc` before the test, answered a press:
+
+| published image | board | reply |
+|---|---|---|
+| `explorink-t5s3pro-v0.2.2` | T5 S3 Pro, 2026-11-03 | `BUTTON_OK:back:0` |
+| `explorink-v0.2.2` (C3, X4 and X3) | X3, 2026-11-04 | `BUTTON_OK:down:0` |
+
+The X4 Pro image is untested -- the board was unplugged before it could be
+checked.
+
+**And the string counts above do not prove it; only the replies do.** All
+three published assets carry one `BUTTON_OK:` and three `BUTTON_ERR:`, which
+*looks* like the devel signature, but the 2026-09-08 `gh_release` measurement
+has not been re-run against a current build, so the zeros it recorded cannot
+be relied on as the contrast. Treat `strings` as unable to answer this and ask
+a board.
+
+So the published images are built from devel envs -- and
+`docs/public-release.md` says so plainly, in the 0.2.2 env table: `default`
+for the C3, `x4pro`, `t5s3pro`. Nobody had connected that table to this
+section. (An earlier version of this paragraph claimed the recipe did not
+record the env. It does.)
+
+**It is a tradeoff, not an oversight.** That release's rule is "the published
+image is the flashed image" -- flash a board, verify on the panel, publish
+those exact bytes. Verification runs on `CMD:BUTTON` and `CMD:SCREENSHOT`, so
+the env that can be verified is the env that carries them. Publishing a
+`gh_release` build instead would ship bytes nobody tested. Pick one; there is
+no option that is both today. And there is no `gh_release_t5s3pro` env at all,
+so for that board the hardened image cannot currently be built.
+
+Parent repo, T-2063; the maintainer's call 2026-11-03 was that it does not
+block a release and belongs in a security pass.
+
+**Do not re-derive this from `strings` alone.** `BUTTON_OK:` appears in all
+three images, so a presence check cannot tell a devel build from a release
+one -- it is the **count** against the 2026-09-08 baseline that discriminates,
+and only a device answers the question outright.
+
+The reason is the standing one: the device gets lost or stolen, and the person
+holding it can plug in USB. A press injector is a thumb for that person -- walk
+the menus, open the rider's books, read their pins, all without touching the
+device's buttons.
+
+Serial only. It is **not** in the `MapCommandParser` grammar, which BLE shares
+(`src/activities/map/MapCommandParser.h`). BLE advertises with no pairing and
+no bonding (`docs/ble-advertising.md`), so a BLE version would hand that thumb
+to anyone in radio range instead of to someone holding a cable. Both channels
+are unauthenticated today (T-222 in the parent repo's `docs/TODO.md`), which is
+why the cable is the smaller surface rather than a safe one.
+
+The command reveals nothing by itself: the reply is the button name back.
+
+## The simulator compiles it but cannot reach it
+
+`src/` is shared, so the simulator build carries `DebugInput` and the injection
+point. It has no way to send a command: its `HardwareSerial::available()`
+returns 0 (`src/HardwareSerial.h` in the simulator fork) -- read off that
+header, never tried -- so nothing ever reaches `main.cpp`'s `CMD:` branch
+there. Driving the simulator's UI from a
+script needs a serial-input path in the fork first, or a different door
+altogether -- the fork's JSON socket (`docs/simulator.md`).
+
+## Tested
+
+- `test/debug_input` -- nine host tests over the frame shape: press and release
+  edges, hold, two taps not merging, queue order, a full queue refused, a
+  double pump in one frame, name parsing. `ctest` runs them with the rest.
+- **Verified on the LilyGo T5 S3 Pro, 2026-09-08**, build `db651273`, env
+  `t5s3pro`, over `/dev/ttyACM0` with `tools/press.py`. A whole walk ran from
+  the laptop with no thumb on the board: `down` moved the Home selection from
+  Trips to Sync (the disabled Pins and Wallet rows skipped, as a thumb would),
+  `up confirm` opened Explore, `confirm` opened the map menu, `confirm` again
+  entered Look around, and `back back` came out to Home. Each step was read
+  back with `CMD:SCREENSHOT`.
+- **All seven names were pressed.** `left` and `right` pan the Look around view
+  east and west: `right` then `left` came back to the same frame, 16 differing
+  pixels out of 518,400, in two clusters on map linework (around x=325 y=362
+  and x=330 y=556, listed pixel by pixel and looked at zoomed), so the two
+  steps really are one step each and symmetric. The first write-up called those
+  pixels a label's bounding box; that was inferred from the box and never
+  looked at. A bounding box drawn around two clusters says nothing about what
+  is inside them.
+- **The hold works, and a tap is not a hold.** In Look around, `--hold 1500 up`
+  zoomed the map one rung (scale bar 500 m to 200 m) instead of panning, which
+  is the `getHeldTime() >= kObserveZoomHoldMs` path (600 ms,
+  `MapActivity.cpp`). A plain `up` on the same screen panned north with the
+  zoom unchanged. So the injected held time lands on both sides of a real
+  600 ms threshold.
+- **`power` was pressed, but not held.** The run sent a 0 ms tap, which no real
+  button would have slept either, so that check could not have failed. It left
+  the map on screen and the port up. The sleep path reads `HalGPIO` directly
+  and an injected press never reaches it -- read off `main.cpp`, and open until
+  a `--hold 5000 power` run says otherwise (T-286 in the parent repo).
+- **It counts as user input.** Both runs whose log was captured (`press.py -v`)
+  logged `[PWR] Restoring normal CPU frequency` on the press. That is the
+  `userInput` flag in `loop()`; the auto-sleep deadline reads the same flag one
+  line later, so the same press resets the sleep timer -- **read off
+  `main.cpp`**, not timed out on hardware. The map screen holds
+  `preventAutoSleep()` anyway, so timing it out needs the Home screen and a
+  full timeout of pressing (T-286).
+- **Run on a C3 on 2026-09-09, on an Xteink X3.** Env `default`, build
+  `92c949ae`: `CMD:BUTTON back`, `up` and `down` each answered `BUTTON_OK`, and
+  on the map screen `up` zoomed one rung, the scale bar going 500 m to 200 m. So
+  the injector is confirmed on both chip families and the board-agnostic claim
+  above is no longer an inference.
+- **The device has to be awake first.** At 10 MHz it does not read the line at
+  all, so a press sent to an idle device is silently dropped -- the same trap
+  that swallows `CMD:GOTO_MAP` (`power-management.md`, "And starves RX
+  outright"). It cost six minutes on the X3 run above.
+- **Not run on an X4 or an X4 Pro.** The X4 Pro has since been flashed from
+  `t5s3-to-x4pro` but the injector was not exercised there.

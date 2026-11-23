@@ -19,39 +19,15 @@ namespace MapViewport {
 struct ZoomStep {
   double mpp;  // ground metres per pixel
   uint8_t z;   // tile zoom of the LOD this step reads
-  // Whether this rung draws the buildings layer at all.
+  // What this rung draws, and how, is NOT here -- it is data/mapstyle.json's
+  // `when` blocks, resolved into a style per (mode, rung) at build time
+  // (MapStyleTable.h, docs/map-data-spec.md "Style is per mode and per rung").
+  // Three fields lived here until 2026-08-25: `buildings`, `builtUp` and
+  // `maxLabels`. They were drawing decisions in a table beside the style rather
+  // than in it, which meant two places to look and two places to edit.
   //
-  // A rung decision, not a style one: mapstyle.json says what a building looks
-  // like, and this says where one is worth drawing. Set false and the layer is
-  // never opened, so it costs no card read either
-  // (MapRenderer, MapStyle::buildingsEnabled).
-  //
-  // Only rung 0 draws them, decided by the maintainer 2026-08-06. At 1 m/px a
-  // building is 21 px across and is what the rider is looking at -- that rung
-  // exists for "where exactly am I". At 3 m/px it is 7 px, and measured on
-  // hardware the layer cost 4,122 ms of that rung's 7,463: 55 % of the slowest
-  // rung on the ladder, for texture. Rungs 2-4 read tiles that carry no
-  // buildings at all (mapbuilder/build_config.json), so false there only skips
-  // an empty pass.
-  //
-  // This is the one place the device's drawing depends on the zoom rung.
-  // docs/map-data-spec.md's "the device needs no zoom-dependent style" is
-  // amended by it, and says so.
-  bool buildings;
-  // Whether this rung draws the built-up landuse wash.
-  //
-  // The mirror of `buildings`, and for the same reason read backwards: at rung 0
-  // individual buildings are the thing being looked at, and a wash under them
-  // would be a second grey adding nothing (docs/map-data-spec.md's original
-  // argument for leaving built-up out of the detail LOD entirely). From rung 1
-  // out there are no buildings, and the wash is what says "village" -- without
-  // it that rung showed roads in empty white.
-  //
-  // The tile carries built-up at every LOD since 2026-08-06
-  // (mapbuilder/build_config.json); this decides which rung draws it. Not a read
-  // saving -- the landuse layer is read for forest regardless -- so it is a
-  // drawing decision only, and landuse is a few KB.
-  bool builtUp;
+  // What stays here is what is not a style: the ground scale, the LOD, and the
+  // two numbers below that are refresh policy rather than appearance.
   // Marker size at this rung, in eighths of the full marker (8 = the 54 px ring
   // MapActivity has always drawn). A per-rung *drawing* decision, same kind as
   // the two above and in this table for the same reason: one row per rung, no
@@ -83,22 +59,6 @@ struct ZoomStep {
   // bude vizualne vacsi skok"). Unverified as a comfort call -- it is a number
   // to look at on a ride, not one measured.
   uint8_t minMovePx;
-  // Most place names this rung may draw, capped again by the style's own
-  // `max_labels` (docs/place-labels.md). A per-rung drawing decision, same kind
-  // as the three above.
-  //
-  // Why it varies: a rung's cap should follow how much ground is on the panel,
-  // not how many places happen to be in the tile range. Rung 0 shows 480 x 800 m
-  // -- one settlement, and a dozen names there would be a dozen names for one
-  // village. Rung 6 shows 24 x 40 km, where a dozen names is a map of the region
-  // and the whole reason to be at that rung. Maintainer's call 2026-08-12:
-  // "pri z0 urcite je zbytocne mat 12 labelov, pri z6 to uz moze mat zmysel".
-  //
-  // Unverified as a comfort call, like `minMovePx`: these are numbers to look at
-  // on a ride, not measured ones. What *is* measured is the cost -- 94 ms for
-  // five labels at rung 6 (docs/place-labels.md) -- so the cap is about
-  // legibility, not about time.
-  uint8_t maxLabels;
 };
 
 inline constexpr int kZoomStepCount = kMapZoomStepCount;
@@ -114,15 +74,21 @@ inline constexpr int kZoomStepCount = kMapZoomStepCount;
 // format cannot address yet (int16 tile-local offsets, 39 km tile) -- these two
 // rungs deliberately ship before that work, because the renders held up and the
 // only number still missing is how long the reset takes on the panel.
+// Marker scale steps down 8,8,8,7,7,6,5 -- judged on a real phone running the
+// firmware (org.explorink.simulator on a Samsung S10, 2026-08-24): rungs 0-2
+// at full size read fine, 3-4 at full size read too big, 5-6's existing 6/8
+// and 5/8 already read fine. One step of 1/8 at rungs 3-4 closes that gap
+// without touching the two rungs already confirmed, and keeps the ladder a
+// gradual taper instead of a flat run into a sudden drop.
 inline constexpr ZoomStep kZoomLadder[kZoomStepCount] = {
-    //  mpp   z  buildings  builtUp  marker/8  minMove  maxLabels
-    {1.0, 13, true, false, 8, 12, 3},   // step 0, detail -- buildings, no wash under them
-    {3.0, 13, false, true, 8, 10, 4},   // step 1, detail -- the wash instead of buildings
-    {6.0, 12, false, true, 8, 8, 6},    // step 2, regional
-    {12.0, 11, false, true, 8, 8, 8},   // step 3, overview
-    {20.0, 11, false, true, 8, 6, 10},  // step 4, overview
-    {32.0, 11, false, true, 6, 3, 12},  // step 5, overview -- z11 past its natural range
-    {45.0, 11, false, true, 5, 2, 14},  // step 6, overview -- 24 x 40 km on the panel
+    //  mpp   z  marker/8  minMove
+    {1.0, 13, 8, 12},   // step 0, detail
+    {3.0, 13, 8, 10},   // step 1, detail
+    {6.0, 12, 8, 8},    // step 2, regional
+    {12.0, 11, 7, 8},   // step 3, overview
+    {20.0, 11, 7, 6},   // step 4, overview
+    {32.0, 11, 6, 3},   // step 5, overview -- z11 past its natural range
+    {45.0, 11, 5, 2},   // step 6, overview -- 24 x 40 km on the panel
 };
 
 // The ladder rung for a step, clamped -- same contract as markerYForStep(): a
@@ -162,6 +128,34 @@ inline constexpr uint32_t kMaxTiles = 16;
 // preview renders at. On the device the vertical anchor comes off the
 // marker-height ladder below instead, which the buttons drive.
 inline constexpr int16_t kAnchorScreenX = kDefaultMapStyle.markerXPx;
+
+// kAnchorScreenX above is only correct on a panel that is actually 480 px
+// wide in portrait logical coordinates -- X4, X4 Pro, de-link, Sticky
+// (freeink-sdk/libs/hardware/BoardConfig/include/BoardConfig.h). X3 is
+// 528 px wide there and the LilyGo T5S3 is 540 px
+// (docs/devices/lilygo-t5-s3-pro.md), both real target devices (root
+// CLAUDE.md, "Target devices: not just X4"). Reading the raw constant on
+// either draws the marker off past one edge instead of near the screen's
+// horizontal middle, because 230 was tuned against a 480 px canvas. Firmware
+// call sites use this instead, scaled to whatever width the active board
+// actually reports (renderer.getScreenWidth()) -- host tools (test/map_preview,
+// test/map_window) keep reading kAnchorScreenX unscaled, because they always
+// render the canonical 480x800 grid this constant is authored against.
+inline constexpr int16_t kStyleGridWidthPx = 480;
+inline int16_t anchorScreenX(int screenWidthPx) {
+  return static_cast<int16_t>(static_cast<int32_t>(kAnchorScreenX) * screenWidthPx / kStyleGridWidthPx);
+}
+
+// How far one pan press moves the frame, as a percentage of the screen. 30 %
+// rather than 50 %: half a screen jumps far enough that the rider loses the
+// place they were looking at, and the cost per press (a tile read and a
+// refresh) is the same at any step size (asked for on hardware 2026-08-17).
+//
+// Lives here rather than in MapActivity, where it started, because it is a
+// viewport quantity like the anchor above and the ladders below -- and because
+// MapActivity does not compile on the host, so a host tool that pans (the
+// device window, test/map_window) could only have copied the number.
+inline constexpr int kPanStepPercent = 30;
 inline constexpr int16_t kAnchorScreenY = kDefaultMapStyle.markerYPx;
 
 inline constexpr int kMarkerStepCount = kMapMarkerStepCount;

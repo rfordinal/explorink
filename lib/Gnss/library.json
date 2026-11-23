@@ -1,0 +1,10 @@
+{
+  "name": "Gnss",
+  "version": "1.0.0",
+  "description": "FreeInk GNSS: NMEA 0183 parser for a UART-attached receiver (tested against a Quectel L76K). Board-agnostic - pins, baud and the power rail are injected through GnssConfig.",
+  "keywords": "gnss, gps, nmea, l76k, uart, eink",
+  "authors": [{"name": "FreeInk SDK Contributors"}],
+  "dependencies": {},
+  "platforms": "espressif32",
+  "frameworks": ["arduino"]
+}

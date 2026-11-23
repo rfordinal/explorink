@@ -21,11 +21,31 @@ class HalPowerManager {
   mutable int _batteryCachedPercent = 0;         // Last read battery percentage (0-100)
   mutable unsigned long _batteryLastPollMs = 0;  // Timestamp of last battery read in milliseconds
 
+  mutable bool _chargingCached = false;
+  mutable unsigned long _chargingLastPollMs = 0;
+
   enum LockMode { None, NormalSpeed };
   LockMode currentLockMode = None;
   SemaphoreHandle_t modeMutex = nullptr;  // Protect access to currentLockMode
 
  public:
+  // The idle floor with the radio down. 10 MHz on a C3 with no PSRAM; 80 on a
+  // PSRAM board, and that 80 is a correctness bound too, not a tuning choice.
+  //
+  // On S3 the MSPI clock -- flash and PSRAM both -- is bound to the CPU's clock
+  // source (MSPI_TIMING_LL_FLASH_CPU_CLK_SRC_BINDED, hal/esp32s3/mspi_ll.h), so
+  // dropping to the crystal has to retune MSPI in the same breath. ESP-IDF does
+  // that in esp_clk_utils_mspi_speed_mode_sync_before_cpu_freq_switching(), and
+  // every caller of it lives in esp_pm, which needs CONFIG_PM_ENABLE -- not set
+  // here. Arduino's setCpuFrequencyMhz() goes straight to
+  // rtc_clk_cpu_freq_set_config_fast() and touches no MSPI timing at all. So
+  // flash and PSRAM would keep running tuned for a clock that is gone.
+  //
+  // Exactly the same shape as BLE_SAFE_FREQ below: the defence compiles out.
+  // Note the two are independent -- radio down does NOT lower this floor on a
+  // PSRAM board. docs/power-management.md, "A PSRAM board's floor is 80 MHz
+  // too". Came from upstream CrossPoint f42fab1c with no comment; the mechanism
+  // above is our reading, unverified on hardware.
 #if BOARD_HAS_PSRAM
   static constexpr int LOW_POWER_FREQ = 80;  // MHz
 #else
@@ -68,6 +88,21 @@ class HalPowerManager {
 
   // Get battery percentage (range 0-100)
   uint16_t getBatteryPercentage() const;
+
+  // True when the battery is actively charging. Cached for CHARGING_POLL_MS:
+  // HalGPIO::update() calls this (via isUsbConnected()) on every main-loop
+  // iteration, ~100 Hz on the map screen, and on boards with no usbDetect pin
+  // (T5 S3 Pro, Sticky) the uncached read is a real I2C transaction on a bus
+  // shared with the GT911 touch controller. Found in code review 2026-09-18,
+  // before it shipped -- see docs/power-management.md, "The header's
+  // charging bolt".
+  //
+  // Also guards against a transient I2C read failure: a dropped read keeps
+  // the last known-good value instead of reporting "not charging", so one
+  // bad transaction cannot look like an unplug/replug and cost two spurious
+  // e-ink repaints.
+  bool isCharging() const;
+  static constexpr unsigned long CHARGING_POLL_MS = 500;  // ms
 
   // Raw battery voltage in millivolts, averaged over `samples` reads. 0 when
   // the board has no battery backend.

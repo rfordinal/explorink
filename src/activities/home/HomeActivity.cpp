@@ -28,20 +28,64 @@ constexpr int kRowHeight = 60;
 
 // The menu, in the order it is drawn. Flash-resident: static constexpr, so the
 // table costs no DRAM.
+//
+// Every glyph here is Lucide, as the icon rule asks (the parent repo's CLAUDE.md,
+// "Icons: prefer Lucide"): backpack, map-pin, wallet, refresh-cw, wifi, settings,
+// and chevron-right for the row arrow. None is hand-drawn, and none of the older
+// hand-rolled bitmaps (components/icons/wifi.h, settings2.h, transfer.h,
+// bookmark.h) is used on this screen any more.
+//
+// `icon_explore` is the one that is not Lucide, on purpose: it is the ExplorInk
+// brand mark (src/images/logo.svg), asked for by the maintainer 2026-08-21. A
+// brand mark has no Lucide equivalent.
+//
+// They are baked by scripts/gen_home_icons.py rather than the SDK's
+// libs/assets/Icons/tools/gen_icons.py -- same freeink::Icon output, but the SDK
+// script needs rsvg-convert (absent here) and is square-only, and the mark is
+// 32x31. components/icons/home_icons.h carries the full reasoning.
 const HomeActivity::Row* HomeActivity::rows() {
   static constexpr Row kRows[] = {
-      {HomeMenuItem::MAP, StrId::STR_HOME_EXPLORE, &icon_explore, true},
-      {HomeMenuItem::TRIPS, StrId::STR_HOME_TRIPS, &icon_trips, false},
-      {HomeMenuItem::PINS, StrId::STR_HOME_PINS, &icon_pins, false},
-      {HomeMenuItem::WALLET, StrId::STR_HOME_WALLET, &icon_wallet, true},
-      {HomeMenuItem::TILE_SYNC, StrId::STR_HOME_SYNC, &icon_sync, true},
-      {HomeMenuItem::FILE_TRANSFER, StrId::STR_FILE_TRANSFER, &icon_transfer, true},
+      {HomeMenuItem::MAP, StrId::STR_HOME_EXPLORE, &icon_explore},
+      {HomeMenuItem::TRIPS, StrId::STR_HOME_TRIPS, &icon_trips},
+#if defined(ENABLE_LORA_MESH) && ENABLE_LORA_MESH
+      // Who else is out there. **Named for the feature and not for the radio**,
+      // 2026-10-30: the row said "LoRa nodes" and the map menu said "Group"
+      // for the same people, and a rider has no reason to know which radio
+      // carried a position -- the group layer takes them from LoRa, from a
+      // phone relay over BLE and from the console alike
+      // (../../../docs/group-markers.md, "The layer does not know which radio
+      // spoke").
+      //
+      // **Third, under Trips** (maintainer's call, 2026-10-30), not down by
+      // Settings where it first landed. The top of this list is what the rider
+      // reaches for before walking out: where am I, which trip, who is with
+      // me. Sync and File Transfer are desk jobs done once, and the bench row
+      // below them is not a rider's row at all -- putting the group behind
+      // them ranked it as plumbing.
+      //
+      // Still gated on ENABLE_LORA_MESH rather than ENABLE_GROUP_MARKERS,
+      // because what this screen *does* is still LoRa: two of its three
+      // sections are the radio's controls and the nodes it hears. A board with
+      // the group layer and no radio (x4pro, simulator) keeps its roster over
+      // the console, and gets the Settings tab without this row.
+      // The badge says LoRa even though the row does not, and the two are not
+      // in tension: the *name* is the feature, because the layer is
+      // transport-neutral, while the *badge* is about this screen, which
+      // really is the radio's -- its controls, and the nodes it hears. A
+      // rider who has to find where the radio lives has one place to look.
+      {HomeMenuItem::GROUP, StrId::STR_GROUP_TITLE, &icon_group, StrId::STR_LORA_BADGE, &icon_lora_badge},
+#endif
+      // The document wallet. Its activity lives on this branch; on develop the
+      // enum value has no row at all (../../../docs/wallet-viewer.md).
+      {HomeMenuItem::WALLET, StrId::STR_HOME_WALLET, &icon_wallet},
+      {HomeMenuItem::TILE_SYNC, StrId::STR_HOME_SYNC, &icon_sync},
+      {HomeMenuItem::FILE_TRANSFER, StrId::STR_FILE_TRANSFER, &icon_transfer},
 #if defined(ENABLE_PREVIEW_BENCH) && ENABLE_PREVIEW_BENCH
       // The grayscale bench is a build-flag lab instrument, not a rider's row
       // (platformio.ini).
-      {HomeMenuItem::PREVIEW, StrId::STR_PREVIEW, &icon_settings, true},
+      {HomeMenuItem::PREVIEW, StrId::STR_PREVIEW, &icon_settings},
 #endif
-      {HomeMenuItem::SETTINGS_MENU, StrId::STR_SETTINGS_TITLE, &icon_settings, true},
+      {HomeMenuItem::SETTINGS_MENU, StrId::STR_SETTINGS_TITLE, &icon_settings},
   };
   static_assert(sizeof(kRows) / sizeof(kRows[0]) == kRowCount, "kRowCount must match the table");
   return kRows;
@@ -55,36 +99,28 @@ int HomeActivity::indexOf(const HomeMenuItem item) {
   return 0;
 }
 
-int HomeActivity::nextSelectable(const int from, const int step) const {
-  const Row* table = rows();
-  int index = from;
-  // The walk visits at most kRowCount rows, so a table with every row disabled
-  // returns `from` instead of looping.
-  for (int tries = 0; tries < kRowCount; ++tries) {
-    index = (index + step + kRowCount) % kRowCount;
-    if (table[index].enabled) return index;
-  }
-  return from;
-}
+int HomeActivity::stepRow(const int from, const int step) { return (from + step + kRowCount) % kRowCount; }
 
 void HomeActivity::onEnter() {
   Activity::onEnter();
 
   selectorIndex = initialMenuItem == HomeMenuItem::NONE ? 0 : indexOf(initialMenuItem);
-  if (!rows()[selectorIndex].enabled) selectorIndex = nextSelectable(selectorIndex, 1);
 
   // Trigger first update
   requestUpdate();
 }
 
 void HomeActivity::activate(const int index) {
-  if (index < 0 || index >= kRowCount || !rows()[index].enabled) return;
+  if (index < 0 || index >= kRowCount) return;
   switch (rows()[index].item) {
     case HomeMenuItem::FILE_TRANSFER:
       onFileTransferOpen();
       break;
     case HomeMenuItem::MAP:
       onMapOpen();
+      break;
+    case HomeMenuItem::TRIPS:
+      onTripsOpen();
       break;
     case HomeMenuItem::TILE_SYNC:
       onTileSyncOpen();
@@ -95,6 +131,11 @@ void HomeActivity::activate(const int index) {
 #if defined(ENABLE_PREVIEW_BENCH) && ENABLE_PREVIEW_BENCH
     case HomeMenuItem::PREVIEW:
       onPreviewOpen();
+      break;
+#endif
+#if defined(ENABLE_LORA_MESH) && ENABLE_LORA_MESH
+    case HomeMenuItem::GROUP:
+      onGroupOpen();
       break;
 #endif
     case HomeMenuItem::SETTINGS_MENU:
@@ -110,23 +151,23 @@ void HomeActivity::loop() {
   constexpr int count = kRowCount;
 
   buttonNavigator.onNext([this] {
-    selectorIndex = nextSelectable(selectorIndex, 1);
+    selectorIndex = stepRow(selectorIndex, 1);
     requestUpdate();
   });
 
   buttonNavigator.onPrevious([this] {
-    selectorIndex = nextSelectable(selectorIndex, -1);
+    selectorIndex = stepRow(selectorIndex, -1);
     requestUpdate();
   });
 
   const auto swipe = mappedInput.wasSwipe();
   if (swipe == MappedInputManager::SwipeDir::Up) {
-    selectorIndex = nextSelectable(selectorIndex, 1);
+    selectorIndex = stepRow(selectorIndex, 1);
     requestUpdate();
     return;
   }
   if (swipe == MappedInputManager::SwipeDir::Down) {
-    selectorIndex = nextSelectable(selectorIndex, -1);
+    selectorIndex = stepRow(selectorIndex, -1);
     requestUpdate();
     return;
   }
@@ -137,7 +178,6 @@ void HomeActivity::loop() {
   int menuRow = -1;
   const auto menuTouch = mappedInput.rowTouch(menuRow, menuTop, kRowHeight, count, 0, INT32_MAX, kRowHeight);
   if (menuTouch != MappedInputManager::RowTouch::None) {
-    if (!rows()[menuRow].enabled) return;
     if (menuTouch == MappedInputManager::RowTouch::Down) {
       if (selectorIndex != menuRow) {
         selectorIndex = menuRow;
@@ -170,12 +210,15 @@ void HomeActivity::render(RenderLock&&) {
 
   const int menuTop = headerTop + HOMEHEADER_HEIGHT + kHeaderGap;
 
-  // The theme draws rows, not menu items: 7 x 12 bytes of stack, well inside the
+  // The theme draws rows, not menu items: 5 x 8 bytes of stack, well inside the
   // 256-byte local budget (../../../CLAUDE.md, The Resource Protocol).
   const Row* table = rows();
   BaseTheme::HomeRow drawRows[kRowCount];
   for (int i = 0; i < kRowCount; ++i) {
-    drawRows[i] = BaseTheme::HomeRow{I18n::getInstance().get(table[i].label), table[i].icon, table[i].enabled};
+    drawRows[i] = BaseTheme::HomeRow{
+        I18n::getInstance().get(table[i].label), table[i].icon,
+        table[i].badgeLabel == StrId::STR_NONE_OPT ? nullptr : I18n::getInstance().get(table[i].badgeLabel),
+        table[i].badgeIcon};
   }
   GUI.drawHomeMenu(renderer, Rect{0, menuTop, pageWidth, pageHeight - menuTop - metrics.buttonHintsHeight}, drawRows,
                    kRowCount, selectorIndex, kRowHeight);
@@ -190,9 +233,16 @@ void HomeActivity::onSettingsOpen() { activityManager.goToSettings(); }
 
 void HomeActivity::onFileTransferOpen() { activityManager.goToFileTransfer(); }
 
-// The picker first, then the map. It falls through to the map on its own when
-// the card has no routes (ActivityManager::goToRouteSelect).
-void HomeActivity::onMapOpen() { activityManager.goToRouteSelect(); }
+// Straight to the map, no picker -- that is now Trips' job (onTripsOpen()).
+// The satellite wait sits in front of the map on a build with a receiver, and
+// falls through to the map itself on every other build and setting
+// (ActivityManager::goToGnssAcquire()).
+void HomeActivity::onMapOpen() { activityManager.goToGnssAcquire(); }
+
+// The trip picker lives here, not on a separate row: Trips is where a rider
+// already looks for "which trip", so it opens RouteSelectActivity rather than
+// its own screen.
+void HomeActivity::onTripsOpen() { activityManager.goToRouteSelect(); }
 
 void HomeActivity::onTileSyncOpen() { activityManager.goToTileSync(); }
 
@@ -200,4 +250,7 @@ void HomeActivity::onWalletOpen() { activityManager.goToWallet(); }
 
 #if defined(ENABLE_PREVIEW_BENCH) && ENABLE_PREVIEW_BENCH
 void HomeActivity::onPreviewOpen() { activityManager.goToPreview(); }
+#endif
+#if defined(ENABLE_LORA_MESH) && ENABLE_LORA_MESH
+void HomeActivity::onGroupOpen() { activityManager.goToGroup(); }
 #endif

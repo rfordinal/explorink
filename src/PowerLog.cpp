@@ -7,6 +7,8 @@
 #include <Logging.h>
 #include <PowerTelemetry.h>
 
+#include "GnssAccess.h"
+
 namespace {
 
 constexpr const char* kLogTag = "PWRLOG";
@@ -22,10 +24,55 @@ constexpr const char* kLogTag = "PWRLOG";
 // by build (docs/power-plan.md, run 1).
 constexpr const char* kHeader =
     "uptime_s,batt_mv,batt_pct,cpu_mhz,full_clock_ms,throttled_ms,loops,loop_busy_ms,loop_max_ms,"
-    "ref_full,ref_half,ref_fast,ref_window,panel_busy_ms,heap,min_heap,ble,build\n";
+    "ref_full,ref_half,ref_fast,ref_window,panel_busy_ms,heap,min_heap,ble,build"
+    // Appended after `build`, never inserted, for the reason above. Two
+    // questions these answer and panel_busy_ms cannot:
+    //
+    // busy_*_ms -- per-waveform time. One merged total made a window and a
+    // whole-panel push indistinguishable whenever both landed in the same
+    // minute. Recovering them by hand on 2026-09-09 meant keeping only rows
+    // where exactly one counter moved, which left the whole-panel population
+    // at n=1 inside the one walk that mattered.
+    //
+    // win_* -- window requests by call site. ref_window merged a per-frame
+    // marker move with the debug overlay's 5 s timer, a status strip and
+    // closing chrome, so its mean described no operation that exists (T-277).
+    //
+    // async_inline -- how often an "async" refresh finished inside the call
+    // that started it, which is panel time the log used to drop. Expected 0 on
+    // a deferring driver and equal to the async call count on every
+    // LgfxEpdDriver board.
+    ",busy_full_ms,busy_half_ms,busy_fast_ms,busy_win_ms"
+    ",win_marker,win_overlay,win_status,win_chrome,win_other,async_inline"
+#ifdef ENABLE_GNSS_CMD
+    // Appended, not inserted, so `build` keeps the position every earlier script
+    // reads it at. Only on a build that has a receiver: powercsv.py maps fields
+    // to names off the header line and the header is written once per boot
+    // (see below), so a file holding rows from both kinds of build stays
+    // readable.
+    //
+    // **These exist because the walk of 2026-09-04 produced no evidence.**
+    // Fifteen minutes outdoors with the receiver on and no position, and
+    // nothing on the card said why: `gnss.csv` records one row per *accepted*
+    // fix (GnssLog.h), so it is empty exactly when the question is "why is
+    // there no fix", and `power.csv` said nothing about GNSS at all. These five
+    // separate "the receiver saw nothing" from "the receiver saw satellites and
+    // could not solve", which is the whole question and needs no cable.
+    //
+    // `used`, `inview` and `tracked` are three different counts and the gap
+    // between them is the diagnosis: inview off the almanac, tracked from a
+    // non-zero C/N0, used in the solution (main.cpp's CMD:GNSS handler).
+    ",gnss_run,gnss_inview,gnss_tracked,gnss_bestsnr,gnss_q"
+#endif
+    "\n";
 
-// 0 = BLE stack down (any screen but the map), 1 = advertising with nobody
-// connected, 2 = a central is connected. Three states rather than a bool
+// 0 = BLE stack down, 1 = advertising with nobody connected, 2 = a central is
+// connected.
+//
+// 0 used to mean "any screen but the map" and no longer does: since 2026-09-04
+// a map session with the receiver as its position source runs no BLE at all
+// (MapActivity's bleInUse_), so 0 covers that too. A row's screen is not
+// recoverable from this column alone. Three states rather than a bool
 // because they are three different radio duty cycles, and telling them apart is
 // most of what a power log is for.
 uint8_t bleState() {
@@ -50,7 +97,7 @@ void PowerLog::tick() {
   nextDueMs = now + kIntervalMs;
 
   const bool fresh = !Storage.exists(kPath);
-  // A card that has never had tiles pushed to it has no /trailink yet, and
+  // A card that has never had tiles pushed to it has no /explorink yet, and
   // O_CREAT does not create the parent.
   if (fresh) Storage.ensureDirectoryExists(kDir);
   HalFile file = Storage.open(kPath, O_WRITE | O_CREAT | O_APPEND);
@@ -81,7 +128,7 @@ void PowerLog::tick() {
   // TRAILINK_VERSION goes through %s, never concatenated into the format
   // string: it carries a branch name, and a '%' in one would make printf read
   // an argument that was never passed.
-  file.printf("%lu,%u,%u,%u,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%u,%s\n",
+  file.printf("%lu,%u,%u,%u,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%u,%s",
               static_cast<unsigned long>(s.uptimeS), static_cast<unsigned>(powerManager.getBatteryMillivolts()),
               static_cast<unsigned>(powerManager.getBatteryPercentage()), static_cast<unsigned>(s.cpuMhz),
               static_cast<unsigned long>(s.fullClockMs), static_cast<unsigned long>(s.throttledMs),
@@ -91,6 +138,27 @@ void PowerLog::tick() {
               static_cast<unsigned long>(s.refreshWindow), static_cast<unsigned long>(s.panelBusyMs),
               static_cast<unsigned long>(ESP.getFreeHeap()), static_cast<unsigned long>(ESP.getMinFreeHeap()),
               static_cast<unsigned>(bleState()), TRAILINK_VERSION);
+
+  file.printf(",%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu", static_cast<unsigned long>(s.busyFullMs),
+              static_cast<unsigned long>(s.busyHalfMs), static_cast<unsigned long>(s.busyFastMs),
+              static_cast<unsigned long>(s.busyWindowMs),
+              static_cast<unsigned long>(s.windowBySite[static_cast<uint8_t>(PowerTelemetry::WindowSite::Marker)]),
+              static_cast<unsigned long>(s.windowBySite[static_cast<uint8_t>(PowerTelemetry::WindowSite::Overlay)]),
+              static_cast<unsigned long>(s.windowBySite[static_cast<uint8_t>(PowerTelemetry::WindowSite::Status)]),
+              static_cast<unsigned long>(s.windowBySite[static_cast<uint8_t>(PowerTelemetry::WindowSite::Chrome)]),
+              static_cast<unsigned long>(s.windowBySite[static_cast<uint8_t>(PowerTelemetry::WindowSite::Other)]),
+              static_cast<unsigned long>(s.asyncCompletedInline));
+
+#ifdef ENABLE_GNSS_CMD
+  // gnss_run first, because every other column here is meaningless without it:
+  // the accessors answer 0 both when the receiver is stopped and when it is
+  // running and seeing nothing, and those are not the same finding.
+  const GnssFix& gfix = gnss.fix();
+  file.printf(",%u,%u,%u,%u,%u", gnss.running() ? 1u : 0u, static_cast<unsigned>(gnss.satsInView()),
+              static_cast<unsigned>(gnss.satsWithSignal()), static_cast<unsigned>(gnss.bestSnr()),
+              static_cast<unsigned>(gfix.quality));
+#endif
+  file.print('\n');
 
   // Explicit: the row must be on the card before the next one is due, and this
   // file is written to across a whole ride that may end with a flat battery

@@ -31,10 +31,18 @@ class PpmCanvas : public IMapCanvas {
   // close.
   bool measureText(const char* utf8, int sizePx, bool bold, int& outWidth, int& outHeight) override;
   void drawText(int x, int y, const char* utf8, int sizePx, bool bold, MapInk ink) override;
+  bool drawTextRotated(int centreX, int centreY, const char* utf8, int sizePx, bool bold, MapInk ink, int outline,
+                       int rightX, int rightY, int downX, int downY) override;
 
   // The whole canvas: the preview has no header band to keep clear (the device
   // adapter does -- GfxRendererCanvas's minY).
   void drawableRect(int& outX, int& outY, int& outWidth, int& outHeight) const override;
+
+  // Reads back the buffer this canvas has been drawing into -- the host half of
+  // the label placer's "least ink wins" test. One byte per pixel here against
+  // the device's packed bits, so the two implementations cannot share code, but
+  // they answer over the same finished frame and in the same units.
+  void inkCoverage(int x, int y, int width, int height, int stepPx, int& outInked, int& outSamples) const override;
 
   bool writePpm(const std::string& path) const;
 

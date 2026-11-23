@@ -47,6 +47,24 @@ struct MapPlaceRef {
   const char* name = "";
 };
 
+// One street name, already projected to screen pixels. `name` points into the
+// source's own buffer, is null-terminated, may be truncated, and is valid only
+// until the next nextRoadLabel() call.
+//
+// `dx`/`dy` are the street's tangent at the anchor in SCREEN pixels: the source
+// rotates it with the viewport, so a label follows the map when the map turns.
+// `runPx` is the straight run through the anchor converted to this rung's
+// pixels, which is what a name has to fit inside.
+struct MapRoadLabelRef {
+  int16_t x = 0;
+  int16_t y = 0;
+  int16_t dx = 0;
+  int16_t dy = 0;
+  uint16_t runPx = 0;
+  uint8_t classId = 0;
+  const char* name = "";
+};
+
 class IMapSource {
  public:
   virtual ~IMapSource() = default;
@@ -87,8 +105,28 @@ class IMapSource {
   virtual bool beginLanduse() = 0;
   virtual bool nextLanduse(MapWayRef& out) = 0;
 
+  // The contour layer. Way records like the area layers, but always open
+  // lines -- a closed contour comes back with its first point repeated and is
+  // still stroked, never filled. `classId` is MapContourClass, and `flags` is
+  // the elevation in metres as an int16 rather than a bit field.
+  //
+  // Walked twice, minor then index, so a heavy line lands on top of a fine one
+  // where they touch -- the same shape as landuse's two class walks. Not
+  // touched by the mode mask: a contour is not a road class.
+  virtual bool beginContours() = 0;
+  virtual bool nextContour(MapWayRef& out) = 0;
+
   virtual bool beginPlaces() = 0;
   virtual bool nextPlace(MapPlaceRef& out) = 0;
+
+  // Street names (tile layer 8). Written by the detail LOD alone, so this walk
+  // finds nothing at the coarse rungs -- and the renderer does not even open it
+  // unless the style draws names, the same gate the relief layer has.
+  //
+  // Records arrive most-important-first, so a caller that has filled its cap
+  // may stop walking rather than read the rest of the layer.
+  virtual bool beginRoadLabels() = 0;
+  virtual bool nextRoadLabel(MapRoadLabelRef& out) = 0;
 };
 
 // True when a way record is a closed ring, i.e. an area rather than a line.

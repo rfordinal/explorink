@@ -9,6 +9,7 @@
 #include <Utf8.h>
 
 #include <algorithm>
+#include <cstring>
 
 #include "FontCacheManager.h"
 
@@ -521,6 +522,20 @@ void GfxRenderer::drawPixel(const int x, const int y, const bool state) const {
   } else {
     target[byteIndex] |= 1 << bitPosition;  // Set bit
   }
+}
+
+bool GfxRenderer::isPixelInked(const int x, const int y) const {
+  if (frameBuffer == nullptr || _stripActive) return false;
+
+  int phyX = 0;
+  int phyY = 0;
+  rotateCoordinates(orientation, x, y, &phyX, &phyY, panelWidth, panelHeight);
+  if (phyX < 0 || phyX >= panelWidth || phyY < 0 || phyY >= panelHeight) return false;
+
+  const uint32_t byteIndex = static_cast<uint32_t>(phyY) * panelWidthBytes + (phyX / 8);
+  const uint8_t bitPosition = 7 - (phyX % 8);
+  // drawPixel CLEARS the bit to ink a pixel, so a zero bit is black.
+  return (frameBuffer[byteIndex] & (1 << bitPosition)) == 0;
 }
 
 int GfxRenderer::getTextWidth(const int fontId, const char* text, const EpdFontFamily::Style style,
@@ -1580,11 +1595,11 @@ void GfxRenderer::displayBufferAsync(const HalDisplay::RefreshMode refreshMode) 
   display.displayBufferAsync(mode);
 }
 
-bool GfxRenderer::displayBufferWindow(int x, int y, int w, int h) const {
+bool GfxRenderer::displayBufferWindow(int x, int y, int w, int h, PowerTelemetry::WindowSite site) const {
   if (w <= 0 || h <= 0) return false;
   const AlignedMemRect mem = screenRectToAlignedMemRect(orientation, x, y, w, h, panelWidth, panelHeight);
   if (!mem.valid) return false;
-  display.displayWindow(mem.x, mem.y, mem.w, mem.h, fadingFix);
+  display.displayWindow(mem.x, mem.y, mem.w, mem.h, fadingFix, site);
   return true;
 }
 
@@ -2077,6 +2092,71 @@ void GfxRenderer::drawTextRotated90CW(const int fontId, const int x, const int y
     renderCharImpl<TextRotation::Rotated90CW>(*this, renderMode, font, cp, x, lastBaseY, black, style);
     prevCp = cp;
   }
+}
+
+bool GfxRenderer::renderTextMask(const int fontId, const char* text, const EpdFontFamily::Style style, uint8_t* bits,
+                                 const int strideBits, const int maxW, const int maxH, int& outW, int& outH) const {
+  outW = 0;
+  outH = 0;
+  if (text == nullptr || *text == '\0' || bits == nullptr) return false;
+  // **Cleared here, not by the caller.** The inking loop ORs into `bits`, and
+  // nothing in the signature said the buffer had to arrive zeroed -- the one
+  // caller happened to reset it first, so the next one would have got the previous
+  // string's ghosts with no way to know why. A contract that has to be remembered
+  // is the shape of defect this file keeps producing, so it is enforced instead.
+  std::memset(bits, 0, static_cast<size_t>((strideBits * maxH + 7) / 8));
+  const auto fontIt = fontMap.find(fontId);
+  if (fontIt == fontMap.end()) {
+    LOG_ERR("GFX", "Font %d not found", fontId);
+    return false;
+  }
+  const auto& font = fontIt->second;
+  const EpdFontData* fontData = font.getData(style);
+  if (fontData == nullptr) return false;
+
+  const int boxW = getTextWidth(fontId, text, style);
+  const int boxH = getLineHeight(fontId);
+  if (boxW <= 0 || boxH <= 0 || boxW > maxW || boxH > maxH) return false;
+
+  const int baseline = fontData->ascender;
+  const bool is2Bit = fontData->is2Bit;
+  int penX = 0;
+  const uint8_t* cursor = reinterpret_cast<const uint8_t*>(text);
+  uint32_t cp;
+  while ((cp = utf8NextCodepoint(&cursor))) {
+    const EpdGlyph* glyph = font.getGlyph(cp, style);
+    if (glyph == nullptr) continue;
+    const uint8_t* bitmap = getGlyphBitmap(fontData, glyph);
+    if (bitmap != nullptr) {
+      const int inkX = penX + glyph->left;
+      const int inkY = baseline - glyph->top;
+      int pixelPosition = 0;
+      for (int glyphY = 0; glyphY < glyph->height; glyphY++) {
+        for (int glyphX = 0; glyphX < glyph->width; glyphX++, pixelPosition++) {
+          bool ink;
+          if (is2Bit) {
+            const uint8_t byte = bitmap[pixelPosition >> 2];
+            const uint8_t shift = (3 - (pixelPosition & 3)) * 2;
+            // Same BW rule renderCharImpl uses: anything not white is ink.
+            ink = (3 - ((byte >> shift) & 0x3)) < 3;
+          } else {
+            const uint8_t byte = bitmap[pixelPosition >> 3];
+            ink = ((byte >> (7 - (pixelPosition & 7))) & 1) != 0;
+          }
+          if (!ink) continue;
+          const int x = inkX + glyphX;
+          const int y = inkY + glyphY;
+          if (x < 0 || y < 0 || x >= boxW || y >= boxH) continue;
+          const int index = y * strideBits + x;
+          bits[index >> 3] |= static_cast<uint8_t>(1 << (index & 7));
+        }
+      }
+    }
+    penX += fp4::toPixel(glyph->advanceX);
+  }
+  outW = boxW;
+  outH = boxH;
+  return true;
 }
 
 uint8_t* GfxRenderer::getFrameBuffer() const { return frameBuffer; }

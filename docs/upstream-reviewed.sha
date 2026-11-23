@@ -1,0 +1,5 @@
+# Upstream CrossPoint commit this fork has reviewed up to.
+# One pass = read what is new, decide take / idea / skip, log it in
+# docs/upstream-crosspoint.md, then move this line. Never a blind merge.
+# Format: <sha> <date reviewed> <upstream commit date>
+7db14a015ca4b1d74d3cbed131a748f3029a4517 2026-09-08 2026-09-06

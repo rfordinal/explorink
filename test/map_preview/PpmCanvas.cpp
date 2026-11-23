@@ -1,5 +1,7 @@
 #include "PpmCanvas.h"
 
+#include "MapTextMask.h"
+
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -184,6 +186,58 @@ void PpmCanvas::drawText(const int x, const int y, const char* utf8, const int s
         target->canvas->setPixel(px, py, target->ink);
       },
       &sink);
+}
+
+bool PpmCanvas::drawTextRotated(const int centreX, const int centreY, const char* utf8, const int sizePx,
+                                const bool bold, const MapInk ink, const int outline, const int rightX,
+                                const int rightY, const int downX, const int downY) {
+  const void* face = PreviewFont::pick(sizePx, bold);
+  int w = 0, h = 0;
+  if (!PreviewFont::measure(face, utf8, w, h)) return false;
+
+  MapTextMask mask;
+  if (!mask.fits(w, h)) return false;  // half a number is a wrong number
+  mask.reset(w, h);
+  PreviewFont::draw(
+      face, utf8, 0, 0,
+      [](const int px, const int py, void* ctx) { static_cast<MapTextMask*>(ctx)->set(px, py); }, &mask);
+
+  // The rotation is MapTextMask's, the same code the device canvas calls.
+  const MapInk opposite = ink == MapInk::Black ? MapInk::White : MapInk::Black;
+  MapTextMask grown;
+  if (outline > 0) {
+    // Same refusal as the device canvas: an outline that does not fit means black
+    // digits on the black line they name, so the label is dropped instead. The
+    // preview has to agree, or a style tuned against it loses labels on hardware.
+    if (!mask.dilateInto(grown, outline)) return false;
+    mapTextMaskBlit(grown, centreX, centreY, rightX, rightY, downX, downY,
+                    [this, opposite](const int x, const int y) { setPixel(x, y, opposite); });
+  }
+  mapTextMaskBlit(mask, centreX, centreY, rightX, rightY, downX, downY,
+                  [this, ink](const int x, const int y) { setPixel(x, y, ink); });
+  return true;
+}
+
+void PpmCanvas::inkCoverage(const int x, const int y, const int width, const int height, const int stepPx,
+                            int& outInked, int& outSamples) const {
+  outInked = 0;
+  outSamples = 0;
+  const int step = stepPx < 1 ? 1 : stepPx;
+  // Clamped rather than clipped-away: a label box may hang over the canvas edge
+  // by a pixel or two and the part that is on screen is still the part that
+  // matters. An off-canvas sample is not white, it is absent -- counting it as
+  // white would make an edge position look cleaner than it is.
+  const int x0 = x < 0 ? 0 : x;
+  const int y0 = y < 0 ? 0 : y;
+  const int x1 = x + width > width_ ? width_ : x + width;
+  const int y1 = y + height > height_ ? height_ : y + height;
+  for (int py = y0; py < y1; py += step) {
+    const size_t row = static_cast<size_t>(py) * width_;
+    for (int px = x0; px < x1; px += step) {
+      ++outSamples;
+      if (pixels_[row + px] != 0) ++outInked;
+    }
+  }
 }
 
 void PpmCanvas::drawableRect(int& outX, int& outY, int& outWidth, int& outHeight) const {

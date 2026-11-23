@@ -11,6 +11,13 @@ void safeCopy(char* dst, size_t dstSize, const char* src, size_t srcLen) {
   dst[n] = '\0';
 }
 
+bool endsWith(const char* str, const char* suffix) {
+  const size_t strLen = strlen(str);
+  const size_t suffixLen = strlen(suffix);
+  if (suffixLen == 0 || suffixLen > strLen) return false;
+  return memcmp(str + (strLen - suffixLen), suffix, suffixLen) == 0;
+}
+
 }  // namespace
 
 ReleaseJsonParser::ReleaseJsonParser()
@@ -26,6 +33,7 @@ void ReleaseJsonParser::reset() {
   depth = 0;
   assetDepth = 0;
   tagName[0] = '\0';
+  expectedAssetSuffix[0] = '\0';
   firmwareUrl[0] = '\0';
   firmwareSize = 0;
   tagFound = false;
@@ -33,9 +41,19 @@ void ReleaseJsonParser::reset() {
   currentAssetName[0] = '\0';
   currentAssetUrl[0] = '\0';
   currentAssetSize = 0;
+  listMode = false;
+  releaseLocked = false;
 }
 
 void ReleaseJsonParser::feed(const char* data, size_t len) { parser.feed(data, len); }
+
+void ReleaseJsonParser::setFirmwareAssetSuffix(const char* suffix) {
+  safeCopy(expectedAssetSuffix, sizeof(expectedAssetSuffix), suffix ? suffix : "", suffix ? strlen(suffix) : 0);
+}
+
+void ReleaseJsonParser::setListMode(const bool enabled) { listMode = enabled; }
+
+bool ReleaseJsonParser::isComplete() const { return tagFound && firmwareFound; }
 
 bool ReleaseJsonParser::foundTag() const { return tagFound; }
 bool ReleaseJsonParser::foundFirmware() const { return firmwareFound; }
@@ -44,7 +62,7 @@ const char* ReleaseJsonParser::getFirmwareUrl() const { return firmwareUrl; }
 size_t ReleaseJsonParser::getFirmwareSize() const { return firmwareSize; }
 
 void ReleaseJsonParser::commitAsset() {
-  if (strcmp(currentAssetName, "firmware.bin") == 0) {
+  if (!firmwareFound && expectedAssetSuffix[0] != '\0' && endsWith(currentAssetName, expectedAssetSuffix)) {
     memcpy(firmwareUrl, currentAssetUrl, sizeof(firmwareUrl));
     firmwareSize = currentAssetSize;
     firmwareFound = true;
@@ -61,7 +79,7 @@ void ReleaseJsonParser::sOnKey(void* ctx, const char* key, size_t len) {
 
   switch (self->position) {
     case Position::TOP_LEVEL:
-      if (self->depth == 1) {
+      if (self->depth == self->releaseDepth()) {
         if (len == 8 && memcmp(key, "tag_name", 8) == 0)
           self->lastKey = LastKey::TAG_NAME;
         else if (len == 6 && memcmp(key, "assets", 6) == 0)
@@ -92,7 +110,12 @@ void ReleaseJsonParser::sOnString(void* ctx, const char* value, size_t len) {
 
   switch (self->lastKey) {
     case LastKey::TAG_NAME:
-      if (self->position == Position::TOP_LEVEL && self->depth == 1) {
+      // releaseLocked, not firmwareFound: the matching release's own tag must
+      // still be captured even if `tag_name` were to arrive AFTER `assets`
+      // (today's API puts it before, but key order is not part of the
+      // contract). Only a LATER release in the list -- always older, since
+      // GitHub returns newest-first -- is blocked from overwriting it.
+      if (self->position == Position::TOP_LEVEL && self->depth == self->releaseDepth() && !self->releaseLocked) {
         safeCopy(self->tagName, sizeof(self->tagName), value, len);
         self->tagFound = true;
       }
@@ -154,6 +177,20 @@ void ReleaseJsonParser::sOnObjectEnd(void* ctx) {
 
   switch (self->position) {
     case Position::TOP_LEVEL:
+      // Closing a release object: lock in the one that carried this board's
+      // asset, or -- in list mode -- drop a tag that belonged to a release
+      // with nothing for us, so the next (older) release gets a clean slate.
+      // Without the rollback the scan would end holding the OLDEST release's
+      // tag with no firmware, which reads exactly like "found a release, no
+      // asset for this board" and hides the real reason.
+      if (self->depth == self->releaseDepth()) {
+        if (self->firmwareFound) {
+          self->releaseLocked = true;
+        } else if (self->listMode) {
+          self->tagName[0] = '\0';
+          self->tagFound = false;
+        }
+      }
       if (self->depth > 0) self->depth--;
       break;
     case Position::IN_ASSET_OBJECT:
@@ -174,7 +211,7 @@ void ReleaseJsonParser::sOnArrayStart(void* ctx) {
 
   switch (self->position) {
     case Position::TOP_LEVEL:
-      if (self->lastKey == LastKey::ASSETS && self->depth == 1) {
+      if (self->lastKey == LastKey::ASSETS && self->depth == self->releaseDepth()) {
         self->position = Position::IN_ASSETS_ARRAY;
       } else {
         self->depth++;

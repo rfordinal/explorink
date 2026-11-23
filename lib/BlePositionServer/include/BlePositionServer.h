@@ -26,8 +26,9 @@ namespace freeink {
 //   [12..13] tz_offset  int16,  minutes east of UTC
 //   [14]     heading    0-15, a MapHeading value
 //   [15]     seq        rolling counter; the device redraws when it changes
-//   [16]     flags      bit0 = off-route warning, bit1 = altitude present
-//   [17]     accuracy   metres, saturating
+//   [16]     flags      bit0 = off-route warning, bit1 = altitude present,
+//                        bits 2-3 = heading quality (see below)
+//   [17]     accuracy   metres, saturating; 0 = the sender has no figure
 //   [18]     speed      km/h, saturating
 //   [19..20] altitude   int16, metres above sea level; valid only if flags
 //                        bit1 is set. No fix has "altitude zero" as a
@@ -42,12 +43,37 @@ namespace freeink {
 // truncated or padded version of the new one.
 //
 // `utc` and `tz_offset` drive the map header's clock, via localTimeNow() --
-// see docs/map-header-status.md, "The clock". `accuracy` is wired and stored
-// and nothing draws it -- see docs/architecture-plan.md, "Time is mandatory in
-// the payload".
+// see docs/map-header-status.md, "The clock".
 // `speed` is auto zoom's input and auto zoom is a later phase. `altitude` is
 // hike mode's future input, same reasoning: wired now so the packet stops
 // changing, not drawn or acted on yet.
+//
+// ## What the two quality fields mean, and why neither grew a byte
+//
+// `accuracy` and flags bits 2-3 are the position marker's two claims -- how
+// much the ring may say about *where*, and how much the centre glyph may say
+// about *which way*. MapFixTrust.h turns both into a shape;
+// docs/marker-fix-trust.md is the whole design.
+//
+// The packet is a fixed 21 bytes and a write of any other length is dropped, so
+// a new byte would break every client at once, in both directions. Heading
+// quality therefore lives in two spare flag bits:
+//
+//   bits 2-3:  0 = unstated   -- the sender does not report heading quality
+//              1 = good       -- within one heading step (22.5 degrees)
+//              2 = coarse     -- within about three steps
+//              3 = unknown    -- nothing believable; the device draws no heading
+//
+// **Zero means unstated, not bad, and that is the whole compatibility
+// argument**: a phone built before these bits existed writes zeros and keeps
+// getting exactly the marker it has always produced. The same rule applies to
+// `accuracy`, where 0 has always meant "no figure" -- Android reports no
+// accuracy on some fixes and PositionPacket.build() writes 0 for a NaN. Zero
+// metres is physically impossible, so the sentinel costs no real value; it is
+// stated here rather than left as an accident of the encoder.
+//
+// A device receiving `unstated` must not draw an alarm. A client that knows
+// nothing about quality is not a client reporting a fault.
 struct PositionUpdate {
   int32_t lat = 0;
   int32_t lon = 0;
@@ -56,7 +82,7 @@ struct PositionUpdate {
   uint8_t heading = 0;  // 0-15
   uint8_t seq = 0;
   uint8_t flags = 0;
-  uint8_t accuracyM = 0;
+  uint8_t accuracyM = 0;  // 0 = unstated (MapFixTrust::kAccuracyUnstated)
   uint8_t speedKmh = 0;
   int16_t altitudeM = 0;     // valid only if hasAltitude
   bool hasAltitude = false;  // from flags bit1
@@ -65,10 +91,48 @@ struct PositionUpdate {
 // Exact size of the packet above. A write of any other length is ignored.
 inline constexpr size_t kPositionPacketBytes = 21;
 
-// The advertised name. The phone matches on it (ScanFilter.setDeviceName) and
-// the CompanionDeviceManager association dialog shows it to the rider, so it is
-// wire-visible and must not change casually.
-inline constexpr const char* kBleDeviceName = "XteinkX4Map";
+// The advertised name identifies which board this is -- see
+// bleDeviceNameForActiveBoard() (BlePositionServer.cpp), which picks it from
+// BoardConfig::ACTIVE.board so an X4, an X3 and a LilyGo T5S3 each advertise
+// their own name instead of all claiming to be an X4. The phone matches on it
+// (ScanFilter.setDeviceName / BleLink.kt's KNOWN_DEVICE_NAMES) and the
+// CompanionDeviceManager association dialog shows it to the rider, so every
+// name this can resolve to is wire-visible and must not change casually.
+//
+// kBleDeviceNameFallback is what a board with no map-specific name assigned
+// gets. Generic, not "XteinkX4Map" -- LilyGo is a hardware partner running
+// this same firmware today, not a footnote, so the fallback must not name one
+// vendor's device.
+inline constexpr const char* kBleDeviceNameFallback = "ExplorInkMap";
+
+// Bytes kept of the connected client's version string, terminator included.
+//
+// The companion app writes this once per connection (see onClientInfoIngest).
+// 32 is generous for what it holds -- an app version plus a platform word,
+// "android 1.4.2" -- and anything longer is truncated rather than refused: the
+// string is diagnostic, so half of it in a crash report beats none.
+inline constexpr size_t kClientVersionBytes = 32;
+
+// Payload bytes one chunk frame can carry at this ATT MTU.
+//
+// **Not `mtu - 8`.** That formula is right only below MTU 515 and it is the
+// BUG-103 shape: at the 517 the Android app negotiates it yields 509, which
+// builds a 514-byte frame -- over the Core spec's 512-byte attribute cap, which
+// `BluetoothGatt.writeCharacteristic()` throws on rather than reporting.
+// `min(mtu - 3, 512) - 5` is what ../../../docs/ble-map-transfer-protocol.md
+// states and what the app's own TransferFrames.maxChunkPayload() computes, so
+// the two sides cannot drift.
+//
+// This is reported by `info` as `chunk_payload`, and since a pre-trip sender
+// reads `info` as its whole briefing (there is no NEED_TILES to carry `fmt`),
+// the number is acted on rather than merely logged. Found by
+// tools/sim_push_test.py, 2026-09-02.
+inline constexpr uint16_t bleMaxChunkPayload(uint16_t mtu) {
+  const int attWrite = static_cast<int>(mtu) - 3;
+  const int capped = attWrite < 512 ? attWrite : 512;
+  const int usable = capped - 5;
+  return usable > 0 ? static_cast<uint16_t>(usable) : 0;
+}
 
 class BlePositionServer {
  public:
@@ -79,7 +143,11 @@ class BlePositionServer {
   // channel; keeping the phone-side BLE code to "connect + write" is worth
   // more than pairing security here. Safe to call once; returns false if
   // BLE init failed or the capability is compiled out.
-  bool begin(const char* deviceName = kBleDeviceName);
+  //
+  // Passing no name (the default) advertises bleDeviceNameForActiveBoard()'s
+  // per-board name; a caller passes one explicitly only for a test that wants
+  // a fixed name regardless of the board it runs on.
+  bool begin(const char* deviceName = nullptr);
 
   // Fully tears down the BLE stack so its RAM is returned to the heap --
   // call this in MapActivity::onExit(), not just disconnect(), same reason
@@ -370,10 +438,38 @@ class BlePositionServer {
   // relies on, made explicit because here it decides whether to begin.
   bool isTransferSubscribed() const { return transferSubscribed_; }
 
+  // What the connected companion app says it is, e.g. "android 1.4.2".
+  //
+  // False when no client has written one on this connection -- which is not
+  // the same as "no client". An older app, a `bleak` script or anything else
+  // that just connects and writes positions never sends it, so an empty answer
+  // means "did not say", never "nothing connected". Cleared on disconnect: the
+  // string belongs to one link, and the next phone may be a different build.
+  //
+  // Copied out under the same critical section that guards the write, rather
+  // than handing back a pointer: the writer is the NimBLE host task and every
+  // reader is the activity task, so a borrowed pointer could be rewritten
+  // mid-read.
+  //
+  // **Diagnostic only.** This is an unauthenticated string from whoever is in
+  // radio range (no pairing, no bonding -- CLAUDE.md, "Security"), so it may
+  // name any app and any version. It must never gate a capability, pick a wire
+  // format, or decide anything a caller would be sorry to have decided on a
+  // stranger's say-so.
+  //
+  // **Nothing calls this today**, and that is worth saying rather than leaving
+  // to be discovered: what records the string is the LOG_INF in
+  // onClientInfoIngest, which reaches the SD crash report through
+  // getLastLogs() (lib/hal/HalSystem.cpp) without going through here. This
+  // accessor exists so a screen or a report can ask, and the rule above is a
+  // rule for the first caller rather than a description of the current state.
+  bool clientVersion(char* out, size_t max) const;
+
   // Internal: called by the NimBLE backend (not for app use). Keeps the
   // public header free of NimBLE types.
   void onWriteIngest(const uint8_t* data, size_t len);
   void onCommandIngest(const uint8_t* data, size_t len);
+  void onClientInfoIngest(const uint8_t* data, size_t len);
   void onTransferIngest(const uint8_t* data, size_t len);
   void onTransferSubscribe(bool subscribed);
   void onCommandSubscribe(bool subscribed);
@@ -398,6 +494,11 @@ class BlePositionServer {
   char commandRing_[kCommandRingBytes] = {};
   volatile size_t commandHead_ = 0;  // write index, BLE task
   volatile size_t commandTail_ = 0;  // read index, activity task
+
+  // What the client wrote to the client-info characteristic, sanitised to
+  // printable ASCII and null-terminated. Written on the NimBLE host task,
+  // read on the activity task, both under g_mux -- see clientVersion().
+  char clientVersion_[kClientVersionBytes] = {};
 
   // Status lines that found the indication slot busy, waiting for the activity
   // task to put them on the link (flushTransferStatus). Fixed size, no heap --
@@ -592,35 +693,19 @@ class BlePositionServer {
 
   // Transfer-active set: fast, no latency, while bytes are actually moving.
   //
-  // **Min and max are the same number on purpose, and the range used to be
-  // 12-24.** A connection parameter request is a range, and the central is free
-  // to pick anything in it -- Android picks the slow end. Measured on an X4 and
-  // an S24, 2026-08-20 (../../../docs/power-management.md, "The fast set asked
-  // for a range"): the phone had
-  // already negotiated 12 units on its own (its own
-  // requestConnectionPriority(HIGH)), and then every `begin` frame made this
-  // device ask for 12-24, after which the log read
+  // **Min and max are the same on purpose, and that is a fix rather than a
+  // tidy-up.** The window used to be 12-24 and the link settled on 24, the slow
+  // end of our own request -- measured 2026-09-03 on a T5 S3 Pro, 3.9 kB/s at
+  // MTU 256 and 30 ms. The central owns the connection parameters and a
+  // peripheral can only ask, so a wide window is an invitation: the phone had
+  // already asked for a fast link of its own (`requestConnectionPriority(HIGH)`,
+  // android BleLink.kt:258) and this request arrived afterwards offering 30 ms
+  // as an acceptable answer. Asking for one value cannot be answered with the
+  // slower one.
   //
-  //     conn params: requested fast set (12-24 units, latency 0)
-  //     conn params: interval 24 units (30 ms), latency 0, timeout 2000
-  //
-  // -- the 2000 being this device's own supervision timeout, so the 30 ms came
-  // from this request being honoured at its slow end, not from the phone
-  // changing its mind. Throughput follows the interval one for one: files that
-  // ran at 15 ms moved at 7.3-7.6 kB/s and files at 30 ms moved at 3.9 kB/s,
-  // inside a single transfer. So the "fast" request was what slowed the
-  // transfer down.
-  //
-  // A single-value range cannot be honoured at a slow end. **The cost, stated
-  // rather than waved away:** a central that will not schedule 15 ms used to be
-  // able to grant 24 (30 ms), and now rejects the request instead -- the link
-  // then keeps whatever is already in force, and with no app-side
-  // CONNECTION_PRIORITY_HIGH that can be the idle set at up to 50 ms, i.e.
-  // slower than the old worst case. There is no retry: the request fires once
-  // per transfer-begin edge and a NimBLE rejection surfaces only in its own log
-  // (updateConnParams returns void). Acceptable today because the phone app
-  // holds HIGH for the whole queue, and worth revisiting for any central that
-  // does not.
+  // Cost if a peer cannot do exactly 15 ms: it rejects the update and the link
+  // keeps whatever it had, which is what it would have had anyway. Nothing here
+  // depends on the request succeeding.
   //
   // **iOS:** Apple's QA1931 wants Interval Max >= Interval Min + 15 ms, so a
   // single-value request is outside what an iPhone accepts. A CoreBluetooth
@@ -629,7 +714,7 @@ class BlePositionServer {
   // rather than discovered later (parent repo CLAUDE.md, "The phone app must
   // stay portable to iOS").
   static constexpr uint16_t kConnParamsFastMinUnits = 12;  // 12 * 1.25 ms = 15 ms
-  static constexpr uint16_t kConnParamsFastMaxUnits = 12;  // no slow end to pick
+  static constexpr uint16_t kConnParamsFastMaxUnits = 12;  // 12 * 1.25 ms = 15 ms
   static constexpr uint16_t kConnParamsFastLatency = 0;
   // 2000 * 10 ms = 20 s, same value and reasoning as
   // kConnParamsIdleTimeoutUnits above -- 29 of the 57 measured disconnects

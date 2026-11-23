@@ -11,6 +11,10 @@
 #include "HeldTilesStore.h"
 #include "MapByteFormat.h"
 #include "MapMissingAnchor.h"
+#include "MapPointReader.h"
+#include "MapPointShardStorage.h"
+#include "MapPointShards.h"
+#include "MapPointSource.h"
 #include "MapPowerStatsProvider.h"
 #include "MapTileReader.h"
 #include "MappedInputManager.h"
@@ -24,7 +28,7 @@ namespace {
 constexpr const char* kLogTag = "TILESYNC";
 
 // Same card root the map's tile paths are built against (MapActivity.cpp).
-constexpr const char* kTileRoot = "/trailink";
+constexpr const char* kTileRoot = "/explorink";
 
 }  // namespace
 
@@ -69,6 +73,16 @@ bool TileSyncActivity::armRun() {
   transfer_.resetCounters();
   consoleState_.clearSkips();
   skipped_ = 0;
+  // A re-ask is a new run, and the phone re-announces what it still owes on the
+  // next connection. Carrying the old announcement across would count the same
+  // files twice.
+  announced_ = 0;
+  // A re-ask is a new run for a burst's live-discovered tiles too -- the array
+  // itself is kept (not freed) if a previous run already allocated it, only the
+  // count resets, so a second push in one visit does not pay another alloc.
+  pushRowCount_ = 0;
+  windowChosen_ = false;
+  pushPending_ = 0;
   drawnDone_ = 0;
   drawnSkipped_ = 0;
   lastClearedTileSeq_ = transfer_.status().tileSeq;
@@ -82,6 +96,7 @@ bool TileSyncActivity::armRun() {
   // armRun() is also the re-entry path when a phone comes back after a
   // finished run (trackPhone).
   freshnessAskPending_ = false;
+  pointsAskPending_ = false;
   freshnessRedrawPending_ = false;
   lastSettleMs_ = 0;
   // After staleTiles_.clear(), so the window is placed over what this run will
@@ -129,6 +144,14 @@ void TileSyncActivity::onEnter() {
 
   consoleState_.setMissingTilesSource(&g_missingTilesConsoleSource);
   consoleState_.setSkipObserver(this);
+  // What `info` answers `screen=sync` from. The phone has to be able to tell
+  // this screen from the map one before it starts a long batch: both run the
+  // same BLE server and the same console, and a batch over the map screen dies
+  // (../../../docs/ble-map-transfer-protocol.md, "The hard half").
+  consoleState_.setScreenName("sync");
+  // Where `push <n>` lands. This screen is the only one that can show a batch
+  // it never asked for; every other answers `INFO push=unavailable`.
+  consoleState_.setPushObserver(this);
   // What `have` answers from: every tile the map has drawn since boot that no
   // check has settled yet. This screen has no viewport of its own, and reading
   // a content_id anywhere else on the device would mean opening tiles for no
@@ -148,6 +171,26 @@ void TileSyncActivity::onEnter() {
   // version transfers fine, passes CRC and is then refused on open, so the
   // supplier needs the number before it sends anything (MapTileReader.h).
   consoleState_.setTileFormatVersion(MapTileReader::kFormatVersion);
+  // Same grammar as the map screen: rebuild the active set from the card, then
+  // point `pin set`/`pin del`/`pin list`/`pin log` at it. Alongside the other
+  // setters above, not inside the `rowCount_ == 0` branch below -- pin
+  // management does not depend on there being anything missing to fetch.
+  pins_.begin();
+  consoleState_.setPinsSource(&pins_);
+  // `points`/`gone`/point-shard `skip` -- decision 2/3's exchange, wired only
+  // when the rider has turned the point layer on. Revised from "wired
+  // unconditionally" (code review, 2026-09-13): `gone` is a write -- an
+  // unauthenticated delete of a card file -- and this repo's own security
+  // rule defaults a new command to devel-only unless it is read-only and
+  // reveals nothing sensitive (CLAUDE.md, "Security"). Leaving it wired while
+  // the setting says the device does not deal in points at all widens that
+  // for no reason; with nothing wired, `points`/`gone` simply answer
+  // `unavailable`.
+  if (SETTINGS.mapPointsEnabled != 0) {
+    consoleState_.setPointShardsSource(this);
+    consoleState_.setGoneObserver(this);
+    consoleState_.setPointSkipObserver(this);
+  }
 
   if (rowCount_ == 0) {
     // Worth a screen rather than a silent bounce back to the menu: the rider
@@ -159,7 +202,7 @@ void TileSyncActivity::onEnter() {
     drawnPhoneListening_ = phoneListening();
     hadPhone_ = drawnPhoneListening_;
     if (drawnPhoneListening_) {
-      askAboutFreshness();
+      if (!askAboutFreshness()) askAboutPoints();
       enterPhase(Phase::Finished);
     } else {
       // A phone connecting synchronously with begin() above never happens on
@@ -182,9 +225,9 @@ void TileSyncActivity::onEnter() {
   if (drawnPhoneListening_) askForTiles();
 }
 
-void TileSyncActivity::askAboutFreshness() {
-  if (freshnessAsked_) return;
-  if (SETTINGS.mapTileFreshnessMode == CrossPointSettings::MAP_TILE_FRESHNESS_OFF) return;
+bool TileSyncActivity::askAboutFreshness() {
+  if (freshnessAsked_) return false;
+  if (SETTINGS.mapTileFreshnessMode == CrossPointSettings::MAP_TILE_FRESHNESS_OFF) return false;
   // Nothing drawn since boot means no content_id to offer, and `have` would
   // answer `have=none` anyway. Saying nothing is the honest version of that.
   //
@@ -195,7 +238,7 @@ void TileSyncActivity::askAboutFreshness() {
   if (!g_heldTiles.valid() || pending == 0) {
     LOG_INF(kLogTag, "freshness: nothing pending of %lu held, nothing to check",
             static_cast<unsigned long>(g_heldTiles.size()));
-    return;
+    return false;
   }
   // One round's worth, not the whole store. A listing runs its blocks back to
   // back on the activity task and each waits on the peer's confirm, so an
@@ -213,7 +256,7 @@ void TileSyncActivity::askAboutFreshness() {
            static_cast<unsigned>(MapTileReader::kFormatVersion));
   if (!freeink::BlePositionServer::getInstance().sendCommandReply(line)) {
     LOG_ERR(kLogTag, "CHECK_TILES not delivered");
-    return;
+    return false;
   }
   freshnessAsked_ = true;
   freshnessRound_ = round;
@@ -225,6 +268,60 @@ void TileSyncActivity::askAboutFreshness() {
   // painted: every other caller already repaints immediately after this
   // returns, so painting here made it two e-ink refreshes per ask.
   freshnessRedrawPending_ = true;
+  return true;
+}
+
+void TileSyncActivity::askAboutPoints() {
+  if (pointsAsked_) return;
+  // Both halves of the mode ladder decision 2 reuses: "whether" the device
+  // deals in points at all, and "when" it may spend a phone's data on them.
+  // Off means never, on either count.
+  if (SETTINGS.mapPointsEnabled == 0) return;
+  if (SETTINGS.mapTileFreshnessMode == CrossPointSettings::MAP_TILE_FRESHNESS_OFF) return;
+
+  if (!SETTINGS.mapHasLastFix) {
+    // Never seen a fix, this session or any other -- there is nothing to
+    // centre a shard range on. Marked asked anyway: nothing between here and
+    // the next visit changes this screen's own state, so re-checking every
+    // loop() would just repeat the same log line.
+    LOG_INF(kLogTag, "points: no last fix, nothing to centre a shard range on");
+    pointsAsked_ = true;
+    return;
+  }
+
+  // Seeds this screen's own console state from the persisted fix -- the same
+  // one MapMissingAnchor.h reads for the missing-tile sort, and for the same
+  // reason: this screen has no viewport and may never have seen a live fix
+  // this session (docs/point-layer-lifecycle.md, "This screen has no
+  // viewport"). Without this, `points` itself would answer `no_position` the
+  // moment the phone replied to the NEED_POINTS this triggers.
+  consoleState_.setLastKnownPosition(SETTINGS.mapLastLatE7, SETTINGS.mapLastLonE7);
+
+  MapPointShards::Range range;
+  if (!consoleState_.pointShardRange(range)) return;  // cannot happen right after setLastKnownPosition; stay honest
+
+  char line[48];
+  snprintf(line, sizeof(line), "NEED_POINTS %lu fmt %u", static_cast<unsigned long>(range.count()),
+           static_cast<unsigned>(MapPointReader::kFormatVersion));
+  if (!freeink::BlePositionServer::getInstance().sendCommandReply(line)) {
+    LOG_ERR(kLogTag, "NEED_POINTS not delivered");
+    return;
+  }
+  pointsAsked_ = true;
+  LOG_INF(kLogTag, "points: asked about %lu shard(s) around the last fix", static_cast<unsigned long>(range.count()));
+}
+
+bool TileSyncActivity::hasPointShard(uint32_t col, uint32_t row) const {
+  return MapPointShardStorage::exists(kTileRoot, col, row);
+}
+
+void TileSyncActivity::onPointShardGone(uint32_t col, uint32_t row) {
+  MapPointShardStorage::deleteIfPresent(kLogTag, kTileRoot, col, row);
+}
+
+void TileSyncActivity::onPointShardSkipped(uint32_t col, uint32_t row, const char* reason) {
+  LOG_INF(kLogTag, "points: phone could not supply %lu/%lu (%s)", static_cast<unsigned long>(col),
+          static_cast<unsigned long>(row), reason);
 }
 
 bool TileSyncActivity::formatFreshness(char* out, size_t size) const {
@@ -284,6 +381,10 @@ void TileSyncActivity::onCheckFinished(bool known, uint16_t staleCount) {
     LOG_INF(kLogTag, "freshness: phone could not check (no index)");
     freshnessState_ = Freshness::Unknown;
     freshnessRedrawPending_ = true;
+    // The conversation is over -- `unknown` retries nothing -- so this is
+    // askAboutPoints()'s chance, same reasoning as the pendingCount() == 0
+    // branch below.
+    pointsAskPending_ = true;
     return;
   }
   // Cumulative over the visit, not per round: the rider is told how much of
@@ -312,7 +413,14 @@ void TileSyncActivity::onCheckFinished(bool known, uint16_t staleCount) {
   // reaches zero. Only on a `known` answer -- `checked unknown` settles
   // nothing, so re-asking on it would loop forever against a phone that cannot
   // read the index.
-  if (g_heldTiles.pendingCount() > 0) freshnessAskPending_ = true;
+  if (g_heldTiles.pendingCount() > 0) {
+    freshnessAskPending_ = true;
+  } else {
+    // No more rounds -- the whole check just closed for good. First safe
+    // moment for askAboutPoints() to run without opening a second
+    // conversation alongside this one.
+    pointsAskPending_ = true;
+  }
 }
 
 bool TileSyncActivity::phoneListening() const {
@@ -335,6 +443,10 @@ void TileSyncActivity::askForTiles() {
     return;
   }
   LOG_INF(kLogTag, "asked for %lu tiles", static_cast<unsigned long>(rowCount_));
+  beginRunning();
+}
+
+void TileSyncActivity::beginRunning() {
   enterPhase(Phase::Running);
   startedMs_ = millis();
   lastSettleMs_ = startedMs_;
@@ -344,6 +456,57 @@ void TileSyncActivity::askForTiles() {
   lastProgressMs_ = 0;
   transferWasActive_ = false;
   renderScreen();
+}
+
+void TileSyncActivity::onPushAnnounced(uint16_t count) {
+  // Flagged, not acted on. This runs inside MapConsoleState::handle()'s
+  // dispatch of `push`, on the activity task, before the terminating `OK` the
+  // phone is still waiting for -- and the phone sends its first begin frame off
+  // the back of that `OK`. A repaint here (500-1700 ms of e-ink) sits in front
+  // of it. Same pattern as freshnessRedrawPending_.
+  pushPending_ += count;
+}
+
+void TileSyncActivity::startAnnouncedBatch(uint32_t count) {
+  if (phase_ == Phase::Running) {
+    // More files for the run already on screen. One run, one bar, one ETA: the
+    // phone is the only thing that knows what order it is sending in, and this
+    // screen's whole job is to count what is coming. Nothing is re-armed --
+    // startedMs_ in particular, because the rate and the ETA are built on it
+    // and restarting it mid-run would throw away every measurement the run has
+    // made so far.
+    announced_ += count;
+    LOG_INF(kLogTag, "phone announced %lu more, run is now %lu", static_cast<unsigned long>(count),
+            static_cast<unsigned long>(runTotal()));
+    renderScreen();
+    return;
+  }
+
+  // Not running: this announcement **is** the run. Counted from zero, because
+  // whatever is on the board belongs to something else -- a finished
+  // missing-tile fetch, or a batch the phone abandoned when it walked out of
+  // range and is now re-announcing the remainder of.
+  //
+  // resetCounters() refuses while a transfer is in flight, which cannot be the
+  // case here: `push` is sent before the first begin frame. If it ever is, the
+  // counters stay as they are and the run starts from a non-zero arrival
+  // count -- worse numbers, not a broken screen.
+  if (transfer_.resetCounters()) {
+    consoleState_.clearSkips();
+    skipped_ = 0;
+    drawnDone_ = 0;
+    drawnSkipped_ = 0;
+    lastClearedTileSeq_ = transfer_.status().tileSeq;
+  }
+  // The missing snapshot belonged to the fetch that is over. Dropped rather
+  // than added to: those squares are ground this batch says nothing about, and
+  // leaving them in runTotal() would have the bar counting tiles nobody is
+  // sending. The entries themselves are untouched in MISSING_TILES, so the next
+  // visit asks for them again. rows_ stays allocated and is freed in onExit().
+  rowCount_ = 0;
+  announced_ = count;
+  LOG_INF(kLogTag, "phone announced a batch of %lu", static_cast<unsigned long>(count));
+  beginRunning();
 }
 
 void TileSyncActivity::trackPhone() {
@@ -367,7 +530,7 @@ void TileSyncActivity::trackPhone() {
     if (rowCount_ > 0) {
       askForTiles();
     } else {
-      askAboutFreshness();
+      if (!askAboutFreshness()) askAboutPoints();
       verdict_ = StrId::STR_MAP_FETCH_NOTHING;
       renderScreen();
     }
@@ -395,8 +558,26 @@ void TileSyncActivity::trackPhone() {
     // fetch at all.
     if (rowCount_ > 0) {
       askForTiles();
+    } else if (phase_ == Phase::Running) {
+      // An announced batch got here first, and finishing the run now would undo
+      // it. loop() drains pushPending_ before it calls this, so a phone that
+      // subscribes and announces inside one tick arrives with the run already
+      // up -- and the branch below would put the screen straight back on
+      // "nothing missing" for the whole transfer, which is the exact symptom
+      // `push` exists to remove (docs/missing-tiles.md, "A batch the device
+      // never asked for").
+      //
+      // Found by tools/sim_push_test.py in the parent repo, 2026-09-02, before
+      // any of this had run. On hardware the window is wider rather than
+      // narrower: startAnnouncedBatch() repaints inside that same tick, and an
+      // e-ink pass is 500-1700 ms.
+      //
+      // No freshness ask either. The batch is about to stream and `have` would
+      // open a second conversation on a channel that allows exactly one -- the
+      // 2026-08-11 fault this function already carries a comment about.
+      LOG_INF(kLogTag, "phone subscribed with a batch already announced");
     } else {
-      askAboutFreshness();
+      if (!askAboutFreshness()) askAboutPoints();
       // Nothing to fetch -- the freshness ask above was the only reason this
       // screen was still waiting. Same verdict onEnter() would have shown had
       // the phone been there from t=0.
@@ -420,8 +601,13 @@ void TileSyncActivity::onExit() {
   // no BLE link.
   transfer_.detach();
   consoleState_.setSkipObserver(nullptr);
+  consoleState_.setPushObserver(nullptr);
   consoleState_.setStaleObserver(nullptr);
   consoleState_.setStaleTiles(nullptr);
+  consoleState_.setPinsSource(nullptr);
+  consoleState_.setPointShardsSource(nullptr);
+  consoleState_.setGoneObserver(nullptr);
+  consoleState_.setPointSkipObserver(nullptr);
   freeink::BlePositionServer::getInstance().end();
   // Leaving is the checkpoint: whatever this sync cleared has to reach the card,
   // or the phone sends the same tiles again after a restart. A no-op when
@@ -429,6 +615,8 @@ void TileSyncActivity::onExit() {
   MISSING_TILES.flushIfDirty();
   rows_.reset();
   rowCount_ = 0;
+  pushRows_.reset();
+  pushRowCount_ = 0;
   Activity::onExit();
 }
 
@@ -469,6 +657,15 @@ void TileSyncActivity::loop() {
   // something on a map screen that is not up -- nothing to redraw here.
   ble_.poll();
 
+  // The phone's announcement, out here rather than in the observer that took
+  // it -- see onPushAnnounced(). Before the freshness work below, because
+  // startAnnouncedBatch() repaints and a batch starting is the bigger news.
+  if (pushPending_ != 0) {
+    const uint32_t count = pushPending_;
+    pushPending_ = 0;
+    startAnnouncedBatch(count);
+  }
+
   // The freshness check's follow-up work, out here rather than in the observer
   // that decided on it. onCheckFinished() runs inside the console's dispatch of
   // `checked`, before the terminating `OK`; starting a 3 s confirm wait or a
@@ -481,7 +678,11 @@ void TileSyncActivity::loop() {
   if (freshnessAskPending_) {
     freshnessAskPending_ = false;
     freshnessAsked_ = false;
-    askAboutFreshness();
+    if (!askAboutFreshness()) askAboutPoints();
+  }
+  if (pointsAskPending_) {
+    pointsAskPending_ = false;
+    askAboutPoints();
   }
   if (freshnessRedrawPending_) {
     freshnessRedrawPending_ = false;
@@ -505,6 +706,7 @@ void TileSyncActivity::loop() {
 
   trackPhone();
   drainTransferredTiles();
+  trackPushTiles();
   updateProgress();
 
   if (mappedInput.wasReleased(MappedInputManager::Button::Back)) leave();
@@ -598,6 +800,12 @@ TileSyncActivity::RowState TileSyncActivity::stateOf(int index, uint32_t& receiv
   return stillMissing(row.tile) ? RowState::Waiting : RowState::Done;
 }
 
+uint32_t TileSyncActivity::runRemaining() const {
+  const uint32_t total = runTotal();
+  const uint32_t done = transfer_.status().completed;
+  return total > done ? total - done : 0;
+}
+
 void TileSyncActivity::parentOf(const MapTileCoord& tile, uint16_t& pc, uint16_t& pr) {
   // z11 is the coarsest LOD the map reads and z13 the finest (docs/zoom-rungs.md,
   // "The ladder"), so the shift is 0..2 and never negative. Clamped rather than
@@ -609,14 +817,17 @@ void TileSyncActivity::parentOf(const MapTileCoord& tile, uint16_t& pc, uint16_t
   pr = static_cast<uint16_t>(tile.row >> down);
 }
 
-size_t TileSyncActivity::interestCount() const { return rowCount_ + g_heldTiles.pendingCount() + staleTiles_.count(); }
+size_t TileSyncActivity::interestCount() const {
+  return rowCount_ + staleTiles_.count() + pushRowCount_ + g_heldTiles.pendingCount();
+}
 
-size_t TileSyncActivity::downloadCount() const { return rowCount_ + staleTiles_.count(); }
+size_t TileSyncActivity::downloadCount() const { return rowCount_ + staleTiles_.count() + pushRowCount_; }
 
 MapTileCoord TileSyncActivity::interestAt(size_t index) const {
-  // [0, rowCount_) missing, then the stale ones -- together the download queue,
-  // drawn as frames -- then the tiles still waiting on a check, drawn as dots.
-  // Contiguous in that order so drawParent() can walk one range per mark.
+  // [0, rowCount_) missing, then stale, then push tiles discovered live from a
+  // burst's own BEGIN frames -- together the download queue, drawn as frames --
+  // then the tiles still waiting on a check, drawn as dots. Contiguous in that
+  // order so drawParent() can walk one range per mark.
   if (index < rowCount_) return rows_[index].tile;
   size_t rest = index - rowCount_;
 
@@ -625,6 +836,9 @@ MapTileCoord TileSyncActivity::interestAt(size_t index) const {
     return MapTileCoord{e.z, e.col, e.row};
   }
   rest -= staleTiles_.count();
+
+  if (rest < pushRowCount_) return pushRows_[rest].tile;
+  rest -= pushRowCount_;
 
   // The nth entry that is still unsettled. Walked rather than indexed: the
   // store keeps pending and settled entries in one array so that re-recording
@@ -641,6 +855,7 @@ MapTileCoord TileSyncActivity::interestAt(size_t index) const {
 void TileSyncActivity::chooseWindow() {
   const size_t interest = interestCount();
   if (interest == 0) return;
+  windowChosen_ = true;
 
   uint16_t minCol = 0xFFFF, maxCol = 0, minRow = 0xFFFF, maxRow = 0;
   for (size_t i = 0; i < interest; ++i) {
@@ -716,12 +931,82 @@ void TileSyncActivity::chooseWindow() {
           static_cast<unsigned long>(interest));
 }
 
+void TileSyncActivity::choosePushWindow(const MapTileCoord& tile) {
+  uint16_t pc = 0, pr = 0;
+  parentOf(tile, pc, pr);
+  // Centred, not corner-anchored: the first tile a burst happens to reveal is
+  // no more likely to sit at the edge of the area than the last one, and there
+  // is no distribution to weigh against like chooseWindow() has -- just one
+  // point. Clamped so a tile near the antimeridian-adjacent edge of the tile
+  // grid cannot underflow the unsigned column/row.
+  const uint16_t halfCols = kMaxWindowCols / 2;
+  const uint16_t halfRows = kMaxWindowRows / 2;
+  windowCol_ = pc > halfCols ? static_cast<uint16_t>(pc - halfCols) : 0;
+  windowRow_ = pr > halfRows ? static_cast<uint16_t>(pr - halfRows) : 0;
+  windowCols_ = kMaxWindowCols;
+  windowRows_ = kMaxWindowRows;
+  windowChosen_ = true;
+  LOG_INF(kLogTag, "push window seeded at z11 %u/%u from the first discovered tile", static_cast<unsigned>(windowCol_),
+          static_cast<unsigned>(windowRow_));
+}
+
+void TileSyncActivity::trackPushTiles() {
+  const MapTransferReceiver::Status transfer = transfer_.status();
+  if (!transfer.active || !transfer.activeTileValid) return;
+  const MapTileCoord& tile = transfer.activeTile;
+
+  // Already this run's own snapshot -- a normal fetch tile, not a burst
+  // discovery, and already drawn by the loop above.
+  for (uint32_t i = 0; i < rowCount_; ++i) {
+    if (rows_[i].tile.z == tile.z && rows_[i].tile.col == tile.col && rows_[i].tile.row == tile.row) return;
+  }
+  // Already tracked from an earlier BEGIN this run.
+  for (uint32_t i = 0; i < pushRowCount_; ++i) {
+    if (pushRows_[i].tile.z == tile.z && pushRows_[i].tile.col == tile.col && pushRows_[i].tile.row == tile.row) {
+      return;
+    }
+  }
+
+  if (!pushRows_) {
+    pushRows_ = makeUniqueNoThrow<Row[]>(kMaxPushRows);
+    if (!pushRows_) {
+      LOG_ERR(kLogTag, "OOM: push tile grid (%u rows)", static_cast<unsigned>(kMaxPushRows));
+      return;
+    }
+  }
+  // Past the cap the file still downloads normally -- only the grid stops
+  // growing. See pushRows_'s comment for why that is an acceptable trade.
+  if (pushRowCount_ >= kMaxPushRows) return;
+
+  if (!windowChosen_) choosePushWindow(tile);
+
+  pushRows_[pushRowCount_++] = Row{tile, false};
+  LOG_INF(kLogTag, "push tile discovered live: z%u %lu/%lu", static_cast<unsigned>(tile.z),
+          static_cast<unsigned long>(tile.col), static_cast<unsigned long>(tile.row));
+  // A new frame just appeared -- the same weight as a tile settling
+  // (updateProgress()), and no more frequent: this fires once per file, on its
+  // first BEGIN, never per byte.
+  renderScreen();
+}
+
 void TileSyncActivity::summaryRect(int& x, int& y, int& w, int& h) const {
   const auto& metrics = UITheme::getInstance().getMetrics();
   x = metrics.contentSidePadding;
   w = renderer.getScreenWidth() - metrics.contentSidePadding * 2;
   y = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing / 2;
-  h = renderer.getLineHeight(UI_10_FONT_ID);
+  // Two lines: the run's numbers and the file on the wire. Both move on every
+  // chunk, so they are one windowed repaint on one rate cap rather than two of
+  // each -- every repaint is a real waveform pass.
+  h = renderer.getLineHeight(UI_10_FONT_ID) * 2;
+}
+
+void TileSyncActivity::warningRect(int& x, int& y, int& w, int& h) const {
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  const int lineHeight = renderer.getLineHeight(UI_10_FONT_ID);
+  x = metrics.contentSidePadding;
+  w = renderer.getScreenWidth() - metrics.contentSidePadding * 2;
+  h = lineHeight * 2;
+  y = renderer.getScreenHeight() - metrics.buttonHintsHeight - metrics.verticalSpacing * 2 - h;
 }
 
 void TileSyncActivity::gridRect(int& x, int& y, int& w, int& h) const {
@@ -729,16 +1014,20 @@ void TileSyncActivity::gridRect(int& x, int& y, int& w, int& h) const {
   const int pageWidth = renderer.getScreenWidth();
   const int pageHeight = renderer.getScreenHeight();
   const int lineHeight = renderer.getLineHeight(UI_10_FONT_ID);
-  // Below the header, the summary line, the overall bar and the percentage
-  // GUI.drawProgressBar centres 15 px under it. Reserved whether or not the bar
-  // is drawn, so the grid does not jump as the phase changes.
-  const int top = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing + lineHeight +
+  // Below the header, the two live lines (the run's numbers and the file on the
+  // wire), the overall bar and the percentage GUI.drawProgressBar centres 15 px
+  // under it. Reserved whether or not the bar is drawn, so the grid does not
+  // jump as the phase changes.
+  const int top = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing + lineHeight * 2 +
                   metrics.progressBarHeight + 15 + lineHeight;
 
   x = metrics.contentSidePadding;
   w = pageWidth - metrics.contentSidePadding * 2;
   y = top;
-  h = pageHeight - top - metrics.buttonHintsHeight - metrics.verticalSpacing * 2;
+  // Two lines held back at the bottom for the standing warning. Reserved on
+  // every phase for the same reason the bar's room is: a grid that reflowed
+  // when the warning appeared would move every square under the rider's eyes.
+  h = pageHeight - top - metrics.buttonHintsHeight - metrics.verticalSpacing * 2 - lineHeight * 2;
 }
 
 bool TileSyncActivity::drawParent(int px, int py, int size, uint16_t pc, uint16_t pr) {
@@ -853,6 +1142,51 @@ bool TileSyncActivity::drawParent(int px, int py, int size, uint16_t pc, uint16_
   return any;
 }
 
+void TileSyncActivity::drawAnnouncedGrid(int gx, int gy, int gw, int gh) {
+  const uint32_t total = runTotal();
+  if (total == 0) return;
+
+  // The squarest layout that fits, chosen by trying every column count and
+  // keeping the one that gives the biggest cell. Bounded work: the parser caps
+  // an announcement at kMaxPushCount, and this is integer arithmetic per
+  // candidate, run once per repaint rather than per chunk.
+  int cell = 0;
+  uint32_t cols = 1;
+  for (uint32_t c = 1; c <= total; ++c) {
+    const uint32_t rows = (total + c - 1) / c;
+    int candidate = gw / static_cast<int>(c);
+    const int byHeight = gh / static_cast<int>(rows);
+    if (byHeight < candidate) candidate = byHeight;
+    if (candidate > cell) {
+      cell = candidate;
+      cols = c;
+    }
+  }
+  if (cell > kMaxCellPx) cell = kMaxCellPx;
+  // Too many files to draw legibly. No grid at all rather than a smear: the bar
+  // still says how far along the run is, and it is the number anyway.
+  if (cell < kMinAnnouncedCellPx) return;
+
+  const uint32_t rows = (total + cols - 1) / cols;
+  const int originX = gx + (gw - cell * static_cast<int>(cols)) / 2;
+  const int originY = gy + (gh - cell * static_cast<int>(rows)) / 2;
+  // Same weight as a missing tile's square on the real grid, scaled to the
+  // cell: it means the same thing, so it reads the same.
+  const int thickness = cell / 8 < 2 ? 2 : cell / 8;
+  const int side = cell - kTileInset * 2;
+  if (side <= 0) return;
+
+  // Squares go out from the end as files land. The layout is fixed by `total`
+  // and never reflows, so nothing on screen moves while the run drains -- the
+  // same rule the real grid follows.
+  const uint32_t remaining = runRemaining();
+  for (uint32_t i = 0; i < remaining; ++i) {
+    const int c = static_cast<int>(i % cols);
+    const int r = static_cast<int>(i / cols);
+    renderer.drawRect(originX + c * cell + kTileInset, originY + r * cell + kTileInset, side, side, thickness, true);
+  }
+}
+
 void TileSyncActivity::drawGrid(int top) {
   int gx, gy, gw, gh;
   gridRect(gx, gy, gw, gh);
@@ -869,6 +1203,17 @@ void TileSyncActivity::drawGrid(int top) {
   // grid -- the dots are the whole point of it -- so this is the empty case for
   // both, not just for the fetch.
   if (interestCount() == 0) {
+    // Unless the phone announced a batch. There is nothing to place on a map
+    // for one -- see drawAnnouncedGrid() -- so the count is drawn instead.
+    //
+    // Only where there is no real geography: a run that has both (a
+    // missing-tile fetch the phone announced more files into) keeps the true
+    // grid and lets the bar count the announced files, which is the indicator
+    // this screen is read for.
+    if (runRemaining() > 0) {
+      drawAnnouncedGrid(gx, gy, gw, gh);
+      return;
+    }
     renderer.drawCenteredText(UI_10_FONT_ID, gy + gh / 2, I18N.get(verdict_));
     return;
   }
@@ -937,7 +1282,7 @@ void TileSyncActivity::formatSummary(char* out, size_t outSize) const {
   const uint32_t rateBps = transfer.completedBytes / (elapsedS > 0 ? elapsedS : 1);
 
   char eta[16] = {};
-  const uint32_t remaining = rowCount_ > settled ? rowCount_ - settled : 0;
+  const uint32_t remaining = runTotal() > settled ? runTotal() - settled : 0;
   if (remaining > 0) {
     // Time per settled tile, times what is left. Tiles vary a lot in size
     // (6 KB to 75 KB in one real fetch), so this is an estimate that firms up
@@ -955,6 +1300,42 @@ void TileSyncActivity::formatSummary(char* out, size_t outSize) const {
     snprintf(out, outSize, "%lu / %lu%s   %s", static_cast<unsigned long>(transfer.completed),
              static_cast<unsigned long>(transferTotal()), unavailable, moved);
   }
+}
+
+bool TileSyncActivity::formatActiveFile(char* out, size_t outSize) const {
+  const MapTransferReceiver::Status transfer = transfer_.status();
+  if (!transfer.active) return false;
+
+  // The coordinate, when the file is a tile. A route or a style push parses no
+  // coordinate (MapTransferReceiver::Status::activeTile) and gets the byte
+  // counts on their own -- there is nothing honest to put in front of them.
+  // Sized for the types and not for the data (same rule as MapCommandConsole's
+  // kReplyBuf): a truncated tile coordinate on the panel points at the wrong
+  // ground. Real values are far shorter -- z <= 13, col/row < 2^13.
+  char where[32] = {};
+  if (transfer.activeTileValid) {
+    snprintf(where, sizeof(where), "z%u %lu/%lu  ", static_cast<unsigned>(transfer.activeTile.z),
+             static_cast<unsigned long>(transfer.activeTile.col), static_cast<unsigned long>(transfer.activeTile.row));
+  }
+
+  char total[16];
+  formatBytes(transfer.total, total, sizeof(total));
+
+  // The verify stage is a real pause with no byte movement: the CRC is read
+  // back off the card after the last chunk rather than accumulated from the
+  // chunks as they arrive (MapTransferReceiver.h, "Write to .part, rename at
+  // the end"), which on a megabyte tile is seconds of a panel that would
+  // otherwise sit on the same number. Silence is what a dead link looks like,
+  // so the two must not look alike.
+  if (transfer.verifying) {
+    snprintf(out, outSize, "%s%s  %s", where, total, tr(STR_TILE_SYNC_VERIFYING));
+    return true;
+  }
+
+  char got[16];
+  formatBytes(transfer.received, got, sizeof(got));
+  snprintf(out, outSize, "%s%s / %s", where, got, total);
+  return true;
 }
 
 void TileSyncActivity::renderScreen() {
@@ -1005,7 +1386,10 @@ void TileSyncActivity::renderScreen() {
       // transfer.completed too, so a freshness-only visit showed "1 / 0"
       // (seen on the panel 2026-08-13). Just the bytes in that case -- the
       // freshness line below says what they were.
-      if (rowCount_ == 0) {
+      // runTotal(), not rowCount_: an announced batch has no rows and would
+      // otherwise finish showing only a byte count, with nothing to say how
+      // many of the files arrived.
+      if (runTotal() == 0) {
         snprintf(status, sizeof(status), "%s", moved);
       } else {
         snprintf(status, sizeof(status), "%lu / %lu%s   %s", static_cast<unsigned long>(transfer.completed),
@@ -1063,6 +1447,15 @@ void TileSyncActivity::renderScreen() {
     renderer.drawText(UI_10_FONT_ID, metrics.contentSidePadding, y, status, true);
     y += lineHeight;
 
+    // The file on the wire, under the run's own numbers. Its room is reserved
+    // whether or not anything is in flight (gridRect), so nothing below it
+    // moves when a transfer starts or ends.
+    char activeFile[64];
+    if (formatActiveFile(activeFile, sizeof(activeFile))) {
+      renderer.drawText(UI_10_FONT_ID, metrics.contentSidePadding, y, activeFile, true);
+    }
+    y += lineHeight;
+
     // Same line on a screen that is still running: a check can be in flight
     // while the fetch's own bar is up, and it must not look like part of it.
     char freshness[64];
@@ -1090,7 +1483,25 @@ void TileSyncActivity::renderScreen() {
       GUI.drawProgressBar(
           renderer,
           Rect{metrics.contentSidePadding, y, pageWidth - metrics.contentSidePadding * 2, metrics.progressBarHeight},
-          transfer.completed, rowCount_ > 0 ? rowCount_ : 1);
+          transfer.completed, runTotal() > 0 ? runTotal() : 1);
+
+      // **Back cancels, and until now nothing said so.** onExit() detaches the
+      // receiver and ends the BLE server, so the file in flight dies and the
+      // phone sees the link drop. On a reactive three-tile sync that is a
+      // moment; on a pre-trip batch it is tens of minutes of radio, and a
+      // rider who does not know sits there afraid to touch anything.
+      //
+      // The second line is the half that matters: the queue is on the phone,
+      // so a cancelled batch resumes at the next pending file on the next
+      // connection. Two lines because one runs off the right edge at this size
+      // -- the same measurement the not-built verdict is split for.
+      //
+      // Only while Running: leaving a screen that is waiting or finished
+      // cancels nothing, and a warning that is not true is worse than none.
+      int wx, wy, ww, wh;
+      warningRect(wx, wy, ww, wh);
+      renderer.drawText(UI_10_FONT_ID, wx, wy, tr(STR_TILE_SYNC_STAY), true);
+      renderer.drawText(UI_10_FONT_ID, wx, wy + lineHeight, tr(STR_TILE_SYNC_STAY_2), true);
     }
 
     drawGrid(0);
@@ -1118,14 +1529,16 @@ void TileSyncActivity::updateProgress() {
     // below is not reached and preventAutoSleep()'s clock has to be
     // re-stamped here instead.
     phaseEnteredMs_ = lastSettleMs_;
-    if (phase_ == Phase::Running && done + skipped_ >= rowCount_) {
+    // runTotal(), not rowCount_: an announced batch has a total and no rows,
+    // and a run that could not tell the two apart would never finish one.
+    if (phase_ == Phase::Running && done + skipped_ >= runTotal()) {
       enterPhase(Phase::Finished);
       verdict_ = StrId::STR_MAP_FETCH_DONE;
       LOG_INF(kLogTag, "done, %lu landed, %lu skipped", static_cast<unsigned long>(done),
               static_cast<unsigned long>(skipped_));
       // The queue's second half. Held until now on purpose: two conversations on
       // one command channel cross each other's replies (see trackPhone).
-      askAboutFreshness();
+      if (!askAboutFreshness()) askAboutPoints();
     }
     renderScreen();
     return;
@@ -1145,7 +1558,7 @@ void TileSyncActivity::updateProgress() {
     verdict_ = StrId::STR_TILE_SYNC_NO_ANSWER;
     LOG_INF(kLogTag, "no answer for %lu ms, %lu landed, %lu skipped", static_cast<unsigned long>(kStallVerdictMs),
             static_cast<unsigned long>(done), static_cast<unsigned long>(skipped_));
-    askAboutFreshness();
+    if (!askAboutFreshness()) askAboutPoints();
     renderScreen();
     return;
   }
@@ -1174,7 +1587,7 @@ void TileSyncActivity::updateProgress() {
       LOG_INF(kLogTag, "stalled mid-transfer for %lu ms, %lu landed, %lu skipped",
               static_cast<unsigned long>(kStallVerdictMs), static_cast<unsigned long>(done),
               static_cast<unsigned long>(skipped_));
-      askAboutFreshness();
+      if (!askAboutFreshness()) askAboutPoints();
       renderScreen();
       return;
     }
@@ -1183,23 +1596,34 @@ void TileSyncActivity::updateProgress() {
     transferWasActive_ = false;
   }
 
-  if (phase_ != Phase::Running || !transfer.active || !transfer.activeTileValid) return;
+  // No activeTileValid gate: a route or a style push moves bytes for just as
+  // long and its line is the byte counts without a coordinate
+  // (formatActiveFile). Gating on it left those transfers with a screen that
+  // held still for the whole of one.
+  if (phase_ != Phase::Running || !transfer.active) return;
 
   // Between arrivals the grid has nothing to say -- a square is there or it is
-  // gone -- so the live part of this screen is the summary line: bytes moved,
-  // rate, ETA. Rate-capped, because every repaint is a real waveform pass, and
-  // windowed to that one line so the grid is not redrawn for a number.
+  // gone -- so the live part of this screen is the two lines at the top: the
+  // run's bytes, rate and ETA, and the file on the wire under them.
+  // Rate-capped, because every repaint is a real waveform pass, and windowed to
+  // those two lines so the grid is not redrawn for a number.
   const uint32_t now = millis();
   if (now - lastActiveDrawMs_ < kSummaryRefreshMs) return;
   lastActiveDrawMs_ = now;
 
+  const int lineHeight = renderer.getLineHeight(UI_10_FONT_ID);
   char status[112];
   formatSummary(status, sizeof(status));
+  char activeFile[64];
+  const bool hasActiveFile = formatActiveFile(activeFile, sizeof(activeFile));
 
   int sx, sy, sw, sh;
   summaryRect(sx, sy, sw, sh);
   renderer.fillRect(sx, sy, sw, sh, false);
   renderer.drawText(UI_10_FONT_ID, sx, sy, status, true);
+  // One window for both, not one each: two displayBufferWindow() calls are two
+  // waveform passes for one update.
+  if (hasActiveFile) renderer.drawText(UI_10_FONT_ID, sx, sy + lineHeight, activeFile, true);
   if (!renderer.displayBufferWindow(sx, sy, sw, sh)) {
     LOG_ERR(kLogTag, "summary window rejected: %d,%d %dx%d", sx, sy, sw, sh);
   }

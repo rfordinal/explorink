@@ -9,6 +9,9 @@ add_executable(map_preview
   ${REPO_ROOT}/src/activities/map/MapRenderer.cpp
   ${REPO_ROOT}/src/activities/map/MapAreaFill.cpp
   ${REPO_ROOT}/src/activities/map/MapProjection.cpp
+  ${REPO_ROOT}/src/activities/map/MapPointMarks.cpp
+  ${REPO_ROOT}/src/activities/map/MapPointReader.cpp
+  ${REPO_ROOT}/src/activities/map/MapPointSource.cpp
   ${REPO_ROOT}/src/activities/map/MapRouteReader.cpp
   ${REPO_ROOT}/src/activities/map/MapRouteFit.cpp
   ${REPO_ROOT}/src/activities/map/MapRouteSource.cpp
@@ -25,6 +28,7 @@ target_include_directories(map_preview PRIVATE
   ${REPO_ROOT}/src/activities/map
   ${REPO_ROOT}/lib/EpdFont
   ${REPO_ROOT}/lib/Utf8
+  ${REPO_ROOT}/freeink-sdk/libs/assets/Icons/include
   ${CMAKE_CURRENT_SOURCE_DIR}
 )
 
@@ -55,6 +59,9 @@ add_executable(marker_stamp
   ${REPO_ROOT}/src/activities/map/MapRenderer.cpp
   ${REPO_ROOT}/src/activities/map/MapAreaFill.cpp
   ${REPO_ROOT}/src/activities/map/MapProjection.cpp
+  ${REPO_ROOT}/src/activities/map/MapPointMarks.cpp
+  ${REPO_ROOT}/src/activities/map/MapPointReader.cpp
+  ${REPO_ROOT}/src/activities/map/MapPointSource.cpp
   ${REPO_ROOT}/src/activities/map/MapRouteReader.cpp
   ${REPO_ROOT}/src/activities/map/MapRouteFit.cpp
   ${REPO_ROOT}/src/activities/map/MapRouteSource.cpp
@@ -70,6 +77,7 @@ target_include_directories(marker_stamp PRIVATE
   ${REPO_ROOT}/src/activities/map
   ${REPO_ROOT}/lib/EpdFont
   ${REPO_ROOT}/lib/Utf8
+  ${REPO_ROOT}/freeink-sdk/libs/assets/Icons/include
   ${CMAKE_CURRENT_SOURCE_DIR}
 )
 target_link_libraries(marker_stamp PRIVATE crosspoint_test_common ZLIB::ZLIB)

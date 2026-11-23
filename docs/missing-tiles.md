@@ -20,6 +20,17 @@ device what it is short of and push those tiles back
 > `MapActivity::drainTransferredTiles()`, which the autosync work below needed
 > anyway. Read off the code, not yet run against a real arrival.
 
+## Autosync needs the phone link, so a GNSS session has none
+
+**Since 2026-09-03 the map runs one radio, not two.** With `mapGnssPosition` on,
+`MapActivity::onEnter()` never calls `BlePositionServer::begin()`, so nothing on
+the map screen can ask the phone for a tile: a missing tile stays hatched for the
+whole session. The tile sync screen is unaffected and still fetches over BLE.
+
+Why it is a trade rather than a bug, and what else it costs:
+[`map-header-status.md`](map-header-status.md), "One radio per session, so one
+set of icons".
+
 ## A tile that is out of date is a different list
 
 This store is about tiles the device **does not have**. A tile that opens fine
@@ -35,6 +46,190 @@ of this store make it the wrong home:
 `StaleTilesList` (`src/activities/map/StaleTilesList.h`) keeps those in memory
 instead, empty on every boot. See [`tile-freshness.md`](tile-freshness.md) for
 the signal, the setting and the loop guard.
+
+## A fully hatched frame says nothing, so it carries a notice
+
+Hatch is the honest answer for one missing tile. For a frame where **every**
+tile is missing it is not an answer at all: the rider sees diagonal lines, a
+compass and a scale bar, and nothing on the panel says whether the device is
+broken, the card is empty, or the ground is simply unbuilt. On a fresh device
+that is the first frame of the product.
+
+`MapActivity::drawNoDataNotice()`, called from `composeViewport()`, draws a
+boxed notice over the hatch
+when the whole range is missing.
+
+**Only when every tile is missing.** A partially drawn map explains itself --
+the rider can see where the data stops -- and a box over it would cover the map
+they do have. The guard is the full-range mask, not a count threshold.
+
+**Six variants, each from a state the device already knows:**
+
+| State | Line under the title |
+|---|---|
+| `autoSyncPending_ > 0` | `Your phone is sending it now (N)` |
+| link up, autosync on, nothing refused | `Auto sync on, the phone will fetch it` |
+| link up, autosync on, a refusal pending under 60 s | `Not built yet, auto retry shortly` |
+| link up, autosync on, a refusal pending over 60 s | `Not built yet, auto retry in N min` |
+| link up, autosync off (the default) | `Auto sync is off` + `Get it from Home > Sync` |
+| no link | `Connect the phone app to get it` |
+| the card never mounted | `Map card not readable` + `Check the SD card` |
+
+Every variant **except the card one** ends with `Device is fine, map data is
+missing`, because the fear the notice exists to answer is "I bought a broken
+device", not "where are my tiles". With the card unreadable that line would be
+the lie, so that branch does without it.
+
+**And one case the notice gets wrong, on purpose rather than by accident.** A
+card pulled *mid-ride* fails every tile exactly as unbuilt ground does, and
+`Storage.ready()` only answers "it mounted at boot" -- so that rider is told the
+device is fine. An `exists()` probe was tried and removed: SdFat answers a
+directory lookup out of `FsCache` when the sector is resident, and a failed read
+never updates `m_sector`, so the probe keeps returning true after the card is
+gone (`FsCache::prepare()`). Closing this needs `MapTileSource` to report *why*
+an open failed -- I/O error against not-found -- which it does not today.
+
+**"Not built yet" is accurate, not a comfort.** A refusal is the phone's 404
+against the CDN, and that 404 is what queues the build
+(`../../docs/tile-autobuild.md`). The countdown is the refusal schedule this
+store already keeps, read through `MissingTilesStore::msUntilNextRetryIn()`
+-- the same `retryAtMs` that decides when autosync may ask again, so the text
+cannot drift from the behaviour. Rectangle-scoped, and the per-tile half of it
+lives in `MissingTileRetry.h` with host tests.
+
+**The frame it needs is asked for, not waited for.** A full compose happens only
+on `MapFollow::Action::ReAnchor`; `Skip` and `MoveMarker` never call
+`composeViewport()`. So a rider who stops -- which is what you do when the
+screen is blank -- would get "the phone will fetch it" and then no frame at all,
+and the countdown would never appear. `refreshNoDataState()` requests one frame
+on the 0 -> pending edge, and only that edge, so a ticking countdown costs no
+redraws.
+
+### No minutes unless the device knows the minutes
+
+The first draft of this notice said "the first area takes 20 to 40 minutes".
+That number is real and belongs to a different screen. It comes from a whole
+city on the sync screen -- 55 tiles, 16 MB -- and the notice is about **one
+viewport**, which is what autosync asks for: at most four tiles, and a
+reactive-sync tile is 6 kB to 75 kB ("What the panel says while a batch runs",
+below) against a city tile's 258 kB average. Over the 8.9 kB/s this link was
+measured at, one screenful is seconds to a couple of minutes. The draft was
+promising a wait roughly forty times too long.
+
+So the box prints no duration it cannot source. The outstanding square count
+comes from `autoSyncPending_`, the countdown from the refusal timer, and the
+remaining-time estimate stays on the sync screen, which measures its own.
+
+### Confirmed on hardware, 2026-11-14, X4 Pro
+
+Flashed `env:x4pro` at `cfbc32ea`, a phone bridge connected over BLE, driven
+with `pos` to ground the card does not cover:
+
+- Right after the move: `Auto sync on, the phone will fetch it`.
+- After the ask went out and the phone answered `skip` (the area is genuinely
+  unbuilt): `Not built yet, auto retry shortly`, then
+  `Not built yet, auto retry in 1 min` on a later frame. So the countdown came
+  from a refusal that really happened over the radio.
+- `mapAutoSyncTiles` toggled off over `CMD:SETTING`: the four-line
+  `Auto sync is off` / `Get it from Home > Sync` variant.
+- Bluetooth off on both phones, map re-entered: `Connect the phone app to get
+  it`.
+- **Negative tests both pass**: a viewport with 2 of 4 tiles present draws hatch
+  and no box, and a fully covered viewport is untouched.
+- Checked at zoom rungs 0, 4 and 6 -- the box is unchanged across the ladder.
+**The hands-off run, 2026-11-15, and what it took to pass it.** Parked an X4
+Pro on unbuilt sea, touched nothing afterwards -- no `pos`, no `redraw` -- and
+watched the log. First attempt: every ask came back `nosource` over the radio
+while the panel sat on `Your phone is sending it now (3)` indefinitely. The
+redraw request existed by then, but it fired on the countdown *arming*, and at
+that moment the fetching branch was still winning the ladder; by the time the
+line would have changed, the edge was spent.
+
+So the trigger is the **line**, not a branch. `noDataVariantFor()` is the one
+copy of the ladder: the frame turns its answer into text, the main task
+compares it with the last one and asks for a frame when it differs. Second
+attempt logged `no-data notice: line changed (2 -> 3), asking for a frame` and
+the panel, read without touching it, showed `Not built yet, auto retry in
+2 min`. That is the feature working rather than being driven.
+
+Variant changes only, never the ticking minutes: a full-panel redraw a minute
+on e-ink is not worth a number nobody is watching.
+
+**And the hardware check that "confirmed" the countdown was driven by
+`redraw`.** The console command forces a compose, which is the frame the
+product does not produce on its own -- so the pass proved the text and the
+arithmetic and said nothing about whether a rider would ever see it. Found by
+review, 2026-11-15, after two hardware passes had called it verified. **A
+`CMD:` that makes something happen is not evidence the device makes it happen**
+(parent `docs/research-rules.md`, "An instrument that answers correctly").
+
+- **Second geometry, same day**: `env:t5s3pro` on a LilyGo T5 S3 Pro (960x540
+  against the X4 Pro's 800x480). The box centres and the three lines fit
+  without touching the side hints, so the width clamp holds on both panels.
+  That board had no phone, so it drew the no-link variant.
+
+### Second pass, 2026-11-15, after an adversarial review of the diff
+
+The review found three real defects (see the commit history; the thread-safety
+one is the reason `noDataRetryMs_` exists). The whole sweep was re-run on both
+boards at `74f3316c`:
+
+- **The fetching variant, with a real transfer this time**: `Your phone is
+  sending it now (11)` while eleven tiles were actually on the wire. The first
+  pass had only caught that variant as a transient.
+- Then `Not built yet, auto retry shortly` once the supplier refused, the
+  four-line `Auto sync is off` variant, and the no-link one. Negative cases
+  again clean: 4 of 12 tiles present draws hatch and map with no box.
+- The 960x540 panel re-checked with the clamp now taken from
+  `GUI.sideButtonHintsRect()` rather than `kSideHintReservedPx`.
+
+**Third pass, same day: the countdown leaked across a jump.** With the
+viewport filter in and the store-wide figure gone, an X4 Pro parked over the
+Black Sea until `auto retry shortly` appeared, then jumped 500 km east to
+ground nothing had ever asked for -- and the first frame there printed the same
+line. The filter was right and the timing was not: the published figure belongs
+to the range the main task last saw, and the frame that *moves* is painted
+before that task catches up. On e-ink that frame can sit for minutes.
+
+`drawNoDataNotice()` compares the range it is drawing against `lastTileRange_`,
+which still holds the previous frame's range at that point (the snapshot that
+updates it is further down `composeViewport()`), and prints the countdown only
+when they match. Verified by repeating the jump: the second frame at the parked
+spot shows `Not built yet, auto retry shortly`, and the first frame 300 km away
+shows `Auto sync on, the phone will fetch it`.
+
+**Repeated on the T5 S3 Pro with a real phone, 2026-11-15.** That board runs
+`mapGnssPosition=1`, so its map session owns the receiver and starts no radio
+for a phone ("Autosync needs the phone link, so a GNSS session has none",
+above) -- the setting has to go to 0 and the map be re-entered before any of
+this is reachable there. **No pairing was needed**: the bridge scans for the
+names in `BleLink.KNOWN_DEVICE_NAMES`, `LilyGoT5S3Map` among them, so it
+attached by name as soon as the X4 Pro left the map and stopped advertising.
+One reader at a time, in practice, because the phone holds one link.
+
+The run then reproduced the whole chain on that panel: `autosync: asked for 1
+tiles on screen`, `rx: skip 13 4882 3039 nosource`, `z13 4882/3039 refused,
+not asking again`, the second frame at that range printing `Not built yet,
+auto retry shortly`, and the first frame 300 km away printing `Auto sync on,
+the phone will fetch it`. Both boards restored afterwards: `mapGnssPosition`
+back to 1 and the X4 Pro back on the map, which is what the phone reconnects
+to.
+
+**Neither review round caught it.** Both found that the countdown was about the
+wrong tiles, and the fix for the steady state was right; the extra frame only
+showed up because the board was actually moved. Reviews read the code, the
+board reads the behaviour.
+
+**Two traps worth keeping.** A screenshot taken right after `CMD:SETTING
+mapAutoSyncTiles 0` still showed the *previous* variant -- the frame had been
+composed before the setting landed, and only a forced `redraw` showed the real
+one. Read it as a defect and you would "fix" working code.
+
+And ground that was bare on 2026-11-14 reported `tiles_ok=20, tiles_missing=0`
+on 2026-11-15 without anyone asking for it: the first day's 404s queued the
+build on the CDN, `tilequeue` built that ground overnight, and autosync pulled
+it down. The loop this notice describes -- hatch, ask, 404, build, fetch --
+closed on its own between two test sessions.
 
 ## A valid tile can still be a hole
 
@@ -392,6 +587,108 @@ Unlike a reorder, a removal **does** mark the store dirty. A list that still
 asks for tiles already on the card would have the phone send them all again
 after a restart.
 
+### A corrupt arrival is never refused, so it is re-fetched forever (2026-08-23)
+
+**Measured in the desktop simulator** (`simulator.md`, "BLE"): the real firmware
+over a fake radio, with a local fake CDN serving two damaged tiles. **Nothing
+here ran on hardware; there is no device.** This is a data-cost bug on the
+rider's phone, not a rendering bug.
+
+The rendering half is correct and worth saying first. A damaged `.tib` is
+detected -- absent, truncated or header-crc32-mismatched all take the same
+branch (`src/activities/map/MapTileSource.cpp:116-125`) -- it is hatched, and
+**no garbage geometry ever reaches the screen.** One tile with its format
+version field flipped from 3 to 99 and one with a byte flipped 26 KB into its
+body produced `14 ways` instead of `623` and both squares hatched.
+
+The demand bookkeeping is where it goes wrong. `drainTransferredTiles()` calls
+`MISSING_TILES.forget(z, col, row)` on **any** landed tile
+(`src/activities/map/MapActivity.cpp:881`): the store learns "this tile
+arrived", never "this tile is usable". The next render re-opens it, fails,
+hatches it, and re-`record()`s it at count 1 with no refusal
+(`src/activities/map/MapActivity.cpp:5105-5106`). It is `fetchable` again, and
+the only brake left is the 60 s rate cap (`kAutoSyncIntervalMs`,
+`src/activities/map/MapActivity.cpp:94`).
+
+Measured over 145 s: **three full rounds, both tiles pushed each time.**
+
+```
+[  4773] autosync: asked for 2 tiles on screen
+[  4882] [MAPXFER] done /trailink/base/12/2267/1403.tib, 34809 bytes, crc 3d6e1662
+[  4900] [MAPXFER] done /trailink/base/12/2267/1404.tib, 52190 bytes, crc ed5d34fd
+[  4886] z12 2267/1403 arrived, dropped from the list
+[  4909] z12 2267/1404 arrived, dropped from the list
+[  9930] reset z12 ...: 1 tiles ok, 1 missing (mask 0x3), 14 ways, 0 filtered, 1 places, 29630 bytes
+[ 64795] autosync: asked for 2 tiles on screen        <-- 60 s later, both pushed again
+[124809] autosync: asked for 2 tiles on screen        <-- and again
+```
+
+87 KB of the rider's mobile data per round, so about **5.2 MB/hour on a tile
+that will never render**, against roughly **87 KB/hour** the same tile costs if
+the phone answers `skip` and the refusal schedule reaches its 60-minute cap. A
+factor of about 60, forever, for as long as the rider stays in that viewport.
+
+The transfer layer has nothing to complain about, which is the point: the CRC in
+the `begin` frame was computed over the damaged bytes, so the file arrived
+exactly as declared. A corrupt tile is a *tile* integrity failure, and only the
+tile reader sees it.
+
+**What would fix it:** the arrival path already knows whether the tile opens --
+it is the next render that finds out. Feeding that result back, so a tile that
+fails to open after arriving is marked refused rather than merely forgotten, is
+the same shape as the ping-pong guard `StaleTilesList` already has for a tile
+reported stale twice (`MapActivity.cpp:866-879`). Not attempted here.
+
+**Open -- needs hardware:** nothing about the mechanism, which is arithmetic and
+read off the code. What hardware would add is whether a real CDN ever serves a
+tile that passes the transfer CRC and fails the tile CRC. Today's only known
+route to that is a build bug on our side, which makes this a small-probability,
+high-cost failure rather than a common one.
+
+### The tile-count log line mixes a per-pass counter with a per-frame mask
+
+`1 tiles ok, 1 missing (mask 0x3)` reads like a bug and is not, and it took a
+reading of the header comment to be sure. Worth one paragraph here because that
+log line is the first thing anyone reads.
+
+`tilesOpened_` and `tilesUnavailable_` are reset per render **pass**
+(`src/activities/map/MapTileSource.cpp:101-102`, in `startPass()`), while
+`unavailableMask_` accumulates across every pass of the frame and is cleared
+only by `begin()` -- stated at `src/activities/map/MapTileSource.h:106-113`. The
+log line prints all three together
+(`src/activities/map/MapActivity.cpp:5312-5317`). So a tile that opens on one
+pass and fails on another sets its mask bit while the last pass counts it as
+opened, and **the two counts need not sum to `popcount(mask)`**. The counters
+describe a pass; the mask describes the frame. A corrupt tile makes them
+visibly disagree.
+
+### The `tileSeq` collapse race is reproducible, and costs slightly more than the comment says
+
+The comment at `src/activities/map/MapTransferReceiver.h:148-151` prices this as
+theoretical: "Two tiles landing between two `loop()` iterations would collapse
+into one removal here. A whole file takes seconds and `loop()` runs
+continuously, so this is a theoretical race, and its cost is one stale entry
+that the next fetch asks for again -- not corruption."
+
+**It fired on the first attempt in the simulator**, because two files landed
+13 ms apart (`done` at 64863 and 64876) where a real radio would put them
+seconds apart. So it is reachable, and the mechanism is confirmed. **It is not
+evidence the race matters on device today** -- the simulator's speed is the only
+reason it was reachable.
+
+What the run adds is the price. Besides the stale entry, the **ask never
+settles**, so `autoSyncPending_` holds the next ask off for the full
+`kAutoSyncQuietMs`:
+
+```
+[112888] autosync: 1 tiles unanswered for 45s, giving up
+```
+
+That is a 45 s stall on top of one re-ask. Still not corruption, and still not
+worth a lock -- but it becomes reachable the moment a faster transport lands.
+Wi-Fi Fast Sync sits exactly in this window.
+
+
 ## Autosync: the map screen asking for what it just hatched
 
 **Off by default.** Settings > Map > *Auto-sync tiles*
@@ -489,11 +786,14 @@ the padding" is a claim about the compiler, not about the code.
 second while the first is outstanding. A rate cap, not a settle timer: more
 hatching does not push the next ask further out.
 
-### The globe
+### The transfer icon
 
-A circle with an equator and a meridian, left of the Bluetooth logo in the
-header row (`MapActivity::drawHeaderStatus()`). Lit while `autoSyncPending_ > 0`
--- tiles asked for and not yet settled by an arrival or a `skip`.
+Left of the Bluetooth logo in the header row
+(`MapActivity::drawHeaderStatus()`). Lit while `autoSyncPending_ > 0` -- tiles
+asked for and not yet settled by an arrival or a `skip`. A baked Lucide glyph
+(two opposite arrows, `arrow-left-right`) since 2026-08-31; a hand-drawn globe
+(circle, equator, meridian) before that -- see `docs/map-header-status.md` for
+the change.
 
 The device has no radio that reaches the internet; the phone does. The glyph is
 still honest about the thing that matters to the rider: **mobile data is being
@@ -695,6 +995,89 @@ subscription a central can make.
 `isCommandSubscribed()`, never the reply path's return value.** `indicate()`
 succeeds into an empty room.
 
+### The transfer path, driven end to end (2026-08-23)
+
+**Measured in the desktop simulator** (`simulator.md`, "BLE"). **No hardware;
+there is no device.** Twenty-odd cases, each with a positive control -- the same
+frame with one field changed, accepted -- so a refusal cannot be passing for the
+wrong reason.
+
+**Every refusal the protocol specifies fired, with the reason it specifies, and
+every boundary tested was exact.** `bad path` (a `..` component, a leading `/`, a
+trailing `/`, an empty component, a backslash, a control byte, non-ASCII),
+`bad path length` (80 bytes accepted, 81 refused), `bad length` (8388608
+accepted, 8388609 refused, 0 refused, 1 accepted), `status not subscribed`,
+`busy`, `no transfer`, `bad opcode`, `short chunk`, `offset`, `overrun`,
+`crc mismatch`, `aborted`, `screen closed`, `open failed`, and the 30 s stale
+reclaim (5 s idle refused, 31 s idle reclaimed). The `..` check is component-wise
+rather than a substring search: `base/a..b.tib` is accepted, which is the
+documented behaviour. The backslash case was pinned with three paths of identical
+length differing in one byte.
+
+**The whole-file CRC is read back off the card, not accumulated over the
+chunks.** Proved rather than cited: the simulated SD is a host directory, so one
+byte of the `.part` was flipped from outside **while the transfer was still
+streaming**, every byte on the wire staying correct. The device answered
+`ERR crc mismatch` (`crc mismatch: got 040154f1, declared 8fa4fc2c`). An
+accumulate-over-chunks CRC would have passed. So `OK` really does mean the card
+holds those bytes.
+
+**A pushed tile is decoded and re-read by `MapTileReader`**, four ways in one
+run: the `OK` line's CRC, a forced viewport reset that read `2 tiles ok, 0
+missing, 623 ways, 1152 filtered, 6 places, 145961 bytes` -- byte-identical
+counts to a pristine card -- the device reporting the tile's `content_id` as the
+value an independent parser derives from the source file's six layer CRCs, and
+`cmp` on the landed file.
+
+Five residues, none of them a broken refusal, all of them invisible from the
+status channel:
+
+- **A refused, aborted or dropped transfer leaves its parent directories
+  behind.** `begin` creates them before anything is written
+  (`src/activities/map/MapTransferReceiver.cpp:300-308`) and nothing removes
+  them. Thirteen empty directories after one run of the cases above. Harmless
+  for a phone pushing tiles; for an unauthenticated peer it is an unbounded
+  directory-creation primitive on the rider's card, one directory entry per
+  frame.
+- **A peer can hold a transfer open and make the rider's own phone see
+  `ERR busy` for 30 s.** `src/activities/map/MapTransferReceiver.cpp:278-287`,
+  `kStaleTransferMs = 30000` (`MapTransferReceiver.h:167`). Bounded and
+  self-healing, and there is no ownership check to appeal to.
+- **A refusal that cannot be indicated is parked and delivered on the next
+  subscribe**, inside the same connection. A sender that subscribes *after* its
+  first `begin` therefore reads a verdict belonging to a frame it has already
+  given up on. Parked lines are cleared on disconnect
+  (`lib/BlePositionServer/src/BlePositionServer.cpp:727-731`) and on `begin()`
+  (`:347-350`), so the hazard is confined to one connection, and ordering saves a
+  correct sender: the stale `ERR` arrives *before* the live `RDY`. Worth one line
+  in the protocol doc.
+- **`MapTransferReceiver` never bounds an arriving frame against
+  `BlePositionServer::transferPayloadBytes()`.** On device the ATT bearer is the
+  only thing that does. Not testable in the simulator, which accepts an over-MTU
+  write on purpose (a real central turns one into a long write, so a client
+  cannot honestly reject it locally). Informational: fine on hardware, and
+  something to remember before trusting any frame-size test done here.
+- **`base/./x.tib` is accepted.** A `.` component is not an escape, so this is
+  cosmetic -- listed only so it is not rediscovered as a hole.
+
+Two documented refusal reasons could not be reached, and both are simulator
+limits rather than firmware questions. `mkdir failed` is unreachable because the
+simulator's `mkdir` returns true on `EEXIST`, so a file blocking a directory name
+fails the *open* instead. `write failed` needs a full card, and the simulated
+card is a directory on a multi-gigabyte host filesystem; a size-limited loop
+filesystem would settle it.
+
+**Why the path check is a security boundary and not hygiene.** Paths are joined
+as `<root>/<rel>` with `snprintf` and no normalisation
+(`src/activities/map/MapTransferReceiver.cpp:289-290`), root `/explorink`. One
+accepted `..` reaches the card root, where `.crosspoint/settings.json` lives. The
+check holds today, on live code, against every escape tried. What it does **not**
+bound is the legitimate surface: any safe relative path under the root is
+writable, `pins/pins.log` included, by anyone in radio range. That is the
+documented design ("the channel carries any file"), and this run makes it
+concrete -- see `ble-advertising.md`, "What the open channel now demonstrably
+allows", and T-222.
+
 ### Verified vs assumed (autosync)
 
 - **Verified end to end on hardware, 2026-08-07** (this branch, `fmt 3`, a
@@ -751,7 +1134,7 @@ succeeds into an empty room.
     in the session log, at zoom rungs 0 and 1 with 1-2 tiles loaded.
 - **Verified against the real phone app, 2026-08-07** -- the whole chain, with
   nothing standing in for anything. A tile under the rider's actual position was
-  deleted off the card over WebDAV (`DELETE /trailink/base/13/4485/2843.tib`,
+  deleted off the card over WebDAV (`DELETE /explorink/base/13/4485/2843.tib`,
   204, then 404 to confirm), the map was reopened and the app connected:
 
   ```
@@ -798,14 +1181,17 @@ happens there -- `renderViewport()` calls `record()` on every hatched tile --
 so it is record on the trail, fetch at home, and the two are never on screen
 together.
 
-**What this is not: a pre-trip cache.** Both paths fill squares the device
-already recorded as missing, which means the rider has already been there and
-looked at a hatched hole. Nothing here can request ground nobody has ridden: no
-bounding box, no corridor around a loaded route, no "put Slovenia on the card
-before Friday". Saying this screen is "preparation" is true only in the sense of
-preparing for a **repeat** of a ride. The feature that would cover a new trip, and
-the four pieces it needs, is written down in the parent repo's
+**The device still cannot ask for a pre-trip cache.** Both paths above fill
+squares the device already recorded as missing, which means the rider has
+already been there and looked at a hatched hole. Nothing on this side requests
+ground nobody has ridden: no bounding box, no corridor around a loaded route, no
+"put Slovenia on the card before Friday". The feature that would cover a new
+trip, and the four pieces it needs, is written down in the parent repo's
 `docs/roadmap.md`, "Pre-trip caching".
+
+What changed 2026-09-02 is the other half: the device can now be **told** about
+such a batch and show it. The phone picks the area and owns the queue; the
+device is handed a count. See "A batch the device never asked for" below.
 
 The console state is deliberately **not** shared with the map's. Two screens are
 never up at once, and sharing would put this screen's skip tally and the map's
@@ -941,6 +1327,346 @@ spend the transfer refreshing instead of receiving.
 BACK cancels. The device cannot stop the phone from its end -- the transfer
 protocol's abort opcode (`0x03`) is a frame the *central* writes -- so the
 cancel is `FETCH_CANCEL` on the command channel.
+
+## A batch the device never asked for
+
+**Written 2026-09-02. Compiles clean, host tests pass, nothing here has run on a
+device.** Every claim below is read off the code. What a hardware pass has to
+check is at the end of the section.
+
+The phone is growing a pre-trip push: the rider picks a place, the app queues
+every tile in a box around it and sends them over as many connections as it
+takes (parent repo, `docs/send-tiles-plan.md`). That ground is on no list here,
+so the sync screen has nothing to size itself from, and three gaps open.
+
+### 1. `push <n>` -- the phone announcing a batch
+
+`armRun()` reads `MISSING_TILES`, so for ground never ridden `rowCount_` is 0,
+`onEnter()` takes the "nothing missing" branch and the screen sits in Finished
+(`src/activities/map/TileSyncActivity.cpp`, the `rowCount_ == 0` branch of
+`onEnter()`). Bytes still land -- `transfer_.attach()` runs before the run is
+armed -- but every progress element is gated on `Phase::Running`. The rider
+watches a screen saying there is nothing to do while 55 tiles stream in.
+
+So the phone sends `push <n>` on the command channel **before its first begin
+frame**:
+
+```
+> push 55
+< OK
+```
+
+- Parsed in the shared grammar, so serial and BLE take it identically
+  (`src/activities/map/MapCommandParser.cpp:319`, dispatched at `:457`).
+- `n` is files, not tiles: a route or a style push costs the same wire time.
+  Bounded at `kMaxPushCount` = 4096 (`MapCommandParser.cpp:29`). A 40 km box
+  around Barcelona is 77 tiles (measured off the CDN index 2026-09-02,
+  `docs/send-tiles-plan.md` in the parent repo) and the reactive list caps at
+  200, so the bound is an order of magnitude past any real batch. Nothing is
+  allocated from it -- it is only ever a denominator.
+- `push 0` is rejected (`OutOfRange`). A batch of nothing is a phone-side bug,
+  and answering `OK` to it would leave a run that can never move.
+- **Sent once per connection**, before that connection's first begin frame --
+  not once per batch. A link that drops takes the run with it: the screen goes
+  back to Waiting, and when the phone comes back the sync screen is in Finished
+  with `rowCount_` 0, so bytes arriving without a fresh `push` land dark again.
+  The phone re-announces what it still owes; the device replaces the old total
+  rather than adding to it, so nothing is double counted.
+- The reply is `OK` and nothing else. A screen with no push observer answers
+  `INFO push=unavailable` first (`MapCommandConsole.cpp:183`) -- the same
+  distinction `fake=unavailable` and `pins=unavailable` make. The map screen is
+  that case, deliberately.
+
+**Security.** Write-only, and it reveals nothing: no position, no route, no
+stored data. What it can do is make the sync screen show a run that never
+arrives, which the existing 30 s stall verdict (`kStallVerdictMs`) ends by
+itself. No new exposure over what the transfer channel already has (parent repo
+`docs/TODO.md`, T-222). No extra release gating either: the whole map BLE
+console only exists where `FREEINK_CAP_BLE_PERIPHERAL` is set, which is
+`env:default` and `env:simulator` and neither release env (`platformio.ini`).
+
+What the screen does with it (`TileSyncActivity.cpp:375`,
+`startAnnouncedBatch()`):
+
+- **Not running** -- the announcement *is* the run. Receiver counters and the
+  skip tally are zeroed, the missing snapshot is dropped (`rowCount_ = 0`), and
+  `announced_` becomes the count. Dropped rather than added to, because those
+  squares are ground this batch says nothing about; the entries stay in
+  `MISSING_TILES` and the next visit asks for them again.
+- **Already running** -- `announced_ += n`. One run, one bar, one ETA. Nothing
+  is re-armed, `startedMs_` least of all: the rate and the ETA are built on it.
+- `armRun()` zeroes `announced_`, because a re-ask is a new run and the phone
+  re-announces what it still owes on the next connection.
+
+`runTotal()` = `rowCount_ + announced_` is what a run is measured against: the
+finish condition (`TileSyncActivity.cpp:1342`), the bar's denominator (`:1294`)
+and the ETA's remainder (`:1096`). `transferTotal()` stays the *display* total
+and adds the freshness half of the visit.
+
+**The observer flags, it does not paint.** `onPushAnnounced()`
+(`TileSyncActivity.cpp:366`) runs inside the console's dispatch of `push`,
+before the terminating `OK` -- and the phone sends its first begin frame off the
+back of that `OK`. A repaint there is 500-1700 ms of e-ink in front of the
+reply. Same pattern, same reason as `freshnessRedrawPending_`. `loop()` acts on
+the flag (`:551`).
+
+### 2. `INFO screen=sync|map` -- which screen is up
+
+Both screens run the same `BlePositionServer` and the same `MapConsoleState`, so
+nothing in the protocol told them apart. The phone has to know, because a long
+batch over the **map** screen dies: that screen fires a post-arrival redraw on a
+settle timer with no check on whether bytes are moving, so the timer armed by
+one arrival expires mid-flight of the next (parent repo,
+`docs/ble-map-transfer-protocol.md`, "The hard half"). Every city tile is well
+over the threshold that was measured at.
+
+`info` now carries one more line (`MapCommandConsole.cpp:468`):
+
+```
+INFO screen=sync
+INFO screen=map
+```
+
+A setter, not a global: each screen builds its own `MapConsoleState`, so the
+state that answers a command is by construction the state of the screen that is
+up. `TileSyncActivity.cpp:141` installs `"sync"`, `MapActivity.cpp:2140`
+installs `"map"`.
+
+**Omitted when nothing set it**, exactly like `tile_fmt`. A phone must read a
+missing `screen=` as "this firmware cannot say" -- which an older build
+genuinely is -- and never as either screen.
+
+### 3. What the panel says while a batch runs
+
+A reactive sync moves 6 kB to 75 kB tiles. A city tile is 258 kB on average and
+1173 kB at worst (measured off the CDN 2026-09-02), which is 30 s to 130 s of
+wire time for **one file**. Three things were missing, and two of them help the
+sync that already existed.
+
+**The file on the wire.** `formatActiveFile()` (`TileSyncActivity.cpp:1116`)
+draws the active tile's coordinate and its own byte progress on a second line
+under the run's summary:
+
+```
+12 / 55   3.1 MB  8.9 kB/s  31m 10s left
+z13 4144/3059   512 kB / 966 kB
+```
+
+Nothing new is measured -- `MapTransferReceiver::Status` already carried
+`activeTile` and the in-flight file's `received`/`total`. A non-tile push (a
+route, a style) parses no coordinate and gets the byte counts alone.
+
+**Which stage that file is in.** The CRC is read back off the card after the
+last chunk rather than accumulated from the arriving chunks
+(`MapTransferReceiver.h`, "Write to .part, rename at the end"), so a megabyte
+tile ends with a real pause in which not one byte moves. A panel that says
+`512 kB / 966 kB` and then goes quiet reads exactly like a dead link.
+
+So the receiver publishes one new flag, `Status::verifying`
+(`MapTransferReceiver.h:157`), true from the last chunk being written until the
+rename lands (`MapTransferReceiver.cpp:406`, cleared at `:452` and `:506`).
+The line then reads `z13 4144/3059  966 kB  verifying`.
+
+**It is published on its own, not derived from `received == total`.** The
+publish that would carry that equality is the one at the end of the completing
+frame, and that does not run until the whole verify pass is over. The activity
+task's last view during the pause is the *previous* chunk's, one payload short
+of the total, with nothing in it to read. So the completion path publishes once
+extra, right where the pass starts (`MapTransferReceiver.cpp:406`).
+
+**Leaving cancels.** Back calls `onExit()`, which detaches the receiver and ends
+the BLE server, so the file in flight dies and the phone sees the link drop.
+Nothing on the panel said so. Two standing lines at the bottom of the screen,
+while and only while a run is going (`TileSyncActivity.cpp:1311`):
+
+```
+Leaving cancels this transfer.
+The phone continues next time.
+```
+
+The second line is the half that matters: the queue is on the phone, so a
+cancelled batch resumes at the next pending file on the next connection. Two
+lines because one runs off the right edge at this size -- the same measurement
+the not-built verdict is split for.
+
+**Repaint cost.** The per-file line is drawn in the same rate-capped
+`displayBufferWindow()` block as the summary, not on its own
+(`TileSyncActivity.cpp:1426`): two windows would be two waveform passes for one
+update. `summaryRect()` is two lines tall for exactly this. The
+`activeTileValid` gate on that block was dropped, so a route or style push now
+gets a live line too, instead of a screen that holds still for the whole of one.
+
+`gridRect()` reserves the extra line at the top and the two warning lines at the
+bottom **in every phase**, so the grid does not reflow when a transfer starts or
+a warning appears.
+
+### The grid of an announced batch
+
+`push <n>` gives a count and no coordinates -- the phone is sending ground the
+device never drew and therefore never recorded, so there is no missing-tile list
+behind it and nothing to place on a map **before the first file's own BEGIN
+frame arrives**. See "Live geography for a burst" below for what happens once
+one does.
+
+So `drawAnnouncedGrid()` (`TileSyncActivity.cpp:1054`) draws the count: one
+square per file still to come, in the squarest layout that fits, rubbed out from
+the end as files land. Same mark as a missing tile's square, because it means
+the same thing -- not on the card yet -- and one screen should read the same
+either way. The layout is fixed by the run's total and never reflows.
+
+- A skipped file's square stays drawn. The device still does not have it, same
+  rule the real grid follows.
+- Below `kMinAnnouncedCellPx` (8 px) no grid is drawn at all. A smear of grit is
+  a worse toy and no better instrument; the bar is the number anyway.
+- A run that has **both** -- a missing-tile fetch the phone announced more files
+  into -- keeps the true geographic grid from the start, and the announced files
+  are counted by the bar. `drawGrid()` only reaches the announced path when
+  `interestCount() == 0` (`TileSyncActivity.cpp:1114`) -- no real geography known
+  yet, from any source.
+
+### Live geography for a burst
+
+Added 2026-09-06, after a burst-only run shipped with nothing but the
+placeholder above for its whole duration and read as "a dumb list of squares"
+next to the real grid's nested z11/z12/z13 frames.
+
+**The phone never says which tiles are in a batch, but each file says which
+tile it is.** `push <n>` carries only a count (see above), but the transfer
+channel's own BEGIN frame for each file names a real `z/col/row`
+(`MapTransferReceiver::Status::activeTile`) -- the same field
+`formatActiveFile()` already reads for the per-file status line. That is real
+geography the device learns for free, one file at a time, with no new wire
+message and no extra round trip.
+
+`trackPushTiles()` (`TileSyncActivity.cpp:862`, called from `loop()`) watches
+`activeTile` each tick. A coordinate this run has not seen before -- not
+already in `rows_` (a normal fetch tile), not already in `pushRows_` (an
+earlier BEGIN this run) -- gets appended to `pushRows_` and drawn by
+`drawParent()` with **the exact same frame** a missing or stale tile gets. No
+new visual language: a push tile is something the device wants, exactly like a
+missing tile, just discovered opportunistically instead of upfront.
+
+The window has no snapshot to place itself against on a pure burst, so
+`choosePushWindow()` (`TileSyncActivity.cpp:843`) seeds it centred on the first
+tile discovered, at the same `kMaxWindowCols` x `kMaxWindowRows` size
+`chooseWindow()` would use for a real snapshot. Chosen once and guarded by
+`windowChosen_` -- a run that already had real interest at `armRun()` time (a
+fetch a phone pushes more files into) keeps that window; only a run that starts
+with nothing known lets the first push tile choose one.
+
+**The two grids read oppositely, and that is not a bug.** A fetch's grid
+shrinks: every tile was known at the start, and squares vanish as they land. A
+burst's live grid grows: nothing is known until it is discovered, so squares
+accumulate as files are revealed, capped at `kMaxPushRows` (128, ~1.75 KB, heap,
+allocated only once a push is actually seen and freed in `onExit()`) and never
+removed for the rest of the run. Past the cap a file still downloads
+normally -- only the grid stops adding new squares for it; the bar
+(`runTotal()`/`announced_`) is unaffected either way.
+
+**Verified two ways.** Hardware: a LilyGo T5 S3 Pro (cherry-picked onto
+`release/lilygo-t5-s3-pro`, no X4/X4 Pro available this session), pin
+commands and the burst grid both confirmed working. Simulator: `env:simulator`
+builds clean now that T-267 (the missing `updateSequence()` stub) was fixed
+elsewhere the same day -- `tools/sim_push_test.py`, 43/43 checks, and the
+`06-batch-*-partial.bmp` / `02-first-file.bmp` screenshots show exactly the
+designed transition: a flat placeholder count before the first file's BEGIN
+frame, real nested z11/z12/z13 frames from the instant after.
+
+### Verified vs assumed (the announced batch)
+
+**Read off the code, compiled, host-tested:**
+
+- The grammar: `push 55` parses, `push 0` / `push 4097` / `push` / `push 12 13`
+  / `push fifty` are rejected with the right reason
+  (`test/map_command_parser/MapCommandParserTest.cpp`).
+- `push` reaches the observer **before** the `OK`, and answers
+  `INFO push=unavailable` with no observer.
+- `info` carries `screen=sync` / `screen=map` when set and omits the line when
+  not.
+- `info`'s `chunk_payload` is the contract's `min(mtu - 3, 512) - 5`, checked at
+  MTU 23 / 256 / 517.
+- The whole firmware builds clean for `env:default` and `env:simulator`, no new
+  warnings; 424 host tests pass.
+
+**Verified on the desktop simulator, 2026-09-02** -- real firmware built native,
+a scripted keypress to this screen, real `.tib` tiles pushed over the simulator's
+BLE socket. `tools/sim_push_test.py` in the parent repo, 43/43 checks:
+
+- A batch announced by a client, the screen entering `Phase::Running` with an
+  **empty missing list**, files landing, and the run finishing at
+  `done + skipped >= n`.
+- Every file answered `OK <bytes> <crc32hex>` with the CRC equal to the sender's
+  own `zlib.crc32`, landing byte-identical on the card with no `.part` left.
+- `screen=sync` from this screen and `screen=map` from the map screen, from a
+  running build rather than from a unit test's setter.
+- A `push` arriving in the **same activity tick** as the subscription survives.
+
+**Two defects it found, in code that had never executed.** Both are fixed; they
+are recorded because the class of mistake repeats:
+
+- **`trackPhone()` finished the run it had just been given.** It tested
+  `rowCount_ > 0`, and an announced batch has no rows -- so a client that
+  subscribed and announced inside one tick got `Phase::Finished` and a screen
+  saying "nothing missing" for the whole transfer. The exact symptom `push`
+  exists to remove. On hardware the window is *wider*: `startAnnouncedBatch()`
+  repaints inside that tick and an e-ink pass is 500-1700 ms.
+- **`info` reported `chunk_payload` as `mtu - 8`**, the BUG-103 formula: 509 at
+  MTU 517, which builds a 514-byte frame over the 512-byte attribute cap. It was
+  a log curiosity until `push` made `info` a pre-trip sender's whole briefing,
+  because such a sender never receives a `NEED_TILES` to read `fmt` from.
+
+**Verified on a device, 2026-09-02** -- a LilyGo T5 S3 Pro, this branch merged
+onto `release/lilygo-t5-s3-pro` and flashed, an ExplorInk GPS phone over real
+Bluetooth:
+
+- **`push <n>` reaches the screen.** The phone announced 33 squares of pre-trip
+  ground and the panel read `0 / 33`, so the run sized itself to the announcement
+  with an empty missing list behind it. That is the whole point of the command.
+- **`INFO screen=` answers over the C3's own radio.** Implicit, and corroborated.
+  The app refuses to start a batch unless `info` says `sync`, and the batch
+  started. The corroboration matters because `TileFetcher.pushTiles()` has a
+  second caller -- the freshness check (`android` `BridgeService.kt:1043`) -- and
+  both log the same line. The squares that went out were `z11 1125/695`,
+  `1126/694` and their z12/z13 children, which is the queued zone and nothing the
+  device could have reported as held: its card read empty that run, and the
+  freshness path can only push what the device says it holds.
+- **The link negotiates MTU 256 on this board**, not the 517 a phone-to-phone or
+  bridged link reaches -- so 248 payload bytes per chunk, which is the regime the
+  7.9 kB/s figure was measured in. A laptop Bluetooth adapter in front of the
+  simulator reaches 517 and flatters the number; do not quote a bridged rate as
+  the device's.
+
+  Measured from the phone's side: `onConfigureMTU(..., 256, 0)` after the app
+  asked for 517. The firmware's own `MTU now` line was **not** captured that run
+  -- the serial capture was open on the phone's port, not the board's -- so this
+  is the negotiated value on that link, not proof of the board's ceiling. One
+  run.
+
+**Still not verified -- every transfer was refused `ERR mkdir failed`.** Not the
+card: read on the laptop afterwards it is `vfat`, mounted read-write, 2.2 MB used
+of 30 GB, and it already carries `base/12/2242` and `base/13/4485` with tiles in
+them, so this firmware has created directories on this card before. Tracked as
+BUG-037 in the parent repo. So nothing was ever written:
+
+
+
+- The **ink**. The simulator draws the real framebuffer at 480x800, so the
+  geometry questions have screenshots to answer them (the announced grid at 4 and
+  at 77 squares, the two warning lines inside the panel width, the per-file
+  line). What it cannot show is how any of it reads on e-ink after a waveform
+  pass, and the per-file line sits close enough to the progress bar that the
+  spacing is worth a look on glass.
+- `Status::verifying` appearing at all, and for how long on a megabyte file. The
+  simulated card is a laptop filesystem, so the whole close, CRC read-back and
+  rename finished inside 75 ms; the stage cannot earn its keep in that rig.
+- Whether a megabyte-class tile survives the link at all. The largest file ever
+  pushed over a real radio is 396,014 B (measured 2026-08-09). Everything above
+  is pointless if that fails, and it is the first thing a hardware pass should
+  do. The simulator's socket moved 726,423 B in 75 ms, which proves the code
+  path and nothing about the radio.
+- The 30 s stall verdict against a tile that takes 130 s. It re-stamps on byte
+  movement, so it should be fine, and that branch has never seen a file this
+  size on a real card.
 
 ## Getting the file itself off the device
 

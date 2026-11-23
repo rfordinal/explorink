@@ -17,6 +17,7 @@
 #include "builtinFonts/notosans_16_regular.h"
 #include "builtinFonts/notosans_18_bold.h"
 #include "builtinFonts/notosans_18_regular.h"
+#include "builtinFonts/ubuntu_5_regular.h"
 #include "builtinFonts/ubuntu_10_bold.h"
 #include "builtinFonts/ubuntu_10_regular.h"
 #include "builtinFonts/ubuntu_12_bold.h"
@@ -133,6 +134,10 @@ struct Face {
   const EpdFontData* bold;
 };
 const Face kFaces[] = {
+    // A small Ubuntu cut, regular only, added 2026-08-26 for the contour height
+    // numbers: a 12 px line against the 23 px floor everything else had.
+    // Regular only is deliberate -- a number has no second tier.
+    {&ubuntu_5_regular, &ubuntu_5_regular},
     {&notosans_8_regular, &notosans_8_regular}, {&ubuntu_10_regular, &ubuntu_10_bold},
     {&ubuntu_12_regular, &ubuntu_12_bold},      {&notosans_12_regular, &notosans_12_bold},
     {&notosans_14_regular, &notosans_14_bold},  {&notosans_16_regular, &notosans_16_bold},

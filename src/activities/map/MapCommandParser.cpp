@@ -1,13 +1,18 @@
 #include "MapCommandParser.h"
 
+#include "MapPointShards.h"
 #include "MapViewport.h"
+#if defined(ENABLE_GROUP_CMD) && ENABLE_GROUP_CMD
+#include "GroupRecord.h"
+#endif
 
 namespace {
 
-// Longest legal line is `pos <lat> <lon> heading <n> speed <n> alt <n>` -- 9
-// tokens. One spare so a 10th token is seen and rejected rather than
+// Longest legal line is
+// `pos <lat> <lon> heading <n> speed <n> alt <n> acc <n> dirq <n>` -- 13
+// tokens. One spare so a 14th token is seen and rejected rather than
 // truncated away.
-constexpr size_t kMaxTokens = 10;
+constexpr size_t kMaxTokens = 14;
 
 constexpr int32_t kLatMaxE7 = 900000000;
 constexpr int32_t kLonMaxE7 = 1800000000;
@@ -18,7 +23,25 @@ constexpr uint32_t kMaxHeading = 15;
 constexpr uint32_t kMaxZoom = MapViewport::kZoomStepCount - 1;
 constexpr uint32_t kMaxMarker = MapViewport::kMarkerStepCount - 1;
 constexpr uint32_t kMaxSpeedKmh = 65535;
+// Accuracy crosses BLE as a saturating byte (BlePositionServer.h), so the
+// console cannot ask for a value a real fix could never deliver.
+constexpr uint32_t kMaxAccuracyM = 255;
+// The heading-quality code, same 0-3 range as the packet's flags bits 2-3.
+constexpr uint32_t kMaxDirQuality = 3;
 constexpr uint32_t kMaxMissingOffset = 65535;
+// The highest legal z10 shard coordinate: 2^10 - 1. `gone` is the only
+// point-shard command with no zoom token to bound col/row against (skip and
+// tiles all carry z and check it), so it needs its own bound -- found
+// missing in code review, 2026-09-13.
+constexpr uint32_t kMaxPointGridCoord = (1u << MapPointShards::kShardZoom) - 1;
+// How large a batch the phone may announce. A 40 km box around a whole city is
+// 77 tiles (Barcelona, measured off the CDN index 2026-09-02 --
+// ../../../docs/send-tiles-plan.md), and the reactive missing list is capped at
+// 200 (MissingTilesStore::kMaxEntries), so this is an order of magnitude past
+// any real batch. It is a bound rather than a size: the count is only ever a
+// denominator on a progress bar, so nothing is allocated from it, and the cap
+// exists so a garbage number cannot put an absurd total on the panel.
+constexpr uint32_t kMaxPushCount = 4096;
 // Dead Sea shore is -430m, Everest is 8849m -- generous margin either side
 // for GPS altitude noise without letting garbage input through.
 constexpr int32_t kMinAltitudeM = -1000;
@@ -177,6 +200,8 @@ MapCommand parsePos(const Tokens& tokens) {
     bool wantHeading = false;
     bool wantSpeed = false;
     bool wantAltitude = false;
+    bool wantAccuracy = false;
+    bool wantDirQuality = false;
     if (tokens.t[i] == "heading") {
       wantHeading = true;
       ++i;
@@ -185,6 +210,12 @@ MapCommand parsePos(const Tokens& tokens) {
       ++i;
     } else if (tokens.t[i] == "alt") {
       wantAltitude = true;
+      ++i;
+    } else if (tokens.t[i] == "acc") {
+      wantAccuracy = true;
+      ++i;
+    } else if (tokens.t[i] == "dirq") {
+      wantDirQuality = true;
       ++i;
     } else if (!cmd.hasHeading) {
       wantHeading = true;
@@ -198,6 +229,8 @@ MapCommand parsePos(const Tokens& tokens) {
     if (wantHeading && cmd.hasHeading) return fail(MapCommandError::BadArity);  // given twice
     if (wantSpeed && cmd.hasSpeed) return fail(MapCommandError::BadArity);
     if (wantAltitude && cmd.hasAltitude) return fail(MapCommandError::BadArity);
+    if (wantAccuracy && cmd.hasAccuracy) return fail(MapCommandError::BadArity);
+    if (wantDirQuality && cmd.hasDirQuality) return fail(MapCommandError::BadArity);
 
     if (wantAltitude) {
       int32_t value = 0;
@@ -208,7 +241,18 @@ MapCommand parsePos(const Tokens& tokens) {
     } else {
       uint32_t value = 0;
       if (!parseUint(tokens.t[i], value)) return fail(MapCommandError::BadNumber);
-      if (wantHeading) {
+      if (wantAccuracy) {
+        // Capped at the wire's own range: accuracy crosses BLE as a saturating
+        // byte, so a console that could ask for more would be exercising a
+        // state no real fix can produce.
+        if (value > kMaxAccuracyM) return fail(MapCommandError::OutOfRange);
+        cmd.accuracyM = static_cast<uint16_t>(value);
+        cmd.hasAccuracy = true;
+      } else if (wantDirQuality) {
+        if (value > kMaxDirQuality) return fail(MapCommandError::OutOfRange);
+        cmd.dirQuality = static_cast<uint8_t>(value);
+        cmd.hasDirQuality = true;
+      } else if (wantHeading) {
         if (value > kMaxHeading) return fail(MapCommandError::OutOfRange);
         cmd.heading = static_cast<uint8_t>(value);
         cmd.hasHeading = true;
@@ -306,6 +350,22 @@ MapCommand parseStale(const Tokens& tokens) {
   return cmd;
 }
 
+// `push <n>`. The phone announcing how many files it is about to send, before
+// the first begin frame on the transfer channel.
+MapCommand parsePush(const Tokens& tokens) {
+  if (tokens.n != 2) return fail(MapCommandError::BadArity);
+  uint32_t n = 0;
+  if (!parseUint(tokens.t[1], n)) return fail(MapCommandError::BadNumber);
+  // Zero is rejected rather than accepted as a no-op: a batch of nothing is a
+  // phone-side bug, and silently answering OK to it would leave the screen
+  // showing a run that can never move.
+  if (n == 0 || n > kMaxPushCount) return fail(MapCommandError::OutOfRange);
+  MapCommand cmd;
+  cmd.type = MapCommandType::Push;
+  cmd.pushCount = static_cast<uint16_t>(n);
+  return cmd;
+}
+
 // `checked <n>` or `checked unknown`. The verdict that closes a freshness check.
 MapCommand parseChecked(const Tokens& tokens) {
   if (tokens.n != 2) return fail(MapCommandError::BadArity);
@@ -318,6 +378,27 @@ MapCommand parseChecked(const Tokens& tokens) {
   if (n > 0xFFFFu) return fail(MapCommandError::OutOfRange);
   cmd.checkedCount = static_cast<uint16_t>(n);
   cmd.checkedKnown = true;
+  return cmd;
+}
+
+// `gone <col> <row>`. The phone saying the CDN has no such point shard, so the
+// device deletes its own copy. No zoom token -- point shards are always
+// MapPointShards::kShardZoom, and the handler that owns that constant applies
+// it; the parser stays free of the point layer's headers, same reason it
+// stays free of the tile layer's.
+MapCommand parseGone(const Tokens& tokens) {
+  if (tokens.n != 3) return fail(MapCommandError::BadArity);
+  MapCommand cmd;
+  cmd.type = MapCommandType::Gone;
+
+  uint32_t col = 0;
+  uint32_t row = 0;
+  if (!parseUint(tokens.t[1], col) || !parseUint(tokens.t[2], row)) {
+    return fail(MapCommandError::BadNumber);
+  }
+  if (col > kMaxPointGridCoord || row > kMaxPointGridCoord) return fail(MapCommandError::OutOfRange);
+  cmd.skipCol = col;
+  cmd.skipRow = row;
   return cmd;
 }
 
@@ -395,8 +476,8 @@ MapCommand parseMode(const Tokens& tokens) {
     cmd.mode = MapRideMode::Ride;
   } else if (tokens.t[1] == "hike") {
     cmd.mode = MapRideMode::Hike;
-  } else if (tokens.t[1] == "cycle") {
-    cmd.mode = MapRideMode::Cycle;
+  } else if (tokens.t[1] == "tourist") {
+    cmd.mode = MapRideMode::Tourist;
   } else {
     return fail(MapCommandError::BadMode);
   }
@@ -409,6 +490,149 @@ MapCommand parseBare(const Tokens& tokens, MapCommandType type) {
   cmd.type = type;
   return cmd;
 }
+
+#if defined(ENABLE_GROUP_CMD) && ENABLE_GROUP_CMD
+// Copies a token into a fixed field. False when it does not fit -- truncating an
+// id would address a different member, and truncating an acronym would draw the
+// wrong letters on the panel.
+bool copyToken(std::string_view token, char* out, size_t outBytes) {
+  if (token.size() >= outBytes) return false;
+  for (size_t i = 0; i < token.size(); ++i) out[i] = token[i];
+  out[token.size()] = '\0';
+  return true;
+}
+
+// The name is the rest of the line, so it may hold spaces. Rebuilt from the
+// tokens with single spaces rather than sliced out of the line: the tokenizer
+// has already dropped tabs and runs of spaces, and a name is a label, not data.
+bool joinName(const Tokens& tokens, size_t first, char* out, size_t outBytes) {
+  size_t len = 0;
+  for (size_t i = first; i < tokens.n; ++i) {
+    if (len != 0) {
+      if (len + 1 >= outBytes) return false;
+      out[len++] = ' ';
+    }
+    if (len + tokens.t[i].size() >= outBytes) return false;
+    for (const char c : tokens.t[i]) out[len++] = c;
+  }
+  out[len] = '\0';
+  return isValidGroupName(std::string_view(out, len));
+}
+
+MapCommand parseGroup(const Tokens& tokens) {
+  if (tokens.n < 2) return fail(MapCommandError::BadArity);
+
+  MapCommand cmd;
+  cmd.type = MapCommandType::Group;
+  const std::string_view verb = tokens.t[1];
+
+  if (verb == "list" || verb == "reload") {
+    if (tokens.n != 2) return fail(MapCommandError::BadArity);
+    cmd.groupVerb = verb == "list" ? MapGroupVerb::List : MapGroupVerb::Reload;
+    return cmd;
+  }
+
+  if (verb == "log") {
+    if (tokens.n > 3) return fail(MapCommandError::BadArity);
+    cmd.groupVerb = MapGroupVerb::Log;
+    if (tokens.n == 3) {
+      uint32_t value = 0;
+      if (!parseUint(tokens.t[2], value)) return fail(MapCommandError::BadNumber);
+      if (value > 0xFFFFu) return fail(MapCommandError::OutOfRange);
+      cmd.groupLogOffset = static_cast<uint16_t>(value);
+    }
+    return cmd;
+  }
+
+  if (verb == "del") {
+    if (tokens.n != 3) return fail(MapCommandError::BadArity);
+    cmd.groupVerb = MapGroupVerb::Del;
+    // Either handle: a person types the acronym, a script that learned an id
+    // from `group list` passes that. Which one this is, is the roster's question
+    // and not the grammar's.
+    if (isValidGroupAcr(tokens.t[2])) {
+      if (!copyToken(tokens.t[2], cmd.groupAcr, sizeof(cmd.groupAcr))) return fail(MapCommandError::BadMember);
+      return cmd;
+    }
+    if (!isValidGroupId(tokens.t[2])) return fail(MapCommandError::BadMember);
+    if (!copyToken(tokens.t[2], cmd.groupId, sizeof(cmd.groupId))) return fail(MapCommandError::BadMember);
+    return cmd;
+  }
+
+  if (verb == "add") {
+    if (tokens.n < 4) return fail(MapCommandError::BadArity);
+    if (!isValidGroupAcr(tokens.t[2]) || !isValidGroupId(tokens.t[3])) return fail(MapCommandError::BadMember);
+    cmd.groupVerb = MapGroupVerb::Add;
+    if (!copyToken(tokens.t[2], cmd.groupAcr, sizeof(cmd.groupAcr))) return fail(MapCommandError::BadMember);
+    if (!copyToken(tokens.t[3], cmd.groupId, sizeof(cmd.groupId))) return fail(MapCommandError::BadMember);
+    if (tokens.n > 4 && !joinName(tokens, 4, cmd.groupName, sizeof(cmd.groupName))) {
+      return fail(MapCommandError::BadMember);
+    }
+    return cmd;
+  }
+
+  if (verb == "pos") {
+    if (tokens.n < 5) return fail(MapCommandError::BadArity);
+    if (isValidGroupAcr(tokens.t[2])) {
+      if (!copyToken(tokens.t[2], cmd.groupAcr, sizeof(cmd.groupAcr))) return fail(MapCommandError::BadMember);
+    } else if (isValidGroupId(tokens.t[2])) {
+      if (!copyToken(tokens.t[2], cmd.groupId, sizeof(cmd.groupId))) return fail(MapCommandError::BadMember);
+    } else {
+      return fail(MapCommandError::BadMember);
+    }
+
+    int64_t lat = 0;
+    int64_t lon = 0;
+    if (!parseDegrees(tokens.t[3], lat) || !parseDegrees(tokens.t[4], lon)) return fail(MapCommandError::BadNumber);
+    if (lat < -kLatMaxE7 || lat > kLatMaxE7) return fail(MapCommandError::OutOfRange);
+    if (lon < -kLonMaxE7 || lon > kLonMaxE7) return fail(MapCommandError::OutOfRange);
+
+    cmd.groupVerb = MapGroupVerb::Pos;
+    cmd.latE7 = static_cast<int32_t>(lat);
+    cmd.lonE7 = static_cast<int32_t>(lon);
+
+    // Keyword-only tail. A bare number after the coordinate would be as likely a
+    // unix time as a heading, and guessing wrong puts a member on the panel with
+    // an age that is off by years.
+    for (size_t i = 5; i < tokens.n; i += 2) {
+      if (i + 1 >= tokens.n) return fail(MapCommandError::BadArity);
+      const std::string_view key = tokens.t[i];
+      const std::string_view value = tokens.t[i + 1];
+      if (key == "utc") {
+        if (!parseUint(value, cmd.groupUtc)) return fail(MapCommandError::BadNumber);
+        continue;
+      }
+      if (key == "heading") {
+        uint32_t heading = 0;
+        if (!parseUint(value, heading)) return fail(MapCommandError::BadNumber);
+        if (heading > kMaxHeading) return fail(MapCommandError::OutOfRange);
+        cmd.heading = static_cast<uint8_t>(heading);
+        cmd.hasHeading = true;
+        continue;
+      }
+      if (key == "speed") {
+        uint32_t speed = 0;
+        if (!parseUint(value, speed)) return fail(MapCommandError::BadNumber);
+        if (speed > kMaxSpeedKmh) return fail(MapCommandError::OutOfRange);
+        cmd.speedKmh = static_cast<uint16_t>(speed);
+        cmd.hasSpeed = true;
+        continue;
+      }
+      if (key == "src") {
+        // The transport the position claims to have come from, for the black
+        // box's `src` column. Claimed, not proven: on this channel it is a
+        // console typing it, which is exactly why the channel is devel-only.
+        if (!groupSourceFromText(value, cmd.groupSource)) return fail(MapCommandError::BadMember);
+        continue;
+      }
+      return fail(MapCommandError::UnknownCommand);
+    }
+    return cmd;
+  }
+
+  return fail(MapCommandError::UnknownCommand);
+}
+#endif  // ENABLE_GROUP_CMD
 
 }  // namespace
 
@@ -430,10 +654,16 @@ MapCommand parseMapCommand(std::string_view line) {
   if (name == "have") return parseBare(tokens, MapCommandType::Have);
   if (name == "stale") return parseStale(tokens);
   if (name == "checked") return parseChecked(tokens);
+  if (name == "push") return parsePush(tokens);
   if (name == "info") return parseBare(tokens, MapCommandType::Info);
   if (name == "stats") return parseBare(tokens, MapCommandType::Stats);
   if (name == "fake") return parseFake(tokens);
+  if (name == "points") return parseBare(tokens, MapCommandType::Points);
+  if (name == "gone") return parseGone(tokens);
   if (name == "pin") return parsePin(tokens);
+#if defined(ENABLE_GROUP_CMD) && ENABLE_GROUP_CMD
+  if (name == "group") return parseGroup(tokens);
+#endif
   return fail(MapCommandError::UnknownCommand);
 }
 
@@ -453,6 +683,8 @@ const char* mapCommandErrorText(MapCommandError error) {
       return "bad_mode";
     case MapCommandError::UnknownPin:
       return "unknown_pin";
+    case MapCommandError::BadMember:
+      return "bad_member";
     case MapCommandError::LineTooLong:
       return "line_too_long";
   }

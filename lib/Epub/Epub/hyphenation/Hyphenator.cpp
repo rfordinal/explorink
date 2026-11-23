@@ -7,49 +7,14 @@
 #include <vector>
 
 #include "HyphenationCommon.h"
-#include "LanguageHyphenator.h"
-#include "LanguageRegistry.h"
-
-const LanguageHyphenator* Hyphenator::cachedHyphenator_ = nullptr;
 
 namespace {
 
-// Normalize ISO 639-2 (three-letter) codes to ISO 639-1 (two-letter) codes used by the
-// hyphenation registry.  EPUBs may use either form in their dc:language metadata (e.g.
-// "eng" instead of "en").  Both the bibliographic ("fre"/"ger") and terminological
-// ("fra"/"deu") ISO 639-2 variants are mapped.
-struct Iso639Mapping {
-  const char* iso639_2;
-  const char* iso639_1;
-};
-static constexpr Iso639Mapping kIso639Mappings[] = {{"eng", "en"}, {"fra", "fr"}, {"fre", "fr"}, {"deu", "de"},
-                                                    {"ger", "de"}, {"rus", "ru"}, {"spa", "es"}, {"ita", "it"},
-                                                    {"ukr", "uk"}, {"swe", "sv"}, {"fin", "fi"}};
-
-// Maps a BCP-47 or ISO 639-2 language tag to a language-specific hyphenator.
-const LanguageHyphenator* hyphenatorForLanguage(const std::string& langTag) {
-  if (langTag.empty()) return nullptr;
-
-  // Extract primary subtag and normalize to lowercase (e.g., "en-US" -> "en", "ENG" -> "en").
-  std::string primary;
-  primary.reserve(langTag.size());
-  for (char c : langTag) {
-    if (c == '-' || c == '_') break;
-    if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
-    primary.push_back(c);
-  }
-  if (primary.empty()) return nullptr;
-
-  // Normalize ISO 639-2 three-letter codes to two-letter equivalents.
-  for (const auto& mapping : kIso639Mappings) {
-    if (primary == mapping.iso639_2) {
-      primary = mapping.iso639_1;
-      break;
-    }
-  }
-
-  return getLanguageHyphenatorForPrimaryTag(primary);
-}
+// TeX's lefthyphenmin/righthyphenmin. They used to arrive per language from the
+// Liang pattern tables; with those gone, the fallback splitter is the only
+// consumer left and it uses the classic 2/2 default.
+constexpr size_t kDefaultMinPrefix = 2;
+constexpr size_t kDefaultMinSuffix = 2;
 
 // Maps a codepoint index back to its byte offset inside the source word.
 size_t byteOffsetForIndex(const std::vector<CodepointInfo>& cps, const size_t index) {
@@ -83,43 +48,6 @@ std::vector<Hyphenator::BreakInfo> buildExplicitBreakInfos(const std::vector<Cod
 }
 
 bool isSegmentSeparator(const uint32_t cp) { return isExplicitHyphen(cp) || isApostrophe(cp); }
-
-void appendSegmentPatternBreaks(const std::vector<CodepointInfo>& cps, const LanguageHyphenator& hyphenator,
-                                const bool includeFallback, std::vector<Hyphenator::BreakInfo>& outBreaks) {
-  size_t segStart = 0;
-
-  for (size_t i = 0; i <= cps.size(); ++i) {
-    const bool atEnd = i == cps.size();
-    const bool atSeparator = !atEnd && isSegmentSeparator(cps[i].value);
-    if (!atEnd && !atSeparator) {
-      continue;
-    }
-
-    if (i > segStart) {
-      std::vector<CodepointInfo> segment(cps.begin() + segStart, cps.begin() + i);
-      auto segIndexes = hyphenator.breakIndexes(segment);
-
-      if (includeFallback && segIndexes.empty()) {
-        const size_t minPrefix = hyphenator.minPrefix();
-        const size_t minSuffix = hyphenator.minSuffix();
-        for (size_t idx = minPrefix; idx + minSuffix <= segment.size(); ++idx) {
-          segIndexes.push_back(idx);
-        }
-      }
-
-      for (const size_t idx : segIndexes) {
-        assert(idx > 0 && idx < segment.size());
-        if (idx == 0 || idx >= segment.size()) continue;
-        const size_t cpIdx = segStart + idx;
-        if (cpIdx < cps.size()) {
-          outBreaks.push_back({cps[cpIdx].byteOffset, true});
-        }
-      }
-    }
-
-    segStart = i + 1;
-  }
-}
 
 void appendApostropheContractionBreaks(const std::vector<CodepointInfo>& cps,
                                        std::vector<Hyphenator::BreakInfo>& outBreaks) {
@@ -180,7 +108,6 @@ std::vector<Hyphenator::BreakInfo> Hyphenator::breakOffsets(const std::string& w
   // Convert to codepoints and normalize word boundaries.
   auto cps = collectCodepoints(word);
   trimSurroundingPunctuationAndFootnote(cps);
-  const auto* hyphenator = cachedHyphenator_;
 
   // Detect apostrophe-like separators early; used by both branches below.
   bool hasApostropheLikeSeparator = false;
@@ -194,23 +121,9 @@ std::vector<Hyphenator::BreakInfo> Hyphenator::breakOffsets(const std::string& w
   // Explicit hyphen markers (soft or hard) take precedence over language breaks.
   auto explicitBreakInfos = buildExplicitBreakInfos(cps);
   if (!explicitBreakInfos.empty()) {
-    // When a word contains explicit hyphens we also run Liang patterns on each alphabetic
-    // segment between them. Without this, "US-Satellitensystems" would only offer one split
-    // point (after "US-"), making it impossible to break mid-"Satellitensystems" even when
-    // "US-Satelliten-" would fit on the line.
-    //
-    // Example: "US-Satellitensystems"
-    //   Segments: ["US", "Satellitensystems"]
-    //   Explicit break: after "US-"           -> @3  (no inserted hyphen)
-    //   Pattern breaks on "Satellitensystems" -> @5  Sa|tel  (+hyphen)
-    //                                            @8  Satel|li  (+hyphen)
-    //                                            @10 Satelli|ten  (+hyphen)
-    //                                            @13 Satelliten|sys  (+hyphen)
-    //                                            @16 Satellitensys|tems  (+hyphen)
-    //   Result: 6 sorted break points; the line-breaker picks the widest prefix that fits.
-    if (hyphenator) {
-      appendSegmentPatternBreaks(cps, *hyphenator, /*includeFallback=*/false, explicitBreakInfos);
-    }
+    // "US-Satellitensystems" now offers exactly one split point, after "US-".
+    // While the Liang pattern tables were here it also broke inside
+    // "Satellitensystems"; see the commit that removed them for what that cost.
     // Also add apostrophe contraction breaks when present (e.g. "l'état-major"
     // has both an explicit hyphen and an apostrophe that can independently break).
     if (hasApostropheLikeSeparator) {
@@ -221,31 +134,20 @@ std::vector<Hyphenator::BreakInfo> Hyphenator::breakOffsets(const std::string& w
     return explicitBreakInfos;
   }
 
-  // Apostrophe-like separators split compounds into alphabetic segments; run Liang on each segment.
-  // This allows words like "all'improvviso" to hyphenate within "improvviso" instead of becoming
-  // completely unsplittable due to the apostrophe punctuation. Apostrophe contraction breaks are
-  // applied regardless of whether a language hyphenator is available.
+  // Apostrophe-like separators still break a contraction boundary, so
+  // "all'improvviso" is not one unsplittable run.
   if (hasApostropheLikeSeparator) {
     std::vector<BreakInfo> segmentedBreaks;
-    if (hyphenator) {
-      appendSegmentPatternBreaks(cps, *hyphenator, includeFallback, segmentedBreaks);
-    }
     appendApostropheContractionBreaks(cps, segmentedBreaks);
     sortAndDedupeBreakInfos(segmentedBreaks);
     return segmentedBreaks;
   }
 
-  // Ask language hyphenator for legal break points.
+  // No language patterns any more: an ordinary word offers no break at all
+  // unless the caller is desperate enough to accept the every-N-chars split.
   std::vector<size_t> indexes;
-  if (hyphenator) {
-    indexes = hyphenator->breakIndexes(cps);
-  }
-
-  // Only add fallback breaks if needed
-  if (includeFallback && indexes.empty()) {
-    const size_t minPrefix = hyphenator ? hyphenator->minPrefix() : LiangWordConfig::kDefaultMinPrefix;
-    const size_t minSuffix = hyphenator ? hyphenator->minSuffix() : LiangWordConfig::kDefaultMinSuffix;
-    for (size_t idx = minPrefix; idx + minSuffix <= cps.size(); ++idx) {
+  if (includeFallback) {
+    for (size_t idx = kDefaultMinPrefix; idx + kDefaultMinSuffix <= cps.size(); ++idx) {
       indexes.push_back(idx);
     }
   }
@@ -271,5 +173,3 @@ std::vector<Hyphenator::BreakInfo> Hyphenator::breakOffsets(const std::string& w
 
   return breaks;
 }
-
-void Hyphenator::setPreferredLanguage(const std::string& lang) { cachedHyphenator_ = hyphenatorForLanguage(lang); }

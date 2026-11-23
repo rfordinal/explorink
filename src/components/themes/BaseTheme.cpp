@@ -11,11 +11,14 @@
 #include <cstdint>
 #include <string>
 
+#include "HintGeometry.h"
 #include "I18n.h"
 #include "RecentBooksStore.h"
+#include "TouchPolicy.h"
 #include "components/UITheme.h"
 #include "components/icons/bookmark.h"
 #include "components/icons/home_icons.h"
+#include "components/icons/touch_lock_icon.h"
 #include "fontIds.h"
 
 // Internal constants
@@ -27,6 +30,61 @@ constexpr int bookmarkStatusIconWidth = 16;
 constexpr int bookmarkStatusIconHeight = 14;
 constexpr int bookmarkStatusIconGap = 4;
 constexpr int bookmarkStatusIconTopCrop = 2;
+
+// Greedy word-wrap for an OptionPopup title: short, one-off dynamic sentences
+// like "Replace Camp with current location? (fix 7 min old)", never the
+// paragraph-length text DictionaryDefinitionActivity::wrapText() handles, so
+// a plain space-split with no hyphenation or hard character breaks is enough.
+// Reported on the S8 2026-08-24: a long confirm title was drawn centered on
+// the full screen width with no wrap at all, so it ran off both edges of the
+// dialog (and the screen) instead of fitting inside it.
+// Width of the icon column, gap included -- 0 when the spec carries no icons
+// at all. One number, shared by optionPopupGeometry() (which needs it to size
+// the dialog and place the rows) and drawOptionPopup() (which needs the same
+// number to place the icon and shift the label after it); the two must never
+// disagree; or a tap would land on a row a pixel off from where it drew.
+//
+// A flat gap rather than each icon's own width: the icon set a single popup
+// draws is homogeneous (one pin catalogue, or one POI category table), so
+// every icon in it is already the same size, and using the first one avoids
+// a second pass over every icon just to find a max.
+int optionPopupIconColumnWidth(const BaseTheme::OptionPopupSpec& spec, const BaseTheme::OptionPopupSpacing& spacing) {
+  if (spec.icons == nullptr || spec.icons->empty()) return 0;
+  for (const freeink::Icon* icon : *spec.icons) {
+    if (icon != nullptr) return icon->w + spacing.itemSpacing;
+  }
+  return 0;
+}
+
+std::vector<std::string> wrapOptionPopupTitle(const GfxRenderer& renderer, const char* title, int maxWidth) {
+  std::vector<std::string> lines;
+  if (title == nullptr || *title == '\0') {
+    lines.emplace_back();
+    return lines;
+  }
+  if (maxWidth <= 0) {
+    lines.emplace_back(title);
+    return lines;
+  }
+  const std::string text(title);
+  std::string current;
+  size_t pos = 0;
+  while (pos <= text.size()) {
+    const size_t next = text.find(' ', pos);
+    const std::string word = text.substr(pos, next == std::string::npos ? std::string::npos : next - pos);
+    const std::string candidate = current.empty() ? word : current + " " + word;
+    if (!current.empty() && renderer.getTextWidth(UI_12_FONT_ID, candidate.c_str(), EpdFontFamily::BOLD) > maxWidth) {
+      lines.push_back(current);
+      current = word;
+    } else {
+      current = candidate;
+    }
+    if (next == std::string::npos) break;
+    pos = next + 1;
+  }
+  lines.push_back(current);
+  return lines;
+}
 
 void drawBookmarkStatusIcon(const GfxRenderer& renderer, const int x, const int y) {
   constexpr int bytesPerRow = bookmarkStatusIconWidth / 8;
@@ -150,27 +208,51 @@ void BaseTheme::drawProgressBar(const GfxRenderer& renderer, Rect rect, const si
   renderer.drawCenteredText(UI_10_FONT_ID, rect.y + rect.height + 15, percentText.c_str());
 }
 
+namespace {
+// Front hint box geometry in X4 portrait pixels. The X4 and X3 arrays are
+// hand-tuned to the keys under the glass and are never derived; a panel with no
+// keys there gets them scaled (HintGeometry).
+constexpr int kFrontBoxWidth = 106;
+constexpr int kX4FrontPositions[4] = {25, 130, 245, 350};
+// X3 has wider screen in portrait (528 vs 480), use more spacing
+constexpr int kX3FrontPositions[4] = {38, 154, 268, 384};
+
+// Side-hint box geometry, in one place because two functions read it: the drawing
+// below and sideButtonHintsRect(), which a caller repainting part of the panel
+// needs in order to refresh exactly what these boxes cover. Two copies of these
+// numbers would drift the first time one of them moved.
+// Functions rather than constants because a non-X4 panel scales them, which
+// needs the board profile read at runtime.
+inline int sideHintWidth() {  // width on screen (height when rotated)
+  return UITheme::getInstance().getMetrics().sideButtonHintsWidth;
+}
+inline int sideHintHeight() { return HintGeometry::scaleMetricY(80); }  // height on screen (width when rotated)
+inline int sideHintMargin() { return HintGeometry::scaleMetric(4); }
+inline int sideHintX4TopY() { return HintGeometry::scaleMetricY(345); }  // X4: both boxes stacked on the right
+constexpr int kSideHintX3Y = 155;                                        // X3: one box per side, higher up
+}  // namespace
+
 void BaseTheme::drawButtonHints(GfxRenderer& renderer, const char* btn1, const char* btn2, const char* btn3,
                                 const char* btn4, int fontId, int btn3FontId, int btn4FontId) const {
   if (fontId == 0) fontId = UI_10_FONT_ID;
   if (btn3FontId == 0) btn3FontId = fontId;
   if (btn4FontId == 0) btn4FontId = fontId;
-  if (gpio.hasTouch()) {
+  if (!TouchPolicy::hintsVisible()) {
+    drawTouchLockIndicator(renderer);
     return;
   }
+  rememberFrontLabels(btn1, btn2, btn3, btn4);
 
   const GfxRenderer::Orientation orig_orientation = renderer.getOrientation();
   renderer.setOrientation(GfxRenderer::Orientation::Portrait);
 
   const int pageHeight = renderer.getScreenHeight();
-  constexpr int buttonWidth = 106;
-  constexpr int buttonHeight = BaseMetrics::values.buttonHintsHeight;
-  constexpr int buttonY = BaseMetrics::values.buttonHintsHeight;  // Distance from bottom
-  constexpr int textYOffset = 7;                                  // Distance from top of button to text baseline
-  // X3 has wider screen in portrait (528 vs 480), use more spacing
-  constexpr int x4ButtonPositions[] = {25, 130, 245, 350};
-  constexpr int x3ButtonPositions[] = {38, 154, 268, 384};
-  const int* buttonPositions = gpio.deviceIsX3() ? x3ButtonPositions : x4ButtonPositions;
+  const int buttonHeight = UITheme::getInstance().getMetrics().buttonHintsHeight;
+  const int buttonY = buttonHeight;                      // Distance from bottom
+  const int textYOffset = HintGeometry::scaleMetric(7);  // Distance from top of button to text baseline
+  int buttonPositions[4] = {0, 0, 0, 0};
+  const int buttonWidth = HintGeometry::frontRow(renderer.getScreenWidth(), kX4FrontPositions, kX3FrontPositions,
+                                                 kFrontBoxWidth, buttonPositions);
   const char* labels[] = {btn1, btn2, btn3, btn4};
   const int fontIds[] = {fontId, fontId, btn3FontId, btn4FontId};
 
@@ -189,20 +271,10 @@ void BaseTheme::drawButtonHints(GfxRenderer& renderer, const char* btn1, const c
   renderer.setOrientation(orig_orientation);
 }
 
-namespace {
-// Side-hint box geometry, in one place because two functions read it: the drawing
-// below and sideButtonHintsRect(), which a caller repainting part of the panel
-// needs in order to refresh exactly what these boxes cover. Two copies of these
-// numbers would drift the first time one of them moved.
-constexpr int kSideHintWidth = BaseMetrics::values.sideButtonHintsWidth;  // width on screen (height when rotated)
-constexpr int kSideHintHeight = 80;                                       // height on screen (width when rotated)
-constexpr int kSideHintMargin = 4;
-constexpr int kSideHintX4TopY = 345;  // X4: both boxes stacked on the right
-constexpr int kSideHintX3Y = 155;     // X3: one box per side, higher up
-}  // namespace
-
 Rect BaseTheme::buttonHintsRect(const GfxRenderer& renderer) const {
-  if (gpio.hasTouch()) return Rect{0, 0, 0, 0};  // drawButtonHints() draws nothing on a touch panel
+  // Not empty when the panel is locked: the padlock strip lives in the same band
+  // and a caller repainting around it has to refresh that too.
+  if (!TouchPolicy::hintsVisible() && !TouchPolicy::lockIndicator()) return Rect{0, 0, 0, 0};
   // Full width: the four boxes are one band as far as anything trying to stay out
   // of their way is concerned. Height and offset are drawButtonHints()' own.
   const int height = BaseMetrics::values.buttonHintsHeight;
@@ -211,52 +283,87 @@ Rect BaseTheme::buttonHintsRect(const GfxRenderer& renderer) const {
 
 Rect BaseTheme::sideButtonHintsRect(const GfxRenderer& renderer) const {
   const int screenWidth = renderer.getScreenWidth();
-  if (gpio.hasTouch()) return Rect{0, 0, 0, 0};  // drawSideButtonHints() draws nothing on a touch panel
+  if (!TouchPolicy::hintsVisible()) return Rect{0, 0, 0, 0};  // drawSideButtonHints() draws nothing then
   if (gpio.deviceIsX3()) {
     // Both sides, so the rect spans the full width -- the two boxes are the left
     // and the right edge of the same band.
-    return Rect{0, kSideHintX3Y, screenWidth, kSideHintHeight};
+    return Rect{0, kSideHintX3Y, screenWidth, sideHintHeight()};
   }
-  return Rect{screenWidth - kSideHintMargin - kSideHintWidth, kSideHintX4TopY, kSideHintWidth, kSideHintHeight * 2};
+  return Rect{screenWidth - sideHintMargin() - sideHintWidth(), sideHintX4TopY(), sideHintWidth(),
+              sideHintHeight() * 2};
 }
 
-void BaseTheme::drawSideButtonHints(const GfxRenderer& renderer, const char* topBtn, const char* bottomBtn,
-                                    int fontId) const {
-  if (gpio.hasTouch()) {
+void BaseTheme::drawSideButtonHints(const GfxRenderer& renderer, const char* topBtn, const char* bottomBtn, int fontId,
+                                    const bool topDisabled, const bool bottomDisabled, const bool bold,
+                                    const freeink::Icon* topIcon, const freeink::Icon* bottomIcon) const {
+  if (!TouchPolicy::hintsVisible()) {
     return;
   }
+  const EpdFontFamily::Style style = bold ? EpdFontFamily::BOLD : EpdFontFamily::REGULAR;
+  // No stub style of its own (unlike LyraTheme, which overrides this to
+  // shrink the box) -- a disabled box draws exactly like an absent one here,
+  // consistent with this theme's own drawButtonHints(), which never drew a
+  // stub for an empty front label either.
+  if (topDisabled) topBtn = "";
+  if (bottomDisabled) bottomBtn = "";
+  rememberSideLabels(topBtn, bottomBtn);
 
   const int screenWidth = renderer.getScreenWidth();
-  constexpr int buttonWidth = kSideHintWidth;
-  constexpr int buttonHeight = kSideHintHeight;
-  constexpr int buttonMargin = kSideHintMargin;
+  const int buttonWidth = sideHintWidth();
+  const int buttonHeight = sideHintHeight();
+  const int buttonMargin = sideHintMargin();
 
   if (gpio.deviceIsX3()) {
     // X3 layout: Up on left side, Down on right side, positioned higher
     constexpr int x3ButtonY = kSideHintX3Y;
 
+    // White backing first, same reason as the X4 branch below: drawRect
+    // strokes only the outline, so without this the live map shows through.
+    if (topBtn != nullptr && topBtn[0] != '\0') {
+      renderer.fillRect(buttonMargin, x3ButtonY, buttonWidth, buttonHeight, false);
+    }
+    if (bottomBtn != nullptr && bottomBtn[0] != '\0') {
+      renderer.fillRect(screenWidth - buttonMargin - buttonWidth, x3ButtonY, buttonWidth, buttonHeight, false);
+    }
+
     if (topBtn != nullptr && topBtn[0] != '\0') {
       const int leftX = buttonMargin;
       renderer.drawRect(leftX, x3ButtonY, buttonWidth, buttonHeight);
-      const int textWidth = renderer.getTextWidth(fontId, topBtn);
-      const int textHeight = renderer.getTextHeight(fontId);
-      const int textX = leftX + (buttonWidth - textHeight) / 2;
-      const int textY = x3ButtonY + (buttonHeight + textWidth) / 2;
-      renderer.drawTextRotated90CW(fontId, textX, textY, topBtn);
+      if (topIcon != nullptr) {
+        // drawMono1bpp(), not drawIcon(): confirmed on hardware 2026-10-20 --
+        // drawIcon()'s quarter turn is the same rotation that already made
+        // this box's TEXT illegible (a horizontal glyph read as a thin
+        // vertical sliver, side_hint_icons.h's docstring), not a convention
+        // to match. The box's own border above is drawn in plain, unrotated
+        // coordinates and reads correctly, so a plain icon does too.
+        renderer.drawMono1bpp(topIcon->bits, leftX + (buttonWidth - topIcon->w) / 2,
+                              x3ButtonY + (buttonHeight - topIcon->h) / 2, topIcon->w, topIcon->h, true);
+      } else {
+        const int textWidth = renderer.getTextWidth(fontId, topBtn);
+        const int textHeight = renderer.getTextHeight(fontId);
+        const int textX = leftX + (buttonWidth - textHeight) / 2;
+        const int textY = x3ButtonY + (buttonHeight + textWidth) / 2;
+        renderer.drawTextRotated90CW(fontId, textX, textY, topBtn, true, style);
+      }
     }
 
     if (bottomBtn != nullptr && bottomBtn[0] != '\0') {
       const int rightX = screenWidth - buttonMargin - buttonWidth;
       renderer.drawRect(rightX, x3ButtonY, buttonWidth, buttonHeight);
-      const int textWidth = renderer.getTextWidth(fontId, bottomBtn);
-      const int textHeight = renderer.getTextHeight(fontId);
-      const int textX = rightX + (buttonWidth - textHeight) / 2;
-      const int textY = x3ButtonY + (buttonHeight + textWidth) / 2;
-      renderer.drawTextRotated90CW(fontId, textX, textY, bottomBtn);
+      if (bottomIcon != nullptr) {
+        renderer.drawMono1bpp(bottomIcon->bits, rightX + (buttonWidth - bottomIcon->w) / 2,
+                              x3ButtonY + (buttonHeight - bottomIcon->h) / 2, bottomIcon->w, bottomIcon->h, true);
+      } else {
+        const int textWidth = renderer.getTextWidth(fontId, bottomBtn);
+        const int textHeight = renderer.getTextHeight(fontId);
+        const int textX = rightX + (buttonWidth - textHeight) / 2;
+        const int textY = x3ButtonY + (buttonHeight + textWidth) / 2;
+        renderer.drawTextRotated90CW(fontId, textX, textY, bottomBtn, true, style);
+      }
     }
   } else {
     // X4 layout: Both buttons stacked on right side
-    constexpr int topButtonY = kSideHintX4TopY;
+    const int topButtonY = sideHintX4TopY();
     const char* labels[] = {topBtn, bottomBtn};
     const int x = screenWidth - buttonMargin - buttonWidth;
 
@@ -289,17 +396,96 @@ void BaseTheme::drawSideButtonHints(const GfxRenderer& renderer, const char* top
       renderer.drawLine(x, topButtonY + 2 * buttonHeight - 1, x + buttonWidth - 1, topButtonY + 2 * buttonHeight - 1);
     }
 
+    const freeink::Icon* icons[] = {topIcon, bottomIcon};
     for (int i = 0; i < 2; i++) {
       if (labels[i] != nullptr && labels[i][0] != '\0') {
         const int y = topButtonY + i * buttonHeight;
+        if (icons[i] != nullptr) {
+          renderer.drawMono1bpp(icons[i]->bits, x + (buttonWidth - icons[i]->w) / 2,
+                                y + (buttonHeight - icons[i]->h) / 2, icons[i]->w, icons[i]->h, true);
+          continue;
+        }
         const int textWidth = renderer.getTextWidth(fontId, labels[i]);
         const int textHeight = renderer.getTextHeight(fontId);
         const int textX = x + (buttonWidth - textHeight) / 2;
         const int textY = y + (buttonHeight + textWidth) / 2;
-        renderer.drawTextRotated90CW(fontId, textX, textY, labels[i]);
+        renderer.drawTextRotated90CW(fontId, textX, textY, labels[i], true, style);
       }
     }
   }
+}
+
+namespace {
+inline bool labelPresent(const char* label) { return label != nullptr && label[0] != '\0'; }
+}  // namespace
+
+void BaseTheme::rememberFrontLabels(const char* btn1, const char* btn2, const char* btn3, const char* btn4) const {
+  const char* labels[4] = {btn1, btn2, btn3, btn4};
+  for (int i = 0; i < 4; i++) frontLabelDrawn[i] = labelPresent(labels[i]);
+}
+
+void BaseTheme::rememberSideLabels(const char* topBtn, const char* bottomBtn) const {
+  sideLabelDrawn[0] = labelPresent(topBtn);
+  sideLabelDrawn[1] = labelPresent(bottomBtn);
+}
+
+bool BaseTheme::frontBoxActive(const int index) const { return index >= 0 && index <= 3 && frontLabelDrawn[index]; }
+
+bool BaseTheme::sideBoxActive(const int index) const { return index >= 0 && index <= 1 && sideLabelDrawn[index]; }
+
+void BaseTheme::drawTouchLockBox(GfxRenderer& renderer, const Rect box) const {
+  // Fill then border, the same pairing this theme's drawButtonHints() uses: the
+  // band is reserved, but a map or a rendered page can still have painted into
+  // it before this runs.
+  renderer.fillRect(box.x, box.y, box.width, box.height, false);
+  renderer.drawRect(box.x, box.y, box.width, box.height);
+}
+
+void BaseTheme::drawTouchLockIndicator(GfxRenderer& renderer) const {
+  if (!TouchPolicy::lockIndicator()) return;
+
+  const GfxRenderer::Orientation origOrientation = renderer.getOrientation();
+  renderer.setOrientation(GfxRenderer::Orientation::Portrait);
+
+  // Drawn as a button, not as a small glyph floating in the band: the same box
+  // the hint boxes use, one of them wide, centred. A padlock on its own read as
+  // a status mark rather than as the thing that took the buttons' place.
+  const int boxHeight = UITheme::getInstance().getMetrics().buttonHintsHeight;
+  const int boxWidth = HintGeometry::scaleMetric(kFrontBoxWidth);
+  const int boxX = (renderer.getScreenWidth() - boxWidth) / 2;
+  const int boxY = renderer.getScreenHeight() - boxHeight;
+  drawTouchLockBox(renderer, Rect{boxX, boxY, boxWidth, boxHeight});
+  const int iconX = boxX + (boxWidth - icon_touchLock.w) / 2;
+  const int iconY = boxY + (boxHeight - icon_touchLock.h) / 2;
+  renderer.drawMono1bpp(icon_touchLock.bits, iconX, iconY, icon_touchLock.w, icon_touchLock.h, true);
+
+  renderer.setOrientation(origOrientation);
+}
+
+bool BaseTheme::frontHintBox(const int index, const int portraitWidth, const int portraitHeight, Rect& out) const {
+  if (!TouchPolicy::hintsVisible() || !frontBoxActive(index)) return false;
+  int positions[4] = {0, 0, 0, 0};
+  const int width =
+      HintGeometry::frontRow(portraitWidth, kX4FrontPositions, kX3FrontPositions, kFrontBoxWidth, positions);
+  const int height = UITheme::getInstance().getMetrics().buttonHintsHeight;
+  out = Rect{positions[index], portraitHeight - height, width, height};
+  return true;
+}
+
+bool BaseTheme::sideHintBox(const int index, const int portraitWidth, const int portraitHeight, Rect& out) const {
+  (void)portraitHeight;
+  if (!TouchPolicy::hintsVisible() || !sideBoxActive(index)) return false;
+  const int screenWidth = portraitWidth;
+  const int width = sideHintWidth();
+  const int height = sideHintHeight();
+  if (gpio.deviceIsX3()) {
+    // X3 puts one box per side rather than stacking them: top = left edge.
+    const int x = (index == 0) ? sideHintMargin() : screenWidth - sideHintMargin() - width;
+    out = Rect{x, kSideHintX3Y, width, height};
+    return true;
+  }
+  out = Rect{screenWidth - sideHintMargin() - width, sideHintX4TopY() + index * height, width, height};
+  return true;
 }
 
 int BaseTheme::getListRowStep(bool hasSubtitle) const {
@@ -772,6 +958,19 @@ void BaseTheme::drawButtonMenu(GfxRenderer& renderer, Rect rect, int buttonCount
   }
 }
 
+// Every second pixel row to white, over whatever was already drawn there. A
+// line screen and not a checkerboard: the panel has no grey in BW mode
+// (../../../docs/eink-grayscale.md), and at this text size a checkerboard
+// speckles the glyphs instead of greying them. Called after the label, the icon
+// and the value are down, so it dims all three at once.
+void BaseTheme::dimDisabledRow(const GfxRenderer& renderer, const int x, const int y, const int width,
+                               const int height) {
+  constexpr int kDimStep = 2;
+  for (int line = y; line < y + height; line += kDimStep) {
+    renderer.fillRect(x, line, width, 1, false);
+  }
+}
+
 // Home's row list. Geometry is deliberately not in ThemeMetrics: these are the
 // Home screen's own numbers (a 480 px panel, one screenful of seven rows), and a
 // theme that wants a different Home overrides this method instead.
@@ -783,11 +982,6 @@ void BaseTheme::drawHomeMenu(const GfxRenderer& renderer, const Rect rect, const
   constexpr int kIconGap = 18;
   constexpr int kBlockRadius = 10;
   constexpr int kBlockMargin = 2;
-  // A disabled row keeps its glyph and its label and loses every second pixel
-  // row to white. The panel has no grey in BW mode (../../docs/eink-grayscale.md),
-  // and a line screen halves the ink without the speckle a checkerboard leaves at
-  // this text size.
-  constexpr int kDimStep = 2;
 
   const int left = rect.x + metrics.contentSidePadding;
   const int width = rect.width - metrics.contentSidePadding * 2;
@@ -796,7 +990,6 @@ void BaseTheme::drawHomeMenu(const GfxRenderer& renderer, const Rect rect, const
   for (int i = 0; i < rowCount; ++i) {
     const int top = rect.y + i * rowHeight;
     const bool selected = i == selectedIndex;
-    const bool enabled = rows[i].enabled;
 
     if (selected) {
       renderer.fillRoundedRect(left, top + kBlockMargin, width, rowHeight - kBlockMargin * 2, kBlockRadius,
@@ -812,17 +1005,52 @@ void BaseTheme::drawHomeMenu(const GfxRenderer& renderer, const Rect rect, const
     renderer.drawText(UI_12_FONT_ID, x, top + (rowHeight - lineHeight) / 2, rows[i].label, !selected);
 
     const freeink::Icon& chevron = icon_chevron;
-    renderer.drawMono1bpp(chevron.bits, left + width - kRowInset - chevron.w, top + (rowHeight - chevron.h) / 2,
-                          chevron.w, chevron.h, !selected);
+    const int chevronLeft = left + width - kRowInset - chevron.w;
 
-    if (!enabled) {
-      for (int y = top + kBlockMargin; y < top + rowHeight - kBlockMargin; y += kDimStep) {
-        renderer.fillRect(left, y, width, 1, false);
+    // The badge, when the row has one and there is room for it before the
+    // chevron. Drawn in UI_10 rather than the row's UI_12: it is an aside
+    // about what the row runs on, and at the label's own weight it would read
+    // as part of the name.
+    if (rows[i].badgeLabel != nullptr || rows[i].badgeIcon != nullptr) {
+      constexpr int kBadgeGap = 12;      // label to badge
+      constexpr int kBadgeInnerGap = 4;  // text to glyph, inside the brackets
+      constexpr int kBadgeChevronGap = 10;
+
+      const int badgeLineHeight = renderer.getLineHeight(UI_10_FONT_ID);
+      const int labelWidth = renderer.getTextWidth(UI_12_FONT_ID, rows[i].label, EpdFontFamily::REGULAR);
+
+      char open[32];
+      snprintf(open, sizeof(open), "(%s", rows[i].badgeLabel != nullptr ? rows[i].badgeLabel : "");
+      const int openWidth = renderer.getTextWidth(UI_10_FONT_ID, open, EpdFontFamily::REGULAR);
+      const int glyphWidth = rows[i].badgeIcon != nullptr ? rows[i].badgeIcon->w + kBadgeInnerGap : 0;
+      const int closeWidth = renderer.getTextWidth(UI_10_FONT_ID, ")", EpdFontFamily::REGULAR);
+      const int badgeWidth = openWidth + glyphWidth + closeWidth;
+
+      int bx = x + labelWidth + kBadgeGap;
+      if (bx + badgeWidth + kBadgeChevronGap <= chevronLeft) {
+        const int by = top + (rowHeight - badgeLineHeight) / 2;
+        renderer.drawText(UI_10_FONT_ID, bx, by, open, !selected);
+        bx += openWidth;
+        if (rows[i].badgeIcon != nullptr) {
+          const freeink::Icon& glyph = *rows[i].badgeIcon;
+          bx += kBadgeInnerGap;
+          // Centred on the badge *text's* line, so the glyph and the brackets
+          // around it share one centre. The difference from centring on the
+          // row is at most a pixel of integer-truncation residue -- what
+          // actually made the first badge look wrong was the glyph itself,
+          // lucide `antenna`, whose 14 px raster is top-heavy with a detached
+          // mast (scripts/gen_home_icons.py).
+          renderer.drawMono1bpp(glyph.bits, bx, by + (badgeLineHeight - glyph.h) / 2, glyph.w, glyph.h, !selected);
+          bx += glyph.w;
+        }
+        renderer.drawText(UI_10_FONT_ID, bx, by, ")", !selected);
       }
     }
 
-    // Hairline between rows, drawn after the dimming so a dimmed row does not
-    // eat the separator above it. Not above the first row and not against the
+    renderer.drawMono1bpp(chevron.bits, chevronLeft, top + (rowHeight - chevron.h) / 2, chevron.w, chevron.h,
+                          !selected);
+
+    // Hairline between rows. Not above the first row and not against the
     // selected block, which is its own boundary.
     if (i > 0 && !selected && selectedIndex != i - 1) {
       renderer.drawLine(left + 4, top, left + width - 4, top, 1, true);
@@ -1068,12 +1296,36 @@ BaseTheme::OptionPopupSpacing BaseTheme::optionPopupSpacing(const ThemeMetrics& 
                             100};
 }
 
+Rect BaseTheme::optionPopupFixedBox(const GfxRenderer& renderer, const ThemeMetrics& metrics,
+                                    const OptionPopupSize size) {
+  if (size == OptionPopupSize::Auto) return Rect{0, 0, 0, 0};
+  const int pageWidth = renderer.getScreenWidth();
+  const int pageHeight = renderer.getScreenHeight();
+  const int widthPercent =
+      size == OptionPopupSize::Menu ? metrics.optionPopupMenuWidthPercent : metrics.optionPopupConfirmWidthPercent;
+  const int heightPercent =
+      size == OptionPopupSize::Menu ? metrics.optionPopupMenuHeightPercent : metrics.optionPopupConfirmHeightPercent;
+  // The side margin is the panel's own limit, not a preference: a dialog wider
+  // than this has no frame left on one edge.
+  const int maxWidth = std::max(1, pageWidth - metrics.optionPopupDialogSideMargin * 2);
+  const int w = std::min(maxWidth, std::max(1, pageWidth * widthPercent / 100));
+  const int h = std::min(pageHeight, std::max(1, pageHeight * heightPercent / 100));
+  return Rect{(pageWidth - w) / 2, (pageHeight - h) / 2, w, h};
+}
+
 BaseTheme::OptionPopupGeometry BaseTheme::optionPopupGeometry(const GfxRenderer& renderer,
                                                               const OptionPopupSpec& spec) const {
   const auto& metrics = UITheme::getInstance().getMetrics();
   const auto spacing = optionPopupSpacing(metrics, spec.compact);
   const int pageWidth = renderer.getScreenWidth();
   const int pageHeight = renderer.getScreenHeight();
+  // A size class fixes the whole rect -- width, height and position. Everything
+  // below that measures content then feeds a width or a height is skipped for
+  // it; only the row count still comes from measurement, because that is the one
+  // thing a fixed box cannot decide for a caller (the title may wrap to two
+  // lines and eat a row).
+  const Rect fixedBox = optionPopupFixedBox(renderer, metrics, spec.size);
+  const bool fixed = fixedBox.width > 0 && fixedBox.height > 0;
 
   const int optionFontId = metrics.optionPopupUseSmallFont ? UI_10_FONT_ID : UI_12_FONT_ID;
   const EpdFontFamily::Style optionStyle =
@@ -1081,15 +1333,68 @@ BaseTheme::OptionPopupGeometry BaseTheme::optionPopupGeometry(const GfxRenderer&
 
   const int optionLineHeight = renderer.getLineHeight(optionFontId);
   const int titleLineHeight = renderer.getLineHeight(UI_12_FONT_ID);
+  // The note rides in the option font, one line, with the row gap under it. It
+  // is not a row: nothing scrolls it and nothing can select it.
+  const int noteLineHeight = spec.note != nullptr ? optionLineHeight : 0;
+  const int noteBlock = spec.note != nullptr ? noteLineHeight + spacing.itemSpacing : 0;
   const int rowHeight = optionLineHeight + spacing.selectionVPadding * 2;
   const int rowStep = rowHeight + spacing.itemSpacing;
   const int optionCount = spec.options ? static_cast<int>(spec.options->size()) : 0;
 
+  // The title wraps to the widest a dialog can ever be, not to whatever this
+  // dialog's content happens to need -- that budget cannot depend on dialogW
+  // below, which itself depends on the title's wrapped width, or the two
+  // would need to agree on which comes first. A title this wide only reaches
+  // a caller with a very long dynamic string (MapActivity::savePin()'s replace
+  // confirmation, "Replace <label> with current location? (fix <age> old)"),
+  // which used to run off both edges of the dialog with no wrap at all
+  // (reported on the S8 2026-08-24).
+  // The title's first line has to leave room for the "n/m" scroll counter in
+  // the same top-right corner, or the two collide -- optionCount alone decides
+  // this, not the row-fit math below, because that math needs titleBlockHeight
+  // and titleBlockHeight needs the title wrapped first. optionCount >
+  // kOptionPopupMaxVisibleRows is the same "will it scroll" condition as
+  // `optionCount > visibleRows` in the common case (the row cap, not the
+  // height budget, is what forces most lists to scroll); reserving space on a
+  // false positive just centres the title a little less perfectly, not
+  // wrongly.
+  //
+  // A fixed box reserves the corner unconditionally. Whether it scrolls depends
+  // on how many rows are left under the wrapped title, which is not known yet
+  // here -- and drawOptionPopup() has to reach the identical number without
+  // knowing it either, or the two wrap the title differently. Reserving always
+  // costs a slightly narrower title on a list that turns out to fit; guessing
+  // costs a counter drawn over the title's last word.
+  int counterReserve = 0;
+  if (fixed ? optionCount > 0 : optionCount > kOptionPopupMaxVisibleRows) {
+    char counter[12];
+    snprintf(counter, sizeof(counter), "%d/%d", spec.selectedIndex + 1, optionCount);
+    counterReserve = renderer.getTextWidth(UI_10_FONT_ID, counter) + spacing.itemSpacing;
+  }
+  int titleMaxWidth =
+      fixed ? fixedBox.width - spacing.innerPadding * 2 - counterReserve
+            : pageWidth - metrics.optionPopupDialogSideMargin * 2 - spacing.innerPadding * 2 - counterReserve;
+  const std::vector<std::string> titleLines =
+      spec.title != nullptr ? wrapOptionPopupTitle(renderer, spec.title, titleMaxWidth) : std::vector<std::string>{};
+  const int titleLineCount = static_cast<int>(std::max<size_t>(1, titleLines.size()));
+
   // A row with a value is label + gap + boxed value; a plain row is just the
-  // label. The title has to fit too, and it is drawn in the bigger font.
-  int maxTextWidth = spec.title ? renderer.getTextWidth(UI_12_FONT_ID, spec.title, EpdFontFamily::BOLD) : 0;
+  // label. The title has to fit too, and it is drawn in the bigger font --
+  // the first line also carries the counter reserve, since that is the line
+  // it shares a row with.
+  int maxTextWidth = 0;
+  for (size_t i = 0; i < titleLines.size(); ++i) {
+    int w = renderer.getTextWidth(UI_12_FONT_ID, titleLines[i].c_str(), EpdFontFamily::BOLD);
+    if (i == 0) w += counterReserve;
+    if (w > maxTextWidth) maxTextWidth = w;
+  }
+  if (spec.note != nullptr) {
+    const int noteWidth = renderer.getTextWidth(optionFontId, spec.note, EpdFontFamily::REGULAR);
+    if (noteWidth > maxTextWidth) maxTextWidth = noteWidth;
+  }
+  const int iconColumnW = optionPopupIconColumnWidth(spec, spacing);
   for (int i = 0; i < optionCount; i++) {
-    int w = renderer.getTextWidth(optionFontId, (*spec.options)[i].c_str(), optionStyle);
+    int w = iconColumnW + renderer.getTextWidth(optionFontId, (*spec.options)[i].c_str(), optionStyle);
     if (spec.values && i < static_cast<int>(spec.values->size()) && !(*spec.values)[i].empty()) {
       w += spacing.selectionHPadding + renderer.getTextWidth(optionFontId, (*spec.values)[i].c_str(), optionStyle) +
            spacing.valuePadding * 2;
@@ -1102,41 +1407,44 @@ BaseTheme::OptionPopupGeometry BaseTheme::optionPopupGeometry(const GfxRenderer&
   // pixels under it (MapActivity's menu backdrop) pays for every row in RAM,
   // and a dialog taller than half the panel stops reading as a dialog.
   // Anything past the window scrolls.
-  const int chromeHeight = titleLineHeight + spacing.titleGap + spacing.innerPadding * 2;
-  const int heightBudget = pageHeight * kOptionPopupMaxHeightPercent / 100;
+  const int titleBlockHeight = titleLineHeight * titleLineCount;
+  const int chromeHeight = titleBlockHeight + spacing.titleGap + noteBlock + spacing.innerPadding * 2;
+  // A fixed box budgets against itself, and the row cap does not apply to it:
+  // the cap is there to stop a dialog growing with its list, and a box that
+  // cannot grow at all needs no second brake. Rows past what the box holds
+  // scroll, same as everywhere else.
+  const int heightBudget = fixed ? fixedBox.height : pageHeight * kOptionPopupMaxHeightPercent / 100;
   int visibleRows = optionCount;
   if (rowStep > 0 && optionCount > 0) {
     const int fits = (heightBudget - chromeHeight + spacing.itemSpacing) / rowStep;
-    visibleRows = std::min(optionCount, std::min(kOptionPopupMaxVisibleRows, std::max(1, fits)));
-  }
-
-  // A caller can ask for a floor on both, so a popup that replaces another one
-  // keeps its size instead of shrinking to its own content -- see
-  // OptionPopupSpec::minVisibleRows. The ceilings above still win: the floor can
-  // never grow the dialog past the row cap or the panel's side margins.
-  if (spec.minVisibleRows > visibleRows) {
-    const int fitsCap = rowStep > 0 ? (heightBudget - chromeHeight + spacing.itemSpacing) / rowStep : visibleRows;
-    visibleRows = std::min(spec.minVisibleRows, std::min(kOptionPopupMaxVisibleRows, std::max(1, fitsCap)));
+    visibleRows = fixed ? std::min(optionCount, std::max(1, fits))
+                        : std::min(optionCount, std::min(kOptionPopupMaxVisibleRows, std::max(1, fits)));
   }
 
   const int listHeight = visibleRows > 0 ? rowHeight * visibleRows + spacing.itemSpacing * (visibleRows - 1) : 0;
   int dialogW =
       std::min((maxTextWidth + spacing.innerPadding * 2 + spacing.selectionHPadding * 2) * spacing.widthPercent / 100,
                pageWidth - metrics.optionPopupDialogSideMargin * 2);
-  if (spec.minDialogWidth > dialogW) {
-    dialogW = std::min(spec.minDialogWidth, pageWidth - metrics.optionPopupDialogSideMargin * 2);
-  }
-  const int dialogH = titleLineHeight + spacing.titleGap + listHeight + spacing.innerPadding * 2;
+  const int dialogH = titleBlockHeight + spacing.titleGap + noteBlock + listHeight + spacing.innerPadding * 2;
 
   OptionPopupGeometry geometry;
-  geometry.dialog = Rect{(pageWidth - dialogW) / 2, (pageHeight - dialogH) / 2, dialogW, dialogH};
+  // The fixed box is taken whole, including its height: leftover space under the
+  // last row stays empty rather than pulling the box up. That emptiness is what
+  // makes the rect constant, and the constant rect is what makes the close one
+  // cheap window refresh instead of a full re-render.
+  geometry.dialog = fixed ? fixedBox : Rect{(pageWidth - dialogW) / 2, (pageHeight - dialogH) / 2, dialogW, dialogH};
+  dialogW = geometry.dialog.width;
   geometry.rowX = geometry.dialog.x + spacing.innerPadding;
   geometry.rowWidth = dialogW - spacing.innerPadding * 2;
-  geometry.firstRowY = geometry.dialog.y + spacing.innerPadding + titleLineHeight + spacing.titleGap;
+  geometry.noteY =
+      spec.note != nullptr ? geometry.dialog.y + spacing.innerPadding + titleBlockHeight + spacing.titleGap : 0;
+  geometry.noteLineHeight = noteLineHeight;
+  geometry.firstRowY = geometry.dialog.y + spacing.innerPadding + titleBlockHeight + spacing.titleGap + noteBlock;
   geometry.rowHeight = rowHeight;
   geometry.rowStep = rowStep;
   geometry.visibleRows = visibleRows;
   geometry.titleLineHeight = titleLineHeight;
+  geometry.titleLineCount = titleLineCount;
   return geometry;
 }
 
@@ -1153,6 +1461,7 @@ void BaseTheme::drawOptionPopup(const GfxRenderer& renderer, const OptionPopupSp
   const int optionCount = spec.options ? static_cast<int>(spec.options->size()) : 0;
   const int frameThickness = metrics.popupFrameThickness;
   const int frameRadius = metrics.popupCornerRadius;
+  const int iconColumnW = optionPopupIconColumnWidth(spec, spacing);
 
   if (frameRadius > 0) {
     renderer.fillRoundedRect(dialog.x - frameThickness, dialog.y - frameThickness, dialog.width + frameThickness * 2,
@@ -1168,21 +1477,54 @@ void BaseTheme::drawOptionPopup(const GfxRenderer& renderer, const OptionPopupSp
   }
 
   int y = dialog.y + spacing.innerPadding;
-  renderer.drawCenteredText(UI_12_FONT_ID, y, spec.title, true, EpdFontFamily::BOLD);
+  // Same budget optionPopupGeometry() wrapped the title to -- both have to
+  // agree, or the dialog's reserved height and what actually gets drawn into
+  // it drift apart. That includes the counter reserve, and for a fixed box the
+  // dialog's own width: wrapping the title to the full-screen budget draws it
+  // wider than the box actually is (seen on the S8 2026-08-24, when the
+  // confirmation's title ran off both edges).
+  // The size class decides both, exactly as in optionPopupGeometry(): a fixed
+  // box always reserves the counter corner and wraps to its own width.
+  const bool fixed = spec.size != OptionPopupSize::Auto;
+  int counterReserve = 0;
+  if (fixed ? optionCount > 0 : optionCount > kOptionPopupMaxVisibleRows) {
+    char counter[12];
+    snprintf(counter, sizeof(counter), "%d/%d", spec.selectedIndex + 1, optionCount);
+    counterReserve = renderer.getTextWidth(UI_10_FONT_ID, counter) + spacing.itemSpacing;
+  }
+  int titleMaxWidth = fixed ? dialog.width - spacing.innerPadding * 2 - counterReserve
+                            : renderer.getScreenWidth() - metrics.optionPopupDialogSideMargin * 2 -
+                                  spacing.innerPadding * 2 - counterReserve;
+  const std::vector<std::string> titleLines =
+      spec.title != nullptr ? wrapOptionPopupTitle(renderer, spec.title, titleMaxWidth) : std::vector<std::string>{};
+  for (const std::string& line : titleLines) {
+    renderer.drawCenteredText(UI_12_FONT_ID, y, line.c_str(), true, EpdFontFamily::BOLD);
+    y += geometry.titleLineHeight;
+  }
   // Only when the list does not fit: which slice of it is on screen. Without
-  // it a scrolled list reads as a short list that lost rows.
+  // it a scrolled list reads as a short list that lost rows. Pinned to the
+  // title's first line -- a wrapped title and a scrolled list do not happen
+  // together in practice, and the counter is a corner mark, not part of the
+  // sentence.
   if (optionCount > geometry.visibleRows) {
     char counter[12];
     snprintf(counter, sizeof(counter), "%d/%d", spec.selectedIndex + 1, optionCount);
     const int counterW = renderer.getTextWidth(UI_10_FONT_ID, counter);
-    renderer.drawText(UI_10_FONT_ID, dialog.x + dialog.width - spacing.innerPadding - counterW, y, counter, true);
+    renderer.drawText(UI_10_FONT_ID, dialog.x + dialog.width - spacing.innerPadding - counterW,
+                      dialog.y + spacing.innerPadding, counter, true);
   }
-  y += geometry.titleLineHeight;
 
   if (metrics.optionPopupTitleSeparator) {
     const int sepY = y + spacing.titleGap / 2;
     renderer.drawLine(dialog.x + spacing.innerPadding, sepY, dialog.x + dialog.width - spacing.innerPadding, sepY,
                       true);
+  }
+
+  // The note: one line under the title, centred like it, in the option font so
+  // it reads as a fact about the dialog's subject rather than as a row. Never
+  // selectable -- the hit test only knows about geometry.rows.
+  if (spec.note != nullptr) {
+    renderer.drawCenteredText(optionFontId, geometry.noteY, spec.note, true, EpdFontFamily::REGULAR);
   }
 
   const int selectionRadius = metrics.optionPopupSelectionRadius;
@@ -1192,6 +1534,8 @@ void BaseTheme::drawOptionPopup(const GfxRenderer& renderer, const OptionPopupSp
     if (i < 0 || i >= optionCount) continue;
     const int itemY = geometry.firstRowY + row * geometry.rowStep;
     const bool selected = (i == spec.selectedIndex);
+    const bool rowDisabled =
+        spec.disabled != nullptr && i < static_cast<int>(spec.disabled->size()) && (*spec.disabled)[i] != 0;
     const char* labelText = (*spec.options)[i].c_str();
 
     if (metrics.optionPopupDrawAllRows || selected) {
@@ -1211,29 +1555,51 @@ void BaseTheme::drawOptionPopup(const GfxRenderer& renderer, const OptionPopupSp
 
     const int textW = renderer.getTextWidth(optionFontId, labelText, optionStyle);
     const int textY = itemY + (geometry.rowHeight - optionLineHeight) / 2;
-    const int textX =
-        spec.leftAlign ? geometry.rowX + spacing.selectionHPadding : geometry.rowX + (geometry.rowWidth - textW) / 2;
+    const int textX = spec.leftAlign ? geometry.rowX + spacing.selectionHPadding + iconColumnW
+                                     : geometry.rowX + iconColumnW + (geometry.rowWidth - iconColumnW - textW) / 2;
     // Unselected items: text is dark (invert=true means draw on white bg).
     // Selected on dark bg: text must be white (invert=false).
     // Selected on light bg: text stays dark (invert=true).
     const bool invertText = selected ? metrics.optionPopupSelectionLight : true;
     renderer.drawText(optionFontId, textX, textY, labelText, invertText, optionStyle);
 
+    // The icon, at the column's fixed x regardless of whether this row's own
+    // entry is null -- a null entry (Nearby's `Hide all` among category rows)
+    // leaves the column blank rather than pulling the label back over it, so
+    // every label in the list still starts at the same x.
+    const freeink::Icon* icon =
+        spec.icons != nullptr && i < static_cast<int>(spec.icons->size()) ? (*spec.icons)[i] : nullptr;
+    if (icon != nullptr) {
+      const int iconX = spec.leftAlign ? geometry.rowX + spacing.selectionHPadding : geometry.rowX;
+      const int iconY = itemY + (geometry.rowHeight - icon->h) / 2;
+      renderer.drawMono1bpp(icon->bits, iconX, iconY, icon->w, icon->h, invertText);
+    }
+
     // The value, right-aligned, boxed on the selected row -- the same "this is
     // the changeable part" cue the Settings list gives (LyraTheme::drawList()).
-    if (!spec.values || i >= static_cast<int>(spec.values->size()) || (*spec.values)[i].empty()) continue;
-    const char* valueText = (*spec.values)[i].c_str();
-    const int valueW = renderer.getTextWidth(optionFontId, valueText, optionStyle);
-    const int boxW = valueW + spacing.valuePadding * 2;
-    const int boxX = geometry.rowX + geometry.rowWidth - boxW;
-    if (selected) {
-      if (selectionRadius > 0) {
-        renderer.fillRoundedRect(boxX, itemY, boxW, geometry.rowHeight, selectionRadius, Color::Black);
-      } else {
-        renderer.fillRect(boxX, itemY, boxW, geometry.rowHeight, true);
+    const bool hasValue =
+        spec.values != nullptr && i < static_cast<int>(spec.values->size()) && !(*spec.values)[i].empty();
+    if (hasValue) {
+      const char* valueText = (*spec.values)[i].c_str();
+      const int valueW = renderer.getTextWidth(optionFontId, valueText, optionStyle);
+      const int boxW = valueW + spacing.valuePadding * 2;
+      const int boxX = geometry.rowX + geometry.rowWidth - boxW;
+      if (selected) {
+        if (selectionRadius > 0) {
+          renderer.fillRoundedRect(boxX, itemY, boxW, geometry.rowHeight, selectionRadius, Color::Black);
+        } else {
+          renderer.fillRect(boxX, itemY, boxW, geometry.rowHeight, true);
+        }
       }
+      // Boxed value is white-on-black; everything else is dark on its own row.
+      renderer.drawText(optionFontId, boxX + spacing.valuePadding, textY, valueText, !selected, optionStyle);
     }
-    // Boxed value is white-on-black; everything else is dark on its own row.
-    renderer.drawText(optionFontId, boxX + spacing.valuePadding, textY, valueText, !selected, optionStyle);
+
+    // Last, so it dims the label and the value together. A disabled row is
+    // never the selected one (OptionPopup's walk skips it), so the lines always
+    // land on a white row and never on the selection block.
+    if (rowDisabled) {
+      dimDisabledRow(renderer, geometry.rowX, itemY, geometry.rowWidth, geometry.rowHeight);
+    }
   }
 }

@@ -26,6 +26,36 @@ Read with `docs/map-render-spec.md` (parent repo) item 5, which is the contract.
   compact enough to draw several of.
 - The dot is always drawn. A place whose label was dropped still shows as a dot.
 
+## A name that does not fit wraps once, then ellipsises
+
+Built 2026-10-27. `fitName()` tries the whole name on one line; if it is wider
+than the layer's `label_max_width_px` it looks for a **space** to split on and
+takes the split that balances the two lines best, measured per candidate
+because the faces are proportional. Only if no split fits does it fall back to
+the ellipsis, which is all it did before.
+
+**Both halves must fit, or the split is not taken.** A wrap that still needs an
+ellipsis costs the depth and saves nothing.
+
+**A hyphen is not a split point.** "Súľov-Hradná" broken there reads as two
+places, and a map has no room to explain that it is one.
+
+**Two lines are a placement change, not a drawing one.** The box is what the
+eight positions, the gap rule, the route test and the least-ink test all work
+on, so a wrapped name competes for twice the depth. Lines are centred on the
+box so the name reads as one block.
+
+This is shared: place names and landmark names go through the same function,
+each with its own width cap.
+
+## Landmark names ride this same placer
+
+Since 2026-10-27 the point layer's landmarks are named by this pass too
+(`landmarks.md`). They are offered during the point walk rather than the place
+walk, carry their own text size and their own cap, and clear their own mark
+rather than the place dot. Everything below -- the eight positions, the three
+hard tests, least-ink wins -- applies to them unchanged.
+
 ## Greedy, not a zoom table
 
 `MapLabels::offer()` is called for every place in the frame during the walk that
@@ -36,7 +66,9 @@ the layer has been walked to the end.
 
 `MapLabels::draw()` then walks the candidates in that order and, for each, tries
 eight positions around the dot -- right, left, below, above, then the four
-diagonals -- taking the first that passes every test:
+diagonals. Every one of them has to pass three hard tests, and the survivors are
+then ranked by how much ink they would cover (`Least ink wins` below). The hard
+tests:
 
 1. the label's box, inflated by the halo or the box padding, is fully inside the
    canvas's drawable rect. On the device that excludes three bands of screen
@@ -77,18 +109,185 @@ build/trips/zahorie-male-karpaty-loop.tir --fit-route`): with only the four
 cardinal positions, 2 of 6 on-screen names were placed and 4 dropped; adding the
 diagonals took it to 4 placed, 2 dropped. That is why the diagonals exist.
 
-## Why the route is the one thing labels avoid
+## Least ink wins
 
-Roads and buildings are *not* tracked. A name is meant to sit over the map --
-that is what the halo is for -- and tracking road pixels would cost a second
-pass over the roads layer off the SD card to make a decision that does not need
-it.
+Added 2026-09-15. Until then the **first** position that passed the three hard
+tests was taken, and that is a coin toss about information: "right of the dot"
+lands across a primary road as readily as on empty field. A name is drawn with a
+halo, so whatever is under it is knocked out -- choosing a position is choosing
+which part of the map to erase.
 
-The route is different: it is the line the rider is following, so a name across
-it is a name in the way. It is tracked in a coarse occupancy grid
-(`MapOccupancyGrid`, one bit per 8x8 px cell, 1,250 bytes), marked by the same
-pass that *draws* the route -- because a second walk over the route means
-re-reading its file (`IMapRouteSource.h`).
+So all eight are now scored and the cleanest wins. The score is the ink already
+on the canvas under the label's knockout box, read back through
+`IMapCanvas::inkCoverage()`.
+
+### Where the ink number comes from
+
+Off the finished frame, not off the layers. Names are drawn **last**
+(`MapRenderer::render`), so at that moment the framebuffer holds every layer
+below them -- roads, buildings, area tones, contours, the route, the place dots,
+the POI marks, and the labels already placed. Reading it costs nothing to
+produce: the alternative, a second pass over the roads layer off the SD card, is
+what made this look unaffordable in 2026-08 and is why the old note here said
+roads were deliberately not tracked.
+
+- **Device** -- `GfxRendererCanvas::inkCoverage()` over `GfxRenderer::isPixelInked()`,
+  which is `drawPixel` inverted: same rotation, same bounds, and a zero bit is
+  black because `drawPixel` clears the bit to ink.
+- **Host preview** -- `PpmCanvas::inkCoverage()` over its own byte-per-pixel
+  buffer.
+- **Anything else** -- the default in `IMapCanvas` reports 0 inked of 0 samples,
+  which means *unknown*, and the placer then falls back to first-fit exactly as
+  before. Silence must not read as "no ink", or an unreadable canvas would score
+  every position as perfectly clean.
+
+Sampled every `kInkStepPx` (2) pixels in both axes. The comparison is between
+eight boxes of the same size, so the undercount is identical in all eight and
+cancels; 1 px would be four times the cost for an answer that decides nothing
+differently, and 4 px starts stepping over a 1 px hairline road, which is the
+thing the test exists to keep uncovered.
+
+### The tolerance, and why it is not zero
+
+`kInkTolerancePermille` is 20. The least-inked position wins only by more than
+2 % of its own box; inside that margin the cartographic preference order decides
+instead.
+
+Without it, two positions differing by a single dithered pixel of woodland swap
+places, and a name that moves from the right of its dot to below it between two
+redraws of the same ground reads as a different map rather than a tidier one.
+
+### Cost
+
+One probe per position tried, and the search stops at the first position with
+**zero** ink -- so open country still costs one probe per label, the same as the
+old first-fit. Measured on the host preview, 2026-09-15
+(`map_preview --bench 31`, medians, `--no-ink-test` for the other side):
+
+| scene | rung | labels | probes | samples | first-fit | least-ink |
+|---|---|---|---|---|---|---|
+| pezinok | 6 | 22 | 121 | 30,988 | 6.80 ms | 6.87 ms |
+| pezinok | 5 | 11 | 61 | 36,970 | 6.37 ms | 6.39 ms |
+| pezinok | 4 | 5 | 32 | 18,292 | 2.14 ms | 2.20 ms |
+| malacky | 5 | 11 | 59 | 43,466 | 4.93 ms | 4.97 ms |
+| gap2 | 6 | 21 | 112 | 34,010 | 4.33 ms | 4.41 ms |
+| vratna (hike) | 5 | 8 | 30 | 19,964 | 6.90 ms | 7.00 ms |
+| vratna (hike) | 3 | 1 | 8 | 5,040 | 2.33 ms | 2.26 ms |
+| prosiecka (hike) | 4 | 9 | 42 | 30,464 | 2.42 ms | 2.39 ms |
+
+The millisecond columns are a **laptop** and the difference sits inside their
+own run-to-run spread -- they say the change is not structural, nothing more.
+
+### Measured on an X3
+
+2026-09-15, Xteink X3 (ESP32-C3), MAC `7c:e8:b1:6f:c2:9c`, ride mode over
+Pezinok at 48.289 17.267, read off the device's own `render ... ms` log line
+(`MapActivity.cpp`). The same binary twice, once with a temporary
+`labels_->inkTest = false` in `MapActivity::onEnter()` -- so the two rows differ
+by the test and by nothing else:
+
+| rung | render | label pass, first-fit | label pass, least-ink | cost |
+|---|---|---|---|---|
+| 6 | 3,801 ms | 71 ms (3 runs, all 71) | 84, 83 ms | **+12 to +13 ms** |
+| 5 | 1,979 ms | 76 ms | 92 ms | **+16 ms** |
+
+Rung 6 repeated to the millisecond across runs, so this is not noise. The cost
+is **0.3 % of a rung-6 frame and 0.8 % of a rung-5 one**.
+
+The estimate this replaces was 6-11 ms, derived from 25-40 C3 cycles per sample.
+The measurement says it was low by a third to a half, and that is all it says.
+
+**It does not give a per-sample cost.** Dividing the 12 ms by a sample count
+needs the device's own count, and the firmware does not log
+`MapLabelScratch::inkProbes` / `inkSamples` -- the 30,988 figure in the table
+above is the *host* preview at 480x800 placing 22 names, while the X3 is 528x792
+and placed 19. A per-sample cycle figure was written here on 2026-09-15 from that
+mismatch and is withdrawn: it mixed a measured device millisecond with a host
+count, which is the swap Teza V37 forbids. Logging the two counters is T-2016;
+until then the honest number is the per-frame delta.
+
+If it ever has to go, `MapLabelScratch::inkTest = false` is the switch, not a
+revert.
+
+### What it bought
+
+Same scenes, 2026-09-15. "Erased ink" is counted from the images rather than
+from the renderer -- a pixel black in a `--no-labels` render and white in the
+labelled one is map the label knocked out, which is the same measurement for
+both variants and so cannot favour either. Per label as well as in total,
+because the two variants do not always place the same number of names:
+
+| scene | rung | names ff -> li | erased ff | erased li | per label ff -> li |
+|---|---|---|---|---|---|
+| pezinok | 6 | 22 -> 22 | 1,166 px | 575 px | 53 -> 26 px |
+| pezinok | 5 | 11 -> 11 | 1,008 px | 733 px | 92 -> 67 px |
+| pezinok | 4 | 5 -> 5 | 262 px | 175 px | 52 -> 35 px |
+| malacky | 5 | 10 -> 11 | 1,437 px | 1,198 px | 144 -> 109 px |
+| gap2 | 6 | 23 -> 21 | 1,375 px | 936 px | 60 -> 45 px |
+| vratna (hike) | 5 | 7 -> 8 | 1,275 px | 986 px | 182 -> 123 px |
+| vratna (hike) | 3 | 1 -> 1 | 210 px | 145 px | 210 -> 145 px |
+| prosiecka (hike) | 4 | 9 -> 9 | 925 px | 836 px | 103 -> 93 px |
+
+Every scene erases less map per name. The count moved in both directions and
+came out level over the eight scenes, 88 names either way.
+
+**Judged on the panel**, X3, 2026-09-15: the maintainer looked at the new layout
+on the glass and called it good. That is a verdict on what the panel shows, not
+a comparison -- the old layout was flashed that day only to time it and was
+never grabbed, so the numbers above remain the evidence that it is *better*.
+
+**It moves names around, and sometimes off.** Placement is greedy and marks its
+ground taken as it goes, so a cleaner position for one name can be the position
+the next name needed. Malacky and Vratna each gained a name that way; gap2 at
+rung 6 lost two of twenty-three. Nothing in the rule protects the count -- the
+score is about ink and the count is a side effect, and that is worth knowing
+before reading the `dropped` figure as a declutter number.
+
+`map_preview --no-ink-test` renders the same frame the old way, out of the same
+binary, which is what makes a side-by-side a judgement about the placement rule
+and not about two builds.
+
+### How the rest of the field does it
+
+Point-feature label placement is an old problem and the shape of the answer is
+standard: generate candidate positions around the anchor, reject the ones that
+collide, and pick by cost. The preference order this code uses -- right of the
+dot first, diagonals last -- is Imhof's, from "Positioning Names on Maps" (1975),
+which is where the convention every map renderer starts from comes from.
+
+Where implementations differ is what "cost" means:
+
+- **Collision only.** A label is legal or it is not; among the legal ones the
+  first or the highest-priority wins. This is what web-tile renderers of the
+  MapLibre / Mapbox GL family do with their collision index, and it is what this
+  firmware did until 2026-09-15.
+- **Weighted obstacles.** Candidates carry a cost, features carry an obstacle
+  weight, and the layout minimises the total. This is what desktop GIS labelling
+  engines do -- QGIS's PAL and ESRI's Maplex both work this way.
+
+The least-ink score is the second family, arrived at from the other end: instead
+of weighting features by class, it reads the ink they actually left. On 1-bit
+e-ink that is a better proxy than a class weight, because the panel has no
+colour or transparency to hide a collision behind -- a covered road is simply
+gone.
+
+**Not verified against those projects' source this session.** This is the
+general shape of the field, stated to place our choice in it, and nothing here
+is quoted from their code.
+
+## Why the route still has a rule of its own
+
+The route is in a coarse occupancy grid of its own and is tested *before* the
+ink score, with a hard rejection rather than a penalty. It keeps that because a
+rule and a preference are different things: `max_route_overlap_pct` says a name
+across the line the rider is following is not allowed at all, while the ink score
+only says which of the allowed positions is tidiest.
+
+It is tracked in a coarse occupancy grid of its own (`MapOccupancyGrid`, one bit
+per 8x8 px cell, 1,250 bytes), marked by the same pass that *draws* the route --
+because a second walk over the route means re-reading its file
+(`IMapRouteSource.h`), and because the grid is the one form the test can take
+before the route is on the canvas to be read back.
 
 `max_route_overlap_pct` is 8 rather than 0 deliberately. Forbidding any overlap
 loses names along the road being ridden, which is exactly where they are wanted;
@@ -119,6 +318,7 @@ is its point size at 150 DPI, not its pixel height
 
 | face | line height | ascender | weights |
 |---|---|---|---|
+| `ubuntu_5` | 12 | 10 | regular only -- **the map's own small face**, added 2026-08-26 |
 | `notosans_8` | 23 | 18 | regular only |
 | `ubuntu_10` | 24 | 20 | regular, bold |
 | `ubuntu_12` | 29 | 24 | regular, bold |
@@ -126,6 +326,48 @@ is its point size at 150 DPI, not its pixel height
 | `notosans_14` | 40 | 32 | regular, bold |
 | `notosans_16` | 45 | 36 | regular, bold |
 | `notosans_18` | 51 | 41 | regular, bold |
+
+### A face below 23 px, and why it had to be cut rather than picked
+
+**2026-08-26.** Every face in the table above except the new first row is 23 px or
+taller, so a contour height number came out the same size as a village name --
+asked for at 9 px, 11 px and 15 px, and identical in all three, because the picker
+takes the largest face that does not exceed the request and falls back to the
+smallest when none fits.
+
+`ubuntu_5_regular` fixes that: a 12 px line, 10 px ascender, cut from the Ubuntu
+TTF already in the repo. Three things about how it was made are worth keeping:
+
+- **Ubuntu, not the small Noto Sans cut** the earlier plan preferred
+  (`docs/place-labels-plan.md`). That plan was about replacing *both* place-label
+  tiers; this is a third tier beside them, and the place labels are Ubuntu UI
+  24/29 -- so an Ubuntu cut keeps one family on the map, which is the constraint
+  this file already pins.
+- **Latin only, no Hebrew, no Arabic, no Vietnamese.** The existing UI cuts pull
+  three extra fontstacks into every face, which is what makes them fat. A number
+  needs digits.
+- **`--force-autohint`**, because at 10 ppem stem consistency is the whole battle
+  and Ubuntu's native hints are weak there.
+
+```
+python3 fontconvert.py ubuntu_5_regular 5 \
+  ../builtinFonts/source/Ubuntu/Ubuntu-Regular.ttf \
+  --force-autohint > ../builtinFonts/ubuntu_5_regular.h
+```
+
+Judged at 1:1 on a Malá Fatra rung-1 frame against cuts at size 4 (10 px line)
+and size 6 (14 px), plus the old 23 px for reference. 10 px read but the stems
+went thin under the white outline; 14 px was safe and slightly heavy; 12 px was
+clean and left the terrain dominant, which is the point. **Not yet judged on the
+panel** -- e-ink with a 1 px outline around a 1 px stem is exactly where a host
+render can be optimistic.
+
+**`fontIds.h` got the new id by hand, and that was deliberate.**
+`build-font-ids.sh` regenerates every id from the current font headers, and the
+headers have moved since the committed ids were produced: reproducing its hash
+over today's files gives different numbers for `UI_10`, `UI_12` and `SMALL`. So a
+regeneration would renumber faces that work. `MAP_SMALL_FONT_ID` is the same
+formula (sum of per-file SHA-256 mod 2^32 minus 2^31) over the one new file.
 
 ### The candidate list is mostly not in the build
 
@@ -194,8 +436,11 @@ come from one family.
 
 ## RAM
 
-`MapLabelScratch` is ~3.8 KB: two occupancy grids (route, and what is already
-taken) at 1,250 bytes each, plus 32 candidates of 40 bytes. Allocated once in
+`MapLabelScratch` is 4,108 bytes (`sizeof`, host, 2026-09-15): two occupancy
+grids (route, and what is already taken) at 1,250 bytes each, plus 36 candidates
+of 40 bytes. The least-ink test added 8 of those bytes -- two counters and a
+switch -- and no buffer: it reads the canvas that already exists rather than
+keeping a third grid. Allocated once in
 `MapActivity::onEnter()` and only when the compiled style draws labels; freed in
 `onExit()`. On OOM the map keeps its dots and loses the names. `MapRenderer`
 holds no state of its own, which is why the caller owns this
@@ -258,6 +503,77 @@ Edit them in mapbuilder's webapp, never by hand (parent `CLAUDE.md`).
   drawn. The style has had `offscreen_places` for a long time; this change did
   not touch it. A place whose dot is off screen is skipped here and is not
   counted as a dropped label.
-- **Labels avoiding other places' dots.** A label box can cover a neighbouring
-  dot. Rare at the current label counts, and cheap to add to the `taken` grid if
-  it shows up.
+- **Labels avoiding other places' dots as a rule.** A label box may still cover a
+  neighbouring dot -- nothing forbids it. Since the least-ink test a position
+  over a dot scores worse than a clear one and usually loses, but that is a
+  preference and not a guarantee. Adding the dots to the `taken` grid is the
+  rule-shaped fix if one ever needs it.
+
+
+## Two caps, and why one part of the panel cannot take every slot
+
+Added 2026-08-25, all three from one tuning session over Prague at rung 6.
+
+### `max_labels_major` and `max_labels_minor`
+
+`max_labels` is a cost backstop and says nothing about what a frame looks like.
+Six towns and two villages, and two towns and six villages, are the same total
+and different maps -- and which one is right changes with the rung: at 45 m/px
+the towns are the skeleton and the villages are texture, at 6 m/px it is the
+other way round.
+
+So `layers.places` takes a cap per tier. Major is rank <= 1 (city, town), minor
+is everything smaller (`kMajorMaxRank`). Absent means "the total", so a style
+that never mentions them behaves exactly as before; 0 means none of that tier,
+which is a real thing to ask for. Both work inside a `when`, so they are per
+rung. `max_labels` still applies on top.
+
+Measured over Prague east at rung 6, minor forced to 0 to isolate the tier:
+cap 0 draws 0, cap 4 draws 4, cap 32 draws 7 -- seven being every major that is
+both on the panel and fits.
+
+### An off-screen place no longer takes a candidate slot
+
+`offer()` kept the best `kMaxCandidates` by rank then distance and had no idea
+what was on the panel; `draw()` then skipped the ones that were not. The tile
+range is far wider than the screen, so most of the buffer was spent on places
+that could never be named: **286 places competed for 32 slots and only 17 of
+the winners were on the panel.** That is why raising `max_labels` past about 15
+changed nothing at all.
+
+The screen test moved into `offer()`. Same rule, applied where it costs
+something. Prague rung 6 went from 15 drawn / 2 dropped to 15 drawn / 14
+dropped -- the same names, but twelve more candidates now get a chance and the
+limit is honestly "no room" rather than "never offered".
+
+### A per-cell quota, because distance was deciding *where* names go
+
+Rank decides first and always did, so a city at the corner beats a town by the
+marker. But among equal ranks the tie-break is distance from the anchor, and at
+a coarse rung there are hundreds of villages -- so every remaining slot went to
+the ring nearest the marker. Over Prague that drew thirteen names in one band
+across the middle with the top third of the panel showing dots and no names at
+all. Maintainer's diagnosis, from the render: "nemoze to byt vzdialenostou od
+markera... proste to nie je tym padom dobre rozvrhnute."
+
+The panel is now bucketed 3 x 4 (160 x 200 px cells) and each cell keeps at
+most 3 candidates, which is why `kMaxCandidates` is 36 rather than 32. Inside a
+cell the order is unchanged -- rank, then distance -- and a full cell evicts
+**its own** worst rather than the globally worst, or the eviction would undo the
+spread.
+
+No scoring function was invented: the buffer simply cannot be monopolised by
+one part of the screen. Prague rung 6 went to 18 drawn / 4 dropped, and the
+empty third of the panel filled with names.
+
+With no clip set the cell cap and the screen test are both off, so a caller
+that does not set one (a unit test, a probe) gets the old behaviour rather than
+a silently different one.
+
+## Screen furniture
+
+Since 2026-09-15 a placement is also refused when it lands on something the
+screen draws over the map -- the scale bar, the compass, a button box. It is the
+position that is refused, not the name: there are eight of them, so a name
+beside the scale bar usually just moves to its other side, and only a place whose
+eight positions are all taken loses its label. `docs/map-chrome-register.md`.

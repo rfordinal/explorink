@@ -9,12 +9,16 @@
 
 #include "HeapProbe.h"
 #include "MapHatch.h"
-#include "MapProjection.h"
 #include "MapLabels.h"
+#include "MapPointMarks.h"
+#include "MapPointShards.h"
+#include "MapPointSource.h"
+#include "MapProjection.h"
 #include "MapRenderer.h"
 #include "MapRouteFit.h"
 #include "MapRouteSource.h"
 #include "MapStyleDefaults.h"
+#include "MapStyleTable.h"
 #include "MapTileGrid.h"
 #include "MapTileSource.h"
 #include "MapViewport.h"
@@ -41,7 +45,18 @@ std::string tilePath(const std::string& tilesDir, uint8_t z, uint32_t col, uint3
 
 MapPreviewResult renderMapPreview(const MapPreviewRequest& request, IMapCanvas& canvas) {
   MapPreviewResult result;
-  const MapStyle& style = request.style ? *request.style : kDefaultMapStyle;
+
+  // The style for this mode and rung, resolved at firmware build time from
+  // data/mapstyle.json's `when` blocks (MapStyleTable.h) -- so this pane shows
+  // what the panel will show at that rung and not a nicer version of it.
+  const int rung = std::clamp(request.zoom, 0, MapViewport::kZoomStepCount - 1);
+  MapStyle styleStorage = request.style ? *request.style : mapStyleFor(request.mode, rung);
+  // The one preview-only override: draw buildings at a rung whose style has
+  // them off, to answer "are they worth their cost here" by looking. It patches
+  // the resolved style rather than riding beside it in MapViewState, so there is
+  // still exactly one thing that says what gets drawn.
+  if (request.drawBuildings.has_value()) styleStorage.buildingsEnabled = *request.drawBuildings;
+  const MapStyle& style = styleStorage;
 
   MapProjection proj;
 
@@ -136,15 +151,7 @@ MapPreviewResult renderMapPreview(const MapPreviewRequest& request, IMapCanvas& 
   view.markerX = anchorX;
   view.markerY = markerY;
   view.heading = static_cast<MapHeading>(heading);
-  // Same rung rule the device applies (MapViewport::ZoomStep::buildings), so the
-  // laptop preview shows what the panel will show rather than a nicer version of
-  // it. Draws buildings at rung 0 only.
-  const int rung = std::clamp(request.zoom, 0, MapViewport::kZoomStepCount - 1);
-  view.drawBuildings = request.drawBuildings.value_or(MapViewport::kZoomLadder[rung].buildings);
-  view.drawBuiltUp = MapViewport::kZoomLadder[rung].builtUp;
-  // The rung's own label ceiling, so this pane thins names exactly where the
-  // panel does (MapViewport::ZoomStep::maxLabels).
-  view.maxLabels = MapViewport::kZoomLadder[rung].maxLabels;
+  view.zoomStep = static_cast<uint8_t>(rung);
 
   StdioFileSource file;
   // Heap, not a local: MapTileSource is ~5 KB and CLAUDE.md caps stack
@@ -170,6 +177,35 @@ MapPreviewResult renderMapPreview(const MapPreviewRequest& request, IMapCanvas& 
   }
   source->begin(config);
 
+  // The point layer is its own grid (z10) and its own files, so it gets its own
+  // range off the same projection and its own file source -- both stream during
+  // the render and one seek cursor cannot serve two readers (MapPointSource.h).
+  StdioFileSource pointFile;
+  std::unique_ptr<MapPointSource> points;
+  if (request.drawPoints && style.pointSquarePx > 0) {
+    const MapViewport::TileRange shards =
+        MapViewport::tileRangeFor(proj, MapPointShards::kShardZoom, SCREEN_WIDTH, SCREEN_HEIGHT);
+    MapPointSource::Config pointConfig;
+    pointConfig.rootDir = request.tilesDir.c_str();
+    pointConfig.range.col0 = shards.col0;
+    pointConfig.range.row0 = shards.row0;
+    pointConfig.range.col1 = shards.col1;
+    pointConfig.range.row1 = shards.row1;
+    // The preview's --point-categories flag is the Nearby view, so it filters
+    // the safety half alone, the same split MapActivity makes.
+    pointConfig.safetyCategoryMask = request.pointCategoryMask;
+    pointConfig.landmarkCategoryMask = 0xFFFFu;
+    pointConfig.kindMask = MapPointMarks::kindMaskFor(style);
+    pointConfig.wantNames = style.pointLabelPx > 0 && request.drawLabels;
+    pointConfig.screenWidth = SCREEN_WIDTH;
+    pointConfig.screenHeight = SCREEN_HEIGHT;
+    // A mark is drawn centred on its point, so the margin is the mark's own
+    // reach and not the widest stroke in the style (MapPointMarks::reachPx).
+    pointConfig.rejectMarginPx = MapPointMarks::reachPx(style);
+    points = std::make_unique<MapPointSource>(pointFile, proj);
+    points->begin(pointConfig);
+  }
+
   result.sourceBytes = sizeof(MapTileSource);
 
   // Everything resident is already allocated. What the render itself costs
@@ -180,9 +216,15 @@ MapPreviewResult renderMapPreview(const MapPreviewRequest& request, IMapCanvas& 
   // the render is allowed to need must not be one of them. On the device
   // MapActivity owns the same struct as a member (MapLabels.h).
   MapLabelScratch labels;
+  labels.inkTest = request.labelInkTest;
 
   HeapProbe::reset();
-  MapRenderer::render(canvas, *source, view, style, route.get(), nullptr, nullptr, &labels);
+  // nullptr for the scratch is how the renderer is told to skip the whole
+  // label pass -- the same thing the device does when the style draws no names
+  // (MapLabels.h). Not a style edit: the style still says what a name looks
+  // like, this frame just does not draw one.
+  MapRenderer::render(canvas, *source, view, style, route.get(), nullptr, nullptr,
+                      request.drawLabels ? &labels : nullptr, points.get());
   // render() does not draw the marker (MapActivity draws its own mode-specific
   // one). This preview has no travel mode, so it draws the style's puck
   // explicitly -- except in a route overview, which is framed on the route and
@@ -196,6 +238,14 @@ MapPreviewResult renderMapPreview(const MapPreviewRequest& request, IMapCanvas& 
   // The source counts every record it hands out, and the renderer asks for the
   // road layer MapRenderer::kRoadPasses times. What a reader of these numbers
   // wants is ways in the picture, i.e. one walk's worth.
+  if (points) {
+    result.pointsDrawn = points->pointsEmitted();
+    result.pointShardsOpened = points->shardsOpened();
+    result.pointShardsMissing = points->shardsMissing();
+    result.pointShardsCorrupt = points->shardsCorrupt();
+    result.pointBytesRead = points->bytesRead();
+  }
+
   result.waysDrawn = source->waysEmitted() / MapRenderer::kRoadPasses;
   result.waysFiltered = source->waysFiltered() / MapRenderer::kRoadPasses;
   result.waysOffScreen = source->waysOffScreen() / MapRenderer::kRoadPasses;
@@ -203,6 +253,11 @@ MapPreviewResult renderMapPreview(const MapPreviewRequest& request, IMapCanvas& 
   result.placesDrawn = source->placesEmitted();
   result.labelsPlaced = labels.placed;
   result.labelsDropped = labels.dropped;
+  result.roadOffered = labels.roadCount;
+  result.roadPlaced = labels.roadPlaced;
+  result.roadTooLong = labels.roadTooLong;
+  result.labelInkProbes = labels.inkProbes;
+  result.labelInkSamples = labels.inkSamples;
   result.bytesRead = source->bytesRead();
   result.tilesLoaded = static_cast<int>(source->tilesOpened());
   result.tilesMissing = static_cast<int>(source->tilesUnavailable());

@@ -7,8 +7,10 @@
 
 # ExplorInk
 
-An outdoor trip companion for e-ink readers: offline maps and navigation for
-motorcycle rides and hiking. A fork of
+An outdoor trip companion for e-ink readers: a paper map with a dot that knows
+where you are. It answers where you are and what is around you, not whether you
+are going the right way — no turn by turn, no voice, no rerouting. Maps sit on
+the SD card, position arrives from your phone over BLE. A fork of
 [CrossPoint Reader](https://github.com/crosspoint-reader/crosspoint-reader),
 which is where nearly everything that makes this device work came from — see
 [Credits](#credits).
@@ -63,9 +65,9 @@ Project site, with real panel screenshots and the development log:
 
 ## Why a separate fork
 
-A phone is a bad navigation display on a motorbike. The screen washes out in
-direct sun, it overheats in a handlebar mount, and the battery does not last a
-day of riding. E-ink has the opposite properties: readable in full sunlight,
+A phone is a bad map to travel by. The screen washes out in direct sun, it
+overheats in a handlebar mount, the battery does not last a day out, and in a
+city it pulls you out of the place you came to look at. E-ink has the opposite properties: readable in full sunlight,
 free to hold an image on screen, and tens of hours of runtime because power is
 only spent when the picture changes.
 
@@ -89,11 +91,18 @@ not a pull request.
 | Loading a real map from the SD card | exists |
 | Buttons on the map screen (zoom, marker height) | exists, per mode, saved across power cycles. Seven zoom rungs, 1 to 45 m/px — the top two are the regional view, added 2026-08-12. The marker, the move floor and the keep-in margin all scale with the rung. See [`docs/zoom-rungs.md`](./docs/zoom-rungs.md) |
 | Command console (serial and BLE), zoom/mode filter | exists — same grammar over USB and BLE |
+| The marker says how much it knows about the fix | exists, **host-tested only, no panel pass yet**. A loose position breaks the ring into eight arcs; a coarse heading draws a wedge one step either side instead of an arrow; an unknown heading draws nothing at all, which replaces an arrow that used to point north whenever nothing was known. Sources (BLE, GNSS, the console's `pos ... acc <m> dirq <0-3>`) all go through one host-tested layer. See [`docs/marker-fix-trust.md`](./docs/marker-fix-trust.md) |
 | Marker follows the fix without redrawing the map | exists, **verified on hardware 2026-08-05** by replaying a recorded ride — 117 fixes cost 31 skips, 71 windowed marker refreshes and 14 full redraws, ~160 s against the ~1,040 s all-redraws would have cost, heap flat. A fix moves the marker and refreshes one 64x64 rectangle; the map is redrawn only when the marker nears an edge, the rider turns 90°, or the ghosting budget runs out. See [`docs/map-follow.md`](./docs/map-follow.md) |
 | Track-up map | exists — the fix's heading is up on screen and the north indicator rotates to match |
-| Renderer following the map style spec | mostly — per-class road widths and casings, hidden classes, buildings, forest, built-up and water areas with dither tones or hatch, place dots and place names, the route line, marker anchor. Confirmed on the panel, not only in the preview. Junction dots and off-screen place markers: **not implemented**. See [`docs/place-labels.md`](./docs/place-labels.md) and [`docs/route-layer.md`](./docs/route-layer.md) |
+| Renderer following the map style spec | mostly — per-class road widths and casings, hidden classes, buildings, forest, built-up and water areas with dither tones or hatch, place dots and place names, the route line, marker anchor. Confirmed on the panel, not only in the preview. Junction dots and off-screen place markers: **not implemented**. See [`docs/place-labels.md`](./docs/place-labels.md), [`docs/street-labels.md`](./docs/street-labels.md) (street names, laid along their street, tourist mode at the two closest rungs) and [`docs/route-layer.md`](./docs/route-layer.md) |
+| The device says it is working | partly — the map stamps an hourglass before a redraw the rider started, and nothing anywhere else does. Extending it was refused 2026-09-16: a badge costs one windowed refresh, 500 ms on the X4 and X3 and ~1,030 ms on the T5 S3 Pro. See [`docs/busy-feedback.md`](./docs/busy-feedback.md) |
 | Four-level grey on the panel | exists, and the map deliberately does not use it — a dither pattern read better for area fills and survives a refresh. See [`docs/eink-grayscale.md`](./docs/eink-grayscale.md) |
+| Checking for a new firmware over the air | exists, **confirmed on an X4 Pro 2026-11-03** — Settings -> System -> Check for updates, on every board, and the screen behind it named `explorink-x4pro-v0.2.2` over real WiFi. The row used to be hidden on both S3 boards, and the check behind it read an endpoint that always resolved to the oldest release. Downloading and installing one was proven on an X4 Pro and a T5 S3 Pro the same day, each confirmed by reading the installed slot's `esp_app_desc` back and matching it byte-for-byte against the published asset. The T5 S3 Pro walks past two other boards' releases to reach its own. Two guards inside the list parser are still unexercised on hardware and one may be unreachable in production (T-2062), and no OTA failure path has been exercised (T-2061). See [`docs/ota-updates.md`](./docs/ota-updates.md) |
 | Screenshots over USB serial | exists — 1-bit framebuffer, plus a grey variant that re-renders both bit planes |
+| Pressing the buttons from the host | exists, **verified on the T5 S3 Pro 2026-09-08** (from `release/lilygo-t5-s3-pro`, not from a C3) — `CMD:BUTTON <name> [holdMs]` injects a real press, so a laptop walks the whole UI: Home selection, the map menu, Look around, and a 1500 ms hold that zooms where a tap pans. Devel builds only. See [`docs/serial-button-injection.md`](./docs/serial-button-injection.md) |
+| Nearby: what useful things are around the rider | built 2026-08-21, **unverified on hardware** — drinking water, shelter, huts, lodging, fuel, medical, pharmacy, rescue, SOS phones, transport out, from the GPS fix over 25 km, with a POI mark layer per category and a destination readout in the header. See [`docs/nearby-menu.md`](./docs/nearby-menu.md) |
+| Receiving a batch of tiles the device never asked for | built 2026-09-02, **unverified on hardware** — the phone announces the batch with `push <n>` before it sends, `info` answers `screen=sync|map` so the phone knows which screen is up, and the sync screen shows the file on the wire, its verify stage and a standing "leaving cancels" warning. Picking the area and owning the queue stay on the phone. See [`docs/missing-tiles.md`](./docs/missing-tiles.md), "A batch the device never asked for" |
+| Where the rest of the group is | built and **verified on an X4 Pro 2026-09-16** — three members on the panel, the Group list, the card's black box read back, and the boot replay bringing everyone back hollow because their age cannot be known. Approved members get a pin with a filled head carrying their two or three letter acronym, a Group list with distance, sector and the age of each position, and a black box on the card, one CSV file per day. An allowlist decides who is heard; a devel-only `group` console is the only thing feeding it, because no radio transport exists yet. Build-flag gated (`ENABLE_GROUP_MARKERS`), off in every release env. See [`docs/group-markers.md`](./docs/group-markers.md) |
 | Route following, off-route warning | **not started** |
 | Companion phone app | exists — [ExplorInk GPS](https://github.com/rfordinal/explorink-android), an Android BLE position sender and ride recorder |
 
@@ -105,7 +114,9 @@ build-time input, not a runtime one: `scripts/gen_mode_masks.py` compiles its
 `modes` block into the ride/hike/cycle class masks and `scripts/gen_mapstyle.py`
 compiles the drawing numbers into a `MapStyle` constant, both as `pre:` build
 steps; the device reads no style file at runtime. See
-[`docs/map-style.md`](./docs/map-style.md).
+[`docs/map-style.md`](./docs/map-style.md), and
+[`docs/map-style-variants.md`](./docs/map-style-variants.md) for the per-mode,
+per-zoom-rung part of it.
 
 The same renderer builds as a host binary — `pio run -t map-preview` renders real
 tiles to a PPM with no ESP32 toolchain and no flashing, which is how a style
@@ -122,8 +133,8 @@ Everything that makes an ESP32-C3 e-ink device work is CrossPoint's: the display
 driver, the partial refresh path, the activity system, settings, i18n, the web
 server and file manager, the build and test setup. This fork adds a map
 activity, a BLE position server and the map style file, and over time strips out
-the e-reader stack — EPUB, OPDS, dictionary, the font library — that a
-navigation device does not need.
+the e-reader stack — EPUB, OPDS, dictionary, the font library — that a map
+device does not need.
 
 Upstream fixes therefore still matter here. The intent is to keep tracking
 CrossPoint rather than drift away from it.
@@ -180,6 +191,28 @@ pio run --target upload
 pio device monitor
 ```
 
+That builds `[env:default]`, which is the only environment with the phone link in
+it. **`gh_release` has no BLE**, so a binary built there has no GPS and no tile
+transfer: [`docs/build-environments.md`](./docs/build-environments.md) has the
+table, the flash offsets and what a published build must be.
+[`docs/lilygo-t5s3-bringup.md`](./docs/lilygo-t5s3-bringup.md) is the `t5s3pro`
+env: what the LilyGo T5 S3 Pro build needs, what already runs on the board, and
+what is still wrong.
+[`docs/gnss.md`](./docs/gnss.md) is that board's satellite receiver: the
+`CMD:GNSS` bring-up console, the NMEA parser in `lib/Gnss/`, and the power rail
+it shares with the LoRa radio.
+[`docs/lora-bringup.md`](./docs/lora-bringup.md) is that board's LoRa radio: the
+`CMD:LORA` console, the SX1262 wrapper in `lib/LoraRadio/`, the wire settings it
+shares with MeshCore, and the panel pin the radio's chip select collides with.
+[`docs/lora-mesh.md`](./docs/lora-mesh.md) is the protocol on top of it:
+MeshCore linked as a pinned submodule, signed adverts, the heard-node table and
+the Home > LoRa nodes screen that lists it.
+[`docs/gnss-to-map-plan.md`](./docs/gnss-to-map-plan.md) is the ordered plan for
+getting the map to read that receiver, written so one session takes one step.
+[`docs/t5s3-partial-refresh.md`](./docs/t5s3-partial-refresh.md) is why a
+windowed refresh costs a whole-panel frame on that board today, and the ordered
+plan for fixing it.
+
 ### Pre-PR checks
 
 ```bash
@@ -213,10 +246,45 @@ The docs under [`docs/`](./docs) are inherited and still accurate for the parts
 this fork has not touched — firmware internals, the activity manager, file
 formats, i18n and the contributing guide all came from CrossPoint.
 
+[`docs/activity-manager.md`](./docs/activity-manager.md) is the task and locking
+model every screen lives in: one render task, `RenderLock`, and since T-2024 the
+map screen too -- which is where the rules for touching state from two tasks are
+written down, along with what a hardware pass could not see.
+
 [`docs/optimization/`](./docs/optimization) is this fork's own: a full code
 review of the map, BLE and tile paths (2026-08-06), one plan per area, with a
 measurement gate for each. Start at its
 [`README.md`](./docs/optimization/README.md).
+
+[`docs/simulator.md`](./docs/simulator.md) is the desktop simulator: the whole
+firmware built native, the panel drawn in an SDL2 window, no device and no
+flash. What it can answer (layout, geometry, map render, logic) and what it
+cannot (refresh timing, dither, heap pressure, BLE).
+
+[`docs/simulator-android.md`](./docs/simulator-android.md) is that same
+simulator aimed at a phone: an Android build of the firmware, so the UI runs
+with no reader in reach. The compile probe passed (206 of 208 files clean for
+aarch64); the app shell is not built yet.
+
+[`docs/input-gestures.md`](./docs/input-gestures.md) is how a tap, a double tap
+and a hold are recognised -- why that is spread across six places today, what the
+GT911's frame-latched key does to a gesture when the loop blocks, the failure
+inventory, and the layering that would replace it. A design analysis: the shape
+it proposes is not built.
+
+[`docs/touch-modes.md`](./docs/touch-modes.md) is what a touch panel is allowed
+to do -- the three modes (whole screen live, only the on-screen button boxes,
+touch off), how a tap on a box becomes a press of the hardware button it names,
+and how the six boxes are placed on a panel that is not an X4.
+
+[`docs/settings-menu.md`](./docs/settings-menu.md) is which Settings rows the
+rider still sees. The e-reader half of the menu is hidden rather than deleted,
+because the same list drives `settings.json`; that file says what went, what
+proves each row was reader-only, and why one row is drawn dimmed.
+
+[`docs/build-environments.md`](./docs/build-environments.md) is which of the five
+build environments can be published and which two are missing Bluetooth, plus the
+three flash offsets verified against a real device's own dump.
 
 [`docs/ble-advertising.md`](./docs/ble-advertising.md) is what the device puts on
 the air before a phone connects, and when: only while the map or sync-map-tiles
@@ -240,6 +308,17 @@ costs in RAM, measured on hardware 2026-08-10: 75 KB of the 124 KB free heap, an
 to one peripheral connection gave 9 KB back and put the screen above its 50 KB
 gate.
 
+[`docs/virtual-device.md`](./docs/virtual-device.md) is how map and UI work gets
+done with no device on the desk. `test/map_window` **exists since 2026-08-22**:
+the real `MapFollow` decisions and the real `MapRenderer` in an SDL2 window at
+480x800, a replayed ride or a position you choose, with the refresh counts, the
+real dirty rectangle and the map module's own log alongside -- see
+[`docs/map-follow.md`](./docs/map-follow.md), "`map_window`". Upstream's own
+simulator runs the whole firmware UI the same way and is the obvious next step,
+untried here. **Emulating an ESP32-C3 under Wokwi was planned and dropped
+2026-08-23**; the doc keeps that research and says plainly which four things
+only real hardware can answer.
+
 [`docs/home-screen.md`](./docs/home-screen.md) is the Home screen: the brand
 block's asset pipeline (two generator scripts, one traced SVG), the seven rows
 and why three of them draw dimmed, and how a row is dimmed on a panel with no
@@ -252,6 +331,31 @@ the screens, the pan design, the button map and the fullscreen machine codes.
 [`docs/wallet-crypto.md`](./docs/wallet-crypto.md) is its encryption -- the crypto
 path, the key's lifetime, and the threat boundary, which stops at "card removed" and
 explicitly does **not** cover a device in somebody's hand with a cable.
+
+[`docs/eink-refresh-degradation.md`](./docs/eink-refresh-degradation.md) is why
+the panel refreshes badly in daylight. A refresh under a thumb came out white
+everywhere except under the thumb, and a waveform is global -- so the cause acts
+on the glass, not in the code: light raising the backplane's leakage while the
+pixels are being driven. No firmware change fixes that; a hood and a second
+refresh pass do. Two separate code defects sit underneath it -- the map cleans
+the panel on its entry frame and never again (`Ssd1677Driver` has no ghost-clear
+counter), and the one clean it has is deliberately under-driven. All of it
+unmeasured: the X4 was lost on the ride that produced the second report.
+
+[`docs/crash-reporting.md`](./docs/crash-reporting.md) is the two crash records
+the device keeps and how to read them: `crash_report.txt` on the SD card, and
+the ESP coredump in flash. Read it before drawing any conclusion from a crash
+report — on an S3 the stack block is always empty by construction, an empty
+panic reason means a CPU exception, and a watchdog reset writes no report at
+all. It also carries the verified `esp-coredump` recipe, including the gdb that
+the toolchain package does not ship.
+
+[`docs/ble-deinit-crash.md`](./docs/ble-deinit-crash.md) is a live bug:
+`NimBLEDevice::deinit(true)` can crash the NimBLE host task on a NULL event
+callback, and we call it on every map exit. Root cause confirmed from a real
+coredump, 2026-09-01; the offending line is a stale snapshot that both
+esp-nimble and mynewt-nimble have already dropped. No NimBLE-Arduino release
+fixes it yet.
 
 ## Credits
 

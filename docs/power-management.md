@@ -16,11 +16,468 @@ without going through a button press.
 > table of runs. This file stays what it is -- findings about how power
 > behaves. The plan says what to do about them.
 
+## The scoreboard: every mode we have a number for, and what each feature costs
+
+**One table, kept current. Everything else in this file is the story behind a
+row of it.** Added 2026-08-21 because the numbers were scattered across three
+documents and a run table, so nobody could answer "what does the radio cost"
+without reading all of them.
+
+> **Read this before quoting any mA number here (added 2026-08-21).** The
+> afternoon of the day these rows were written, the same firmware in the same
+> state read **25.6 mV/h at 4093 mV and 3.1 mV/h at 4046 mV**, and four legs in
+> the plateau came out ordered impossibly -- connected below advertising. So
+> inside the plateau **the discharge curve sets the slope, not the load**, and the
+> mA column's single calibration pair is not global. `power-plan.md`, "The plateau
+> problem", has the arithmetic and the two ways out. Rows below are marked for
+> what they actually support. Nothing here is safe to put on the public site.
+
+**The instrument is the voltage slope, in mV/h, on every X4 row. That is the
+measured column there.** On a board with a fuel gauge it is not: the T5 S3 Pro
+row's mA is read off a BQ27220 coulomb count and its mV/h is the derived one.
+The 2026-09-03 ride showed the two instruments disagreeing by 3.4x about which
+stretches of a ride were expensive, so which column is the measurement matters
+(see "The T5 S3 Pro's first ride").
+The mA column is derived, by scaling run 2's static window -- 32.9 mV/h against
+24.0 mA, where the mA came from `dPct/100 * 650 mAh` on the spec-sheet capacity
+(`power-plan.md`, run 2) -- and assuming the relation is proportional.
+**[assumed]** A slope is also a function of state of charge, up to 5x across the
+pack's range (`power-plan.md`, "Voltage slope is not a property of the state"),
+so two rows measured at different voltages are not exactly comparable however
+tight their error bars look.
+
+**`batt_pct` is not a second opinion.** X4 carries no fuel gauge
+(`BoardConfig.h`, `NO_GAUGE`), so `getBatteryPercentage()` falls to the
+voltage-derived path and then smooths it with a 9/10-weighted EMA
+(`lib/hal/HalPowerManager.cpp:150-176`) **[repo]**. It is the same ADC reading,
+transformed and lagged -- agreement between percent-derived and slope-derived mA
+confirms the curve, not the measurement.
+
+### What each mode draws
+
+Every row carries the conditions it was taken under, because none of them are
+incidental: the **device**, the **build** (the map pinned 160 MHz before
+2026-08-17 and throttles to 80 MHz after it), and the **voltage band** (which
+decides how much of a slope is the discharge curve rather than the load).
+
+> **Every measurement names its device. Standing instruction, 2026-08-21.** X4 is
+> the hardware on the desk today; X4 Pro and X3 are targets, and a number from one
+> is not a number from another. It is not a formality on this line: **one C3 binary
+> drives X4 and X3** with the profile chosen at runtime, so the build string does
+> not say which device wrote a row, while `LOW_POWER_FREQ` (10 MHz on X4, 80 where
+> there is PSRAM), the panel controller, whether a fuel gauge exists and the cell
+> itself all differ. A `board` column exists on branch `power-lab` (unmerged), so
+> until that lands **no row carries a device** and the tables here say it instead
+> (`PowerLog.cpp`, `BoardConfig::ACTIVE.name`); rows older than that read
+> `UNRECORDED` and `tools/powercsv.py` says so out loud. **Every row in the tables
+> below is X4 except the T5 S3 Pro row**, and that is stated rather than assumed.
+> That row is also the one taken with a different instrument: the T5 S3 Pro has a
+> BQ27220, so its mA is a coulomb count rather than a slope conversion, and it is
+> not comparable to the rows above it by the error bars alone.
+
+| Mode | Device | Radio | CPU | mV/h | ~mA | Date | Build | Band, duration | Confidence |
+|---|---|---|---|---|---|---|---|---|---|
+| Map, connected, fix/10 s, no modem sleep | X4 | connected | 160 | 58.9 | ~43 | 2026-08-15 | unrecorded (predates the `build` column) | 4220-3547 mV, 11.4 h | **[measured]**, mixed workload, whole discharge (see run 1) |
+| Map, connected, fix/10 s | X4 | connected | 160 | 32.9 | **24.0** | 2026-08-16 | `9686ce21` | ~4178-3866 mV, 9.5 h static window | **[measured]**, the campaign's reference |
+| Map, connected, fix/10 s | X4 | connected | **80** | 25.6 +/- 1.4 | ~18.7 | 2026-08-21 | `55c9ed26` | 4093-4068 mV, 61 min | **provisional** -- 25 mV of movement is real, but the mA conversion is not (see below) |
+| Map, advertising, no phone | X4 | advertising | **80** | 10.6 +/- 1.1 | ~7.7 | 2026-08-21 | `55c9ed26` | 4068-4064 mV, 32 min | **not trustworthy** -- 4 mV of movement, four ADC counts; a repeat at 4046 mV read 5.3 |
+| Home, nothing running | X4 | down | 10 | -- | -- | -- | -- | run 3's phase 1 sat inside the relaxation window | **[open]** -- the cheapest missing number |
+| **Map in observation mode, radio off** | X4 | **down** | **10** | **12.27 +/- 0.18** | see note | 2026-08-22 | `0b99e70e` | 4151-4047 mV, **6 h 15 min** | **[measured]**, and the only row here taken across a wide enough band to trust: 104 mV of movement, 1.5 % error. **1.76 %/h, 56.8 h on a charge.** |
+| **Map, connected, frontlight 40 %, GNSS on** | **T5 S3 Pro** | connected | **80** | -66.2 | **135** | 2026-09-03 | `0.2.0-t5s3pro` | 4048-3832 mV, **3.21 h** | **[measured]**, and the only row here whose mA is *not* a voltage conversion -- a BQ27220 coulomb count. **27 steps in 3.005 h = 134.8 +/- 1.5 mA, 11.1 h on a charge.** Was printed as 131 until 2026-09-04; that came from first-row-to-last-row, which counts a boot-entry step it did not measure. See "The T5 S3 Pro's first ride" |
+| **Map, connected, frontlight OFF, GNSS on** | **T5 S3 Pro** | connected | **80** | -40.7 | **91** | 2026-09-04 | `0.2.0-t5s3pro` | 4013-3810 mV, **5.26 h** | **[measured]**, same gauge, same build, same screen. **31 steps in 5.092 h = 91.3 +/- 0.6 mA, 16.4 h on a charge.** The longest and tightest ride row in this file. See "The frontlight is tens of milliamps, not 8" |
+| **Map, observation mode (BLE off, GNSS+LoRa rail still up)** | **T5 S3 Pro** | **BLE off, GNSS+LoRa up** | -- | -- | **~93.5 VBUS (whole-run) / ~90.9 VBUS (steady) -- NOT endurance, see note** | 2026-09-19 | unrecorded (`ENABLE_BATT_CMD` not compiled in, build string unread this run) | 7.5 h continuous, VBUS meter; battery 100%->89% over the same window | **[measured]**, but the VBUS mA is not board draw and USB stayed connected the whole run, so it is not an endurance number -- battery actually lost 11 % (21.98 mA, itself still a plugged-in figure). See "Observation mode on T5 S3 Pro is not a radio-down floor" below for the arithmetic and what is still `[open]` |
+| Tile sync, transfer running | X4 | connected | 160 | -- | -- | -- | -- | never run | **[open]** (campaign state 4) |
+| Light sleep, radio up | X4 | advertising | -- | -- | -- | -- | -- | needs the `CONFIG_PM_ENABLE` build | **[open]** (experiment 3) |
+| Deep sleep, latch held | X4 | off | -- | -- | -- | -- | -- | needs a meter | **[open]** (experiment 1) |
+
+### Observation mode on T5 S3 Pro is not a radio-down floor
+
+**Measured 2026-09-19, USB inline meter (JT-UM120/FNB58), T5 S3 Pro board A,
+overnight, 00:48-08:20.** 18 chunks of exactly 1500 s each, no meter deaths, no
+manual intervention. Full log: `tools/usbmeter_read.py`, one chunk per
+invocation (the meter's own USB-port reset on each start is what makes chunking
+survive its documented death mode -- `docs/usb-power-meter.md`, "One reader per
+run").
+
+Raw VBUS current fell into two phases:
+
+- **Chunks 1-2 (50 min): a settling tail.** Three burst events, ~80 s each,
+  peaking 350-480 mA, at roughly 0s/272s/638s into the run, then nothing.
+- **Chunks 3-18 (6 h 40 min): dead flat.** 90.35-91.0 mA on every single chunk,
+  zero events above 0.2 A.
+
+Aggregate over all 18 chunks: 701.283 mAh, 3664.284 mWh, 27000.1 s (7.500 h) ->
+**93.5 mA whole-run average**. Chunks 3-18 alone (16 chunks, 6.667 h): 605.745
+mAh -> **90.86 mA steady-state average**.
+
+**Why it is this high.** X4's observation-mode row above is 12.27 mV/h, about
+11-13 mA equivalent, because observation mode on X4 means the radio is down and
+the CPU floors at 10 MHz -- there is nothing else on that board to keep running.
+T5 S3 Pro has GNSS and LoRa, and neither is gated by observation mode:
+
+- `MapActivity.cpp:2809-2822` -- the GNSS receiver (and LoRa, which shares the
+  same power rail through `gnssPowerEnable()` in `main.cpp`) starts when the map
+  screen opens and is deliberately **not** tied to which screen mode is active:
+  "The receiver comes up with the map and goes down with it, when the rider
+  asked for it... not something to leave on behind a screen that is not using a
+  position." It only stops in `onExit()` (`MapActivity.cpp:3160`, `gnss.end()`),
+  i.e. when the map activity itself is left.
+- `docs/map-observation-mode.md` and `ble-advertising.md` ("Observe mode: no
+  radio when there is nothing to send or receive") describe exactly one radio
+  being gated by observation mode: BLE advertising. GNSS and LoRa are not
+  mentioned because they are not touched.
+
+So this run measured "map open, BLE off, GNSS+LoRa rail fully powered" -- a
+real and useful number, just not the radio-down floor the row name implies on
+X4. The settling tail in chunks 1-2 is consistent with a GNSS acquisition
+finishing and the receiver moving from search to steady tracking, though that
+mechanism is **[assumed]**, not traced in code this session.
+
+**The first version of this section computed endurance straight off the VBUS
+average (93.5 mA -> "13.6 h") and it was wrong, caught by the maintainer the
+same morning: the phone's own battery read 100 % at the start of the run and
+89 % at the end.** 11 % of the 1500 mAh nameplate is 165 mAh over the run's
+7.508 h wall clock (00:48:45-08:20:14) -- **21.98 mA actually left the
+battery**, a quarter of what the meter read at VBUS. The reason is method,
+not arithmetic: **the meter can only read anything with USB connected**, and
+with USB connected the system runs substantially off VBUS directly, not off
+the battery. VBUS current and battery discharge current are two different
+things whenever a charger sits between them, which is exactly what
+`docs/usb-power-meter.md` already says ("VBUS milliamps are not board
+milliamps") and what this whole campaign's method (c) already leans on
+(difference two VBUS states, never read one VBUS number as absolute
+consumption). Computing an absolute endurance figure directly from one VBUS
+average broke that rule.
+
+**What the two numbers together do support:** since the battery net
+*discharged* the whole night despite being plugged in, charging was not doing
+anything material -- if it had been, the battery would have gained charge, not
+lost 11 %. So essentially all of the ~476-489 mW pulled from the wall went
+either straight to powering the system or was lost in the charger's own
+conversion, and only the shortfall the wall could not cover (the 21.98 mA)
+had to come from the cell. That overhead -- the "cable's own consumption",
+arithmetically -- is a power-domain subtraction:
+
+```
+P_vbus = V_bus_avg * I_vbus_avg  = 5.23 V * 93.5 mA  ~= 489.0 mW  (measured)
+P_batt = V_batt_avg * I_batt_avg = 4.10 V * 21.98 mA ~=  90.1 mW  (V_batt [assumed],
+                                                            no gauge this run;
+                                                            high-SoC band, 100->89%)
+base_sum (charger/cable overhead, invisible to the battery ledger)
+        = P_vbus - P_batt ~= 398.9 mW  (~82 % of what the meter read)
+```
+
+`base_sum` is not waste in the everyday sense -- most of it is the system's
+real, useful power draw, just delivered by the cable instead of the cell. It
+answers "how much of the meter's number never touched the battery", not "how
+much power this state truly costs."
+
+**What none of this answers, and stays `[open]`:** the actual unplugged,
+battery-only draw in this state. **21.98 mA is not that number either** -- it
+is "how fast the battery drains while a charger is also feeding the system",
+which is a different, easier state than running on the cell alone (no free
+489 mW subsidy from the wall). Pull the cable entirely and the whole system
+load falls on the battery; the honest way to that number is the same one the
+two T5 S3 Pro rows above already use -- an unplugged run against the BQ27220
+gauge (`CMD:BATT`), not this meter. That command was unavailable on this run's
+build (see below), so this remains the next thing to measure, not something
+derivable from tonight's data.
+
+**What this run could not check, and why:**
+
+- **No BQ27220 gauge cross-check.** `CMD:BATT` answered `ERR unknown_command`
+  on the build running that night -- `ENABLE_BATT_CMD` was not compiled in, so
+  there was no coulomb-count second opinion the way the two rows above have.
+- **Charging-terminated status was not queried** (`CMD:CHARGE` timed out rather
+  than answering during setup, and it was not retried with a DTR/RTS pulse
+  because that risks resetting the S3 mid-run -- `CLAUDE.md`, "Never reset the
+  device to observe it"). **Resolved indirectly by the battery reading**,
+  though: a cell that was materially charging would have gained percentage
+  overnight, not lost 11 %, so charging was not doing anything significant
+  during this run even though the command never confirmed it. **The net-loss
+  argument alone cannot rule out a small charge current running at the same
+  time as a larger system draw** -- the cell nets negative either way, and
+  `base_sum` cannot be split into "charger overhead", "system power fed
+  straight from VBUS" and "a trickle still going into the cell" from this
+  data alone. **The clean way to settle it: run the same state with the USB
+  cable unplugged entirely** -- no VBUS, no charger in the loop, battery
+  percentage or the BQ27220 gauge as the only instrument. That also is the
+  only way to get the true unplugged endurance number (see above), so it
+  closes both open questions in one run.
+- **Build identity unread.** The running build's version string was not
+  captured (same reason as above -- no serial command was retried after the
+  first two timed out, to avoid disturbing the state being measured).
+
+Raw per-chunk logs (18 files, ~4-7 MB each) are not committed; they live in the
+session's scratchpad from the run that produced this section, available to
+reprocess if the exact per-sample trace is ever needed.
+
+### What each feature costs
+
+Every row is a difference of two rows above, so it inherits both their caveats.
+
+All rows are **X4**. A feature's cost is not portable across the line: X3 has a
+fuel gauge and a different panel controller, and a PSRAM board's low-power floor
+is 80 MHz rather than 10, so the same change buys different amounts.
+
+| Change | delta mV/h | delta mA | From | Same build? | Confidence |
+|---|---|---|---|---|---|
+| Turn on BLE modem sleep | **-26.0** | ~-19 | 2026-08-15 `unrecorded` 58.9 -> 2026-08-16 `9686ce21` 32.9 | no | **[measured]**, and a *lower* bound on the saving: run 2 did ~2x the panel work and ~4x the loop work |
+| Throttle the map 160 -> 80 MHz | **-7.3** | ~-5.3 | 2026-08-16 `9686ce21` 32.9 -> 2026-08-21 `55c9ed26` 25.6 | no | suggestive only: two builds five days apart, different panel activity, different charge state |
+| The phone link, its 10 s fixes and the marker redraws they cause | **+15.0** | ~+11 | 2026-08-21 `55c9ed26`, leg 3 10.6 -> leg 2 25.6 | **yes, one boot** | **upper bound**: the legs differ in charge state and the A-B-A leg that would have cancelled it was lost |
+| Bringing the radio up at all | -- | -- | wants advertising minus a clean radio-down leg | -- | **[open]** |
+| Parking our own loop | -- | -- | only pays under `CONFIG_PM_ENABLE` | -- | **[open]** (`power-idle-sleep.md`, "S2's missing half") |
+
+The "same build?" column is the one to read first. Only the third row compares
+two states of **one binary on one boot**, which is the whole reason the power lab
+screen exists (`power-idle-sleep.md`, "The power lab screen"): the other two rows
+difference two firmwares and call the remainder a feature.
+
+> **The mA column is the weak one, and run 5 shows why.** Its 12.27 mV/h converts
+> to 9.0 mA through run 2's calibration pair and to 11.4 mA through the pack
+> percentage -- two routes off the same ADC reading, 25 % apart. Percent per hour
+> needs no capacity assumption and no conversion at all, so **prefer %/h for
+> anything quoted** (`power-plan.md`, "Endurance without the 650 mAh assumption").
+
+**Against the target.** The campaign wants 9.0 mA parked (`power-plan.md`, "The
+target"). The advertising leg read ~7.7 mA, which would mean route A had met the
+parked target on shipped hardware -- **and that claim did not survive the same
+afternoon.** A repeat of the same state 90 minutes later read half of it, and a
+connected leg read less than either, which cannot be true. What the day actually
+establishes is narrower: the map runs at 80 MHz, `full_clock_ms` says it stays
+there, and the riding case at 4093-4068 mV moved 25 mV in an hour. Whether the
+parked state is 4 mA or 8 mA is **[open]**, and this instrument cannot close it
+inside the plateau.
+
+### The measurements we do not have, cheapest first
+
+**The other half of the scoreboard.** Every `[open]` row above, plus every
+feature whose cost nobody has differenced, with the method attached so any
+session can pick one up. Ordered by information per hour of device time.
+
+Two things decide the cost of a row: whether it needs a **flash** (build, lock,
+ask, and a rebased-branch check) and whether it needs a **meter** (nobody has
+one yet). Everything in the first group needs neither -- one boot, the map or
+Home screen, and `tools/blefakephone.py`.
+
+**No flash, no meter.** All of these run on whatever firmware is on the device,
+in the 4.05-3.80 V band, 20-minute legs, A-B-A with the interesting state in the
+middle:
+
+| # | Measurement | Answers | Method | Cost |
+|---|---|---|---|---|
+| M1 | Home, radio down, 10 MHz | the idle floor, and the only state where 10 MHz is legal | Home screen, untouched, one leg | 20 min |
+| M2 | Send cadence 7 s vs 30 s, pinned position | **the radio alone**, nothing else -- see "Who decides whether a fix is worth a redraw" below | `blefakephone --pos ... --interval 7` / `30`, A-B-A. Verify rather than assume the isolation: `ref_window` and `panel_busy_ms` deltas must match across legs | 60 min |
+| M3 | Send cadence 7 s vs 30 s, moving | the same knob as a rider feels it, redraws included -- only worth running **after** M2, and only if M2 says the radio is not the cost | `--track ... --track-kmh 50`, A-B-A | 60 min |
+| M4 | Fast vs slow advertising | whether `maybeEnterSlowAdvertising()` (`BlePositionServer.h:501`) is worth anything | advertising leg long enough for the slow interval to engage, against one where a central keeps re-appearing | 60 min |
+| M5 | Freshness check and autosync on vs off | two rider-facing toggles nobody has priced, and both spend radio | `CMD:SETTING` flips them without walking the menu (`src/main.cpp`, the `SETTING` allow-list) -- devel build, it is gated on `ENABLE_SETTING_CMD` | 60 min |
+| M6 | The marker redraw itself | separates panel from radio: same fix cadence, position moving vs pinned | `--pos` against `--track` at one cadence | 40 min |
+| M7 | Tile sync, transfer running (state 4) | the worst case, and the only state with the panel and the radio both busy | a real transfer driven from the laptop | 20 min + a build to push |
+| M8 | WiFi mode (web server up) | never measured at all, and it decides whether Wi-Fi Fast Sync is cheap or expensive | Home -> WiFi, one leg, no client attached | 20 min |
+| M9 | `PowerLog` itself | whether the instrument is a term in the budget: one SD write a minute | hard without a second instrument -- **do it last**, or by comparing a build with logging off | 40 min |
+| M16 | **Observation mode with the radio off** | the map at a **10 MHz** floor -- see below | one leg in observation mode, untouched, once the feature lands | 30 min |
+
+**Needs a flash** (build from the frozen base, lock, ask, archive the binary):
+
+| # | Measurement | Answers | Precondition |
+|---|---|---|---|
+| M10 | Experiment 3, `CONFIG_PM_ENABLE` light sleep | go/no-go for S2, plus the residency number that decides how much of the parked-loop work gets built | `env:powerlab` build with the four PM options (`power-test-runbook.md`) |
+| M11 | Connection interval 15 ms vs 50 ms | what the throughput fix costs when nothing is transferring (the device now asks for 12 units, and since 2026-09-03 asks for exactly 12 with no window) | one option per build |
+| M12 | Experiment 6, `CONFIG_BT_CTRL_LPCLK_SEL_RTC_SLOW` | the only remaining path to a sub-milliamp parked floor | needs M10's rig; slope near ADC noise, so overnight or a meter |
+| M13 | 10 MHz vs 80 MHz idle floor, radio down | how much the BLE-safe floor costs when the radio is not even up. **X4 only** -- a PSRAM board has no clock below 80 to compare (see "A PSRAM board's floor is 80 MHz too") | two builds, or a lab-screen state that forces each |
+
+**Needs a meter** (none owned; `power-test-runbook.md`, "The instrument
+problem"):
+
+| # | Measurement | Answers |
+|---|---|---|
+| M14 | Experiment 1, the board's own floor | bounds every sleep state and most of what a crystal board would buy |
+| M15 | Per-state absolute draw | replaces every derived mA in this file with a measured one, in minutes instead of hours |
+
+**What would change the ordering.** M1 and M2 are the two cheapest rows that
+close a column of the scoreboard, so they go first. M10 is the most valuable
+single run in the whole campaign and the only one on this page that can *fail* in
+an interesting way -- a driver breaking under DFS plus light sleep is the finding
+that ends route B.
+
+### T5S3: GNSS + BLE priority, what the design question needs
+
+Added 2026-08-31. T5S3 is the first device on this line with an onboard GNSS
+receiver (`lib/Gnss/`, `docs/gnss.md`) -- so unlike X4/X3, it can source
+position from its own receiver, from the phone over BLE, or both, and the
+firmware has to pick a duty cycle between them. Everything above this line is
+X4; **every row below is T5S3**, a different battery pack and a different
+radio pair (GNSS + LoRa share a rail, `docs/gnss.md`, "The power rail is shared
+with the LoRa radio"), so none of the X4 numbers transfer.
+
+**Framing, corrected 2026-08-31 (maintainer):** a design that keeps G2's
+low-duty background fix running whenever the phone is not connected is not
+"the device depends on the phone when connected." Losing BLE only drops the
+update rate back to the G2 baseline (never to zero); the phone is a bonus
+layered on an always-present floor, not a precondition (Téza `V47`: "Optimum
+je nezávislosť od telefónu. Každá závislosť na ňom je stav, ktorý sa
+odstraňuje, nie vlastnosť, ktorou sa produkt vysvetľuje.").
+
+**No flash, no meter** (whatever firmware is on the board, `CMD:GNSS` and
+`tools/blefakephone.py` drive both ends):
+
+| # | Measurement | Answers | Method |
+|---|---|---|---|
+| G1 | GNSS cold start, current x duration | the worst case a duty-cycled design pays on every wake, if G5 says warm start is not available | `CMD:GNSS SEND BACE040006020000010204000704` (`CFG-RST`, `StartMode` 2), meter in series (T-579). **Measured 2026-09-11**: that one frame empties ephemeris and almanac both. A rail drop of 300 s does the same and costs 5 minutes |
+| G2 | GNSS warm/hot start, current x duration, ephemeris fresh | what a low-duty background fix actually costs -- the number the whole scenario turns on | same rig, receiver left powered between legs |
+| G3 | GNSS continuous tracking, steady state | the standalone-only floor (no phone) | `CMD:GNSS ON`, left running, no BLE |
+| G4 | BLE idle/advertising baseline on S3 | S3's own number -- the C3 rows above do not apply | advertising, no phone, meter in series |
+| G5 | BLE position packet cost | the "phone as bonus" path's real price, not assumed cheap | `blefakephone.py --pos`, one cadence |
+| G6 | BLE tile-fetch burst | the bursty cost, separate from position | one missing-tile fetch driven from the laptop |
+| G7 | Baseline, GNSS off + BLE off | what every mode above is measured against | Home screen, T5S3, meter in series |
+
+**Needs an answer before a design, not a meter** (blocks the scenario, not just
+a number):
+
+- **Does the GNSS chip keep ephemeris across a full power-off (a VBAT/backup
+  domain), or does every rail cycle force a cold start?** **Answered on
+  hardware, 2026-09-11 (T-209): it keeps it, for a few minutes.** The L76K on
+  the T5 S3 Pro came back holding the same ephemeris and the same almanac after
+  a rail drop of 60 s and of 180 s, and came back empty after 300 s. So a
+  duty-cycled design that wakes more often than about every 3 minutes pays G2
+  and not G1, and one that sleeps longer pays G1. The instrument is
+  `NAV-STATUS`, not `CMD:GNSS EPH` -- `docs/gnss.md`, "Ephemeris survives a
+  rail drop of 180 s and not 300 s". T-579 is still the idle-current task this
+  reuses.
+- **Where between 180 s and 300 s the window closes.** Two measurements bracket
+  it and nothing narrows it; each extra point costs one rail drop and one
+  `NAV-STATUS` read. It matters because it is the scheduler's maximum sleep.
+- **Whether `StartMode` 1 gives a warm start that keeps the almanac.**
+  `StartMode` 2 is measured and empties everything; 1 is untried. A start that
+  drops the ephemeris and keeps the almanac would be the gear this table's G2
+  row is about, and it costs one frame to find out.
+- **Ephemeris validity window** -- how long before a warm start degrades
+  toward a cold one. Sets the maximum interval a "fix every N minutes"
+  scheduler can use before it stops being warm.
+- **T5S3 battery capacity (mAh)**, spec-sheet or measured -- without it none of
+  G1-G7 convert to a runtime number, same caveat as the X4 650 mAh figure
+  above.
+
+**How this maps to the scenario, once G1-G7 exist**: phone-connected mode
+(BLE primary, GNSS low-duty per G2) costs roughly `G4 + G5 + (fixes/hour x
+G2)`; phone-disconnected mode (GNSS primary) costs roughly `G3`; the interval
+between G2 fixes is bounded above by the ephemeris validity window and below
+by how much position staleness the current use tolerates (moto vs hiking --
+the two personas differ by an order of magnitude in how stale a dot can be
+before it reads as wrong). None of this is measured yet -- table above is
+what closes it, cheapest first.
+
+**Cross-reference, added 2026-08-31 during retrospective**: `docs/device-choice.md`,
+"Would onboard GNSS let us switch BLE off" already tracks the same question one
+level up (X4 Pro architecture, not T5S3-specific), under **T-522**. Two things
+from there apply here unchanged:
+
+- **The redraw-entanglement trap.** Run 3's BLE-connected leg on X4 measured the
+  link *and* ~47-50 marker redraws an hour together, and the two have never been
+  separated -- so its 2.4x figure is not "what BLE costs," it is "what BLE plus
+  the redraws it causes costs." G5 and G6 above need the same separation: a leg
+  with fixes arriving and redraws suppressed, against a matched-voltage
+  advertising leg, or T5S3 repeats the same unusable number.
+- **A vendor number exists for the receiver class, and it was already misused
+  once.** u-blox specifies the M10 platform (same as the LilyGo board's
+  MIA-M10Q) at "less than 25 mW" continuous tracking -- roughly 7.6 mA at 3.3 V,
+  before regulator loss (`u-blox.com/en/product/max-m10s-module`, `[cited,
+  vendor]`). Use it only as a rough cross-check on G2/G3 once measured, never as
+  a substitute for measuring: an earlier version of `device-choice.md` set this
+  same figure against a retracted mA number and concluded GNSS "roughly doubles"
+  the parked draw, and that conclusion was withdrawn the next day.
+
+T-579 above is cited from `firmware/explorink` branch `feat/t5s3-gnss`
+(`docs/gnss.md`), not yet merged to `develop` -- grepping this parent repo's
+`docs/TODO.md` for it finds nothing until that branch lands.
+
+### Observation mode: why M16 is the run to spend a night on
+
+**The mechanism is the previous section** ("Observe with BLE off drops the floor
+to 10 MHz for free", written by the session that built it, with the
+`nimble_port_deinit()` chain read off the pinned IDF). Merged to `develop` as
+`b8b11535` on `ble-follow-only`, and flashed to the device 2026-08-21 in a
+combined build with the Observe marker fix. **Its own commit says untested on
+hardware**, so the first long run in this state is also that feature's hardware
+test.
+
+What this section adds is why it is worth a whole night rather than a slot in a
+list.
+
+**It is the 48 hours of the hike budget.** The scenario the 72-hour target is
+measured against splits into ~24 walking hours and ~48 stopped ones
+(`power-plan.md`, "The scenario the 72 hours has to hold for"), and the stopped
+half is exactly this: map up, nothing arriving, nobody panning. If Observe-idle
+lands near 2-3 mA, the stopped half costs ~130 mAh of a 552 mAh budget and three
+days stops being blocked on light sleep working with the link up. If it lands
+near 8 mA, it does not.
+
+**And it is the one state a single long run can actually price**, which matters
+after run 4. Short comparative legs fail inside the voltage plateau, but a single
+state held for 8 hours moves the pack far enough to be read: at 3 mA that is
+~24 mAh, tens of ADC counts, well clear of the counting noise that made run 4's
+legs unreadable (`power-plan.md`, "The plateau problem"). So the instrument this
+campaign already owns can answer this one -- no alternation, no meter.
+
+**It is also the parked-loop policy's natural first consumer.** Observe has no
+link to keep responsive, so its parked cadence is bounded by one thing: the ADC
+button ladder is polled, never interrupt-driven, so **the parked cadence is the
+worst-case delay between a press and it being seen** (`power-idle-sleep.md`, "The
+parked policy"). 50 ms today; 200-300 ms would still feel instant and cut the
+wake count 4-6x; a second would feel broken. That bound is why
+`src/ParkedLoopPolicy.h` takes the cadence as data rather than picking a number.
+
+**Prediction, stated to be refuted:** the cheapest map state on shipped hardware,
+below every figure in the table above, because it drops the radio and 8/10 of the
+clock at once. **What would refute it:** the 10 MHz APB penalty landing somewhere
+unexpected -- the SD write each minute, the ADC poll -- and eating the saving. And
+one functional risk worth watching in the same run: `end()`/`begin()` across the
+Follow/Observe boundary is a NimBLE deinit and re-init, which is the operation
+that hung the device at a low clock back in 2026-08-04.
+
+### Who decides whether a fix is worth a redraw -- and why M2 is a design question
+
+The question behind M2 is not a number, it is **which side thinks**: can the
+phone be generous on the wire and leave the panel to decide whether a fix
+deserves ink, or does the Android app have to reason about what it sends?
+
+**The device already decides, and run 3 proves it.** In the connected leg
+positions arrived every 10 s -- six a minute for an hour -- and the marker was
+never redrawn once. Two thresholds do that, both device-side:
+
+- `MapFollow::kMinMovePx` = 8 px: a fix that moves the marker less than that
+  changes nothing (`src/activities/map/MapFollow.h:92`) **[repo]**.
+- `kKeepInMarginPx` = 80 px: the viewport is only reset when the marker leaves
+  its margin (`MapFollow.h:34`) **[repo]**.
+
+**And the panel work that did happen was not caused by fixes at all.** Run 3's
+connected leg shows ~2 windowed refreshes a minute, which is
+`kHeaderBarsRepaintMs` = 30 s -- and that constant is a *floor between two
+repaints caused by nothing but a moving bar count*, i.e. RSSI sitting on a
+threshold and flipping (`MapActivity.cpp:157,1282`) **[repo]**. It is why the
+advertising legs show zero refreshes: no link, no RSSI, no bar churn
+**[measured]**.
+
+So the panel half of the question is answered: **generosity on the wire does not
+buy redraws.** What is unmeasured is the wire itself, and that is exactly M2.
+
+Two outcomes, and they point at different work:
+
+- **The radio is cheap.** Then the phone can stop thinking: `SendPolicy`'s
+  cadence gating (`MIN_INTERVAL_MS`, `WALKING_MIN_INTERVAL_MS`,
+  `MOVE_THRESHOLD_M`) is spending complexity to save nothing, and dropping it
+  would also remove logic a second client has to reproduce -- the phone-side
+  portability rule in the parent `CLAUDE.md` counts that as a real saving.
+- **The radio is not cheap.** Then the gating earns its keep, and the next
+  question is whether the *thresholds* are right rather than whether they should
+  exist. `docs/send-interval-analysis.md` (parent repo) is where that reasoning
+  already lives.
+
 ## The device measures itself now
 
 **Added 2026-08-11.** Two instruments, one vocabulary:
 
-- **`/trailink/power.csv` on the SD card**, one row per minute
+- **`/explorink/power.csv` on the SD card**, one row per minute
   (`src/PowerLog.cpp`, `PowerLog::kIntervalMs`). Written on every screen, from
   boot, with no phone and no cable needed. This is the only instrument that
   works for the baseline that matters most -- the device on battery with
@@ -119,6 +576,234 @@ An inline USB meter measures the whole system *including* charging, so it
 answers "what does the wall pay", not "what does the map cost". Only a
 battery run answers the second.
 
+### Plugged in, X4 sawtooths: the system runs off the cell and the charger tops it up
+
+**Observed by the maintainer on the device and confirmed in run 1's own data,
+2026-08-21.** Left on USB, X4 charges to 100 %, drifts down to about 90 %,
+recharges, and repeats. Run 1's boot 3 -- 8.5 hours plugged in -- has it in the
+`batt_mv` column (`docs/power-runs/run1-2026-08-15.csv`, parent repo)
+**[measured]**:
+
+| | Voltage | Percent |
+|---|---|---|
+| Troughs | 4034-4067 mV | 89-92 % |
+| Peaks | 4165-4224 mV | 92-99 % |
+
+**Period: the fall takes about 140 minutes, the refill 7-25 minutes.** So the
+charger returns in a quarter of an hour what the system spent 2.3 hours draining,
+which puts the charge current an order of magnitude above the load.
+
+**What it proves, and it contradicts an assumption made a few hours earlier on
+this page: there is no load sharing.** With USB attached the system is fed from
+**the cell**, not from VBUS -- otherwise the pack could not fall at all. The
+charger is an independent top-up loop, which is consistent with the board having
+no charge-enable line and no charge-status pin (previous section).
+
+Three consequences:
+
+- **A voltage rise mid-run is this, not an error.** It is why any analysis has to
+  cut on a sustained rise before fitting (`docs/power-runs/README.md`, and
+  `tools/powercsv.py`'s `RISE_THRESHOLD_MV`).
+- **The percentage swing is not 10 % of the pack.** `batt_pct` on X4 is
+  voltage-derived and then smoothed with a 9/10 EMA, so a 190 mV swing near the
+  top of the curve reads as 99 -> 89 %. The charge actually moved is whatever
+  190 mV is worth up there, which nobody has measured.
+- **It sets what a USB meter can do.** See below.
+
+### Except once charging has terminated: the no-teardown comparison (2026-08-21)
+
+**The case the paragraph above does not cover.** With the cell **full and the
+charger terminated**, the charging term goes to roughly zero and what the USB
+meter sees is the system. X4 cannot report that state -- no charger IC, no gauge,
+no charge-status pin -- but **the meter can**: the current stops decaying and
+settles.
+
+Why this matters enough to write down: every meter route on X4 otherwise requires
+**opening the device** to reach the cell, since the only alternatives are a shunt
+in series with the battery or replacing the battery with a source-meter. That is a
+teardown of the daily driver, which is a decision about owning a lab unit rather
+than a decision about instruments.
+
+What this route can and cannot do:
+
+- **It cannot give absolute milliamps at the cell.** The reading is current at
+  5 V into a converter, not current out of a 3.8 V pack, and the converter's
+  efficiency has never been measured **[open]**.
+- **It can give differences between states**, because that efficiency is
+  approximately common to both halves and cancels in the difference. Which is
+  exactly the thing the voltage slope cannot do inside the plateau.
+- **Correction, same day: it does not do it in minutes.** That claim was written
+  before the sawtooth above was understood. X4 runs off the cell while plugged in,
+  so during the ~140-minute fall the charger is off and **the USB meter reads
+  almost nothing**. The usable quantity is the meter's own **mAh accumulator over
+  one whole cycle**, and a cycle is long -- and gets longer as the state gets
+  cheaper, since it is set by how long the load takes to drain the recharge
+  threshold. 65 mAh at 8 mA is eight hours.
+- **Correction again, and this one narrows it further.** "A direct measure of
+  charge consumed" was still too strong. The objection that produced it: *a USB
+  meter tells you how hard the thing is charging, not what it consumes.* For an
+  instantaneous reading that is exactly right -- during the 140-minute fall it
+  reads near zero while the device is drawing the whole time.
+
+  What rescues it is **conservation over a closed cycle, not measurement of the
+  load**. If a cycle starts and ends at the same state of charge, the charge the
+  charger put in equals the charge the system took out, because the cell is a
+  ledger that has to balance. Consumption is in the number for that reason and no
+  other.
+
+  Three things contaminate it, and the first is the serious one:
+
+  - **The charger's and converter's own quiescent draw.** It is paid out of USB
+    for the whole fall, while nothing is being charged. So the reading is
+    *consumption plus an overhead proportional to elapsed time*. If that
+    quiescent is a few milliamps and the state under test is 8 mA, it is not a
+    correction, it is a comparable term.
+  - **5 V in, ~4 V out.** Compare **Wh**, not mAh: energy is the quantity that
+    converts, and the charge path's efficiency lives inside it.
+  - **A cycle does not return to exactly the same place.** Run 1's peaks were
+    4207, 4224, 4181, 4174, 4222 and 4165 mV -- so a single cycle carries an
+    error from wherever it happened to stop. Several cycles average it out.
+
+  **So the honest claim.** The meter does not answer "what does the map cost". It
+  answers "how much more does the map cost than observation mode", because the
+  time-proportional overhead is common to both and cancels in the difference --
+  the same structure as alternation, and free of the plateau problem. Absolute
+  consumption stays **[open]** until something measures at the cell.
+- **The conversion factor is derivable once**: read one state whose
+  battery-side slope is already known (connected at 80 MHz, 25.6 mV/h) and the
+  ratio follows.
+- **It cannot touch deep sleep or the board floor.** Microamps under a
+  converter's own quiescent draw, with a charger that periodically wakes to
+  top off, are not reachable. Experiment 1 still needs a meter at the cell and
+  therefore still needs the teardown.
+
+Two things the meter will show that are not findings: a **top-off step** when the
+charger restarts as the cell settles, and the device being in a slightly different
+state with VBUS present (USB CDC up, and a USB state change requests a redraw --
+`src/main.cpp`, `gpio.wasUsbStateChanged()`).
+
+**Verified: nothing yet.** This is arithmetic and a mechanism, not a measurement.
+And it is **not certain to work** -- it rests on four assumptions, each of which
+fails in its own way:
+
+1. **That charging actually terminates.** A charger that cycles instead -- top up,
+   stop, top up again -- gives a sawtooth rather than a settled value. Not fatal:
+   the average over **whole cycles** is still the system's draw. Fatal if someone
+   reads a single point off the sawtooth and calls it a number.
+2. **That the system runs off VBUS while plugged in.** Without load sharing the
+   system draws from the cell and the charger refills it in parallel, and the two
+   are not separable in one reading except by that whole-cycle average. X4's power
+   path is not documented here, and the firmware cannot help: `batteryChargeStatus`
+   is `PIN_UNASSIGNED` and the charger is autonomous (previous section), so nothing
+   on the device can report which phase it is in.
+3. **That converter efficiency is common to both states.** The weakest one.
+   Efficiency varies with load and the converter's own quiescent draw is a constant
+   added term, so a difference measured at 5 V is **not** a difference at the cell
+   times a constant. At single-digit milliamps -- exactly the range in question --
+   that error can be large in relative terms.
+4. **That the device behaves the same with VBUS present.** It does not: USB CDC is
+   enumerated and drawing, and a USB state change requests a redraw. What is
+   measured is "state plus CDC", not the state.
+
+**The test that settles it, and its pass criterion.** Measure a state whose
+battery-side number is already known -- connected at 80 MHz, 25.6 mV/h -- then a
+second known state, and compute the 5 V-to-cell factor from each.
+
+- **Pass:** both states give the same factor within a few percent. The method
+  works, and that factor converts every future USB reading.
+- **Fail:** the factors differ. Assumption 3 has broken, and the meter gives the
+  *ordering* of states and rough magnitudes, not numbers. Still useful -- ordering
+  is what half the open questions need -- but it must not be written down as mA at
+  the cell.
+
+Until that test has been run, a USB-side number in this file is labelled as such.
+
+## The header's charging bolt: X4 Pro and T5 S3 Pro read a status pin, not VBUS
+
+**Read off the code and confirmed on X4 Pro hardware, 2026-09-18.** The header
+battery icon's lightning bolt (`BaseTheme::fillBatteryIcon`,
+`src/components/themes/BaseTheme.cpp:128-153`) is driven by
+`HalGPIO::isUsbConnected()`. Before this date, `isUsbConnected()`
+(`lib/hal/HalGPIO.cpp:301-318`) returned `false` unconditionally whenever
+`BoardConfig::ACTIVE.usbDetect` was `PIN_UNASSIGNED` -- true for both X4 Pro
+(`BoardConfig.h:1537`, "GPIO10 is a candidate, unconfirmed") and T5 S3 Pro
+(`BoardConfig.h:1199`). So the bolt never showed on either board, on any
+charge state, ever.
+
+**Fix**: when `usbDetect < 0`, fall back to `BatteryMonitor::isCharging()`
+(`lib/hal/HalGPIO.cpp:312-333`), which already picks the right per-board
+source -- a charger IC's status register, a gauge's `Current()` sign, or a
+`/STAT` pin. On X4 Pro that source is GPIO21, the CW2017 gauge board's
+charge-status line (`BoardConfig.h:1530-1535`: "Charger STAT on GPIO21,
+ACTIVE-HIGH ... stock's `Cw2017PowerHal` ... reports the raw level as
+'charging'"). This is the same fallback CrossPoint upstream already ships in
+its own `isUsbConnected()` (read at their current `main`, not our pin, per
+the read-upstream-at-main rule) -- reimplemented against our
+`BoardConfig`/`BatteryMonitor` shapes, not copied.
+
+**The caveat, confirmed on X4 Pro hardware the same day.** A charge-status
+pin answers "actively charging", not "USB present" -- the two differ whenever
+the charger stops charging while USB stays attached. Two real cases:
+
+- **Charge termination at 100 %.** Flashed and screenshotted on X4 Pro
+  (`docs/device-shots/2026-09-18-x4pro-charging-icon-v2-check.png`, parent
+  repo) at 100 % SoC, USB attached: the bolt does not show. This is the
+  charger correctly reporting charge-complete, not a bug -- and it is
+  electrically indistinguishable from USB being physically absent, so no
+  bolt is provable at 100 % without genuinely discharging first. A 2-minute
+  and a 7-minute softAP load test (File Transfer -> Create Hotspot, forcing
+  extra draw) both failed to move the SoC or the bolt -- the charger + cell
+  absorb that load without dropping below float, so a positive read needs a
+  real drop in cell voltage, not a brief extra load.
+- **T5 S3 Pro's dev workflow of disabling the charger on purpose**, to
+  measure battery-only current draw with USB still attached for a serial
+  link. Same electrical shape, different cause. **Not a regression**: T5 S3
+  Pro's `usbDetect` was already `PIN_UNASSIGNED`, so `isUsbConnected()` was
+  already unconditionally `false` in this exact scenario before the
+  fallback existed. The fallback only turns the genuinely-charging case from
+  a false negative into a correct positive; it does not change the
+  charging-disabled-for-dev case at all.
+
+**Verified, both directions, both boards, 2026-09-18.** Code path traced end
+to end (`readGaugeCharging()`,
+`freeink-sdk/libs/hardware/BatteryMonitor/src/BatteryMonitor.cpp:269-292`,
+confirms X4 Pro's CW2017 always reports `known=false`, so `isCharging()`
+falls through to the GPIO21 read at `BatteryMonitor.cpp:501-506`).
+
+- **X4 Pro, negative case**: flashed, boots clean, no regression. **Positive
+  case confirmed by the maintainer**: unplugging USB on the Home screen
+  changed the icon at once. The 100 %-plugged-in case above stayed
+  unprovable by design (charge-complete and USB-absent are the same
+  electrical signal), so this is the real test the caveat called for.
+- **T5 S3 Pro, both cases, confirmed against the raw register.**
+  `CMD:CHARGE` reads the BQ25896 directly (`main.cpp`, gated
+  `ENABLE_BATT_CMD`/`ENABLE_CHARGE_CMD`, devel-only). At 89 % SoC, USB
+  attached, it read `chrg_stat=3` ("charge termination done") and the icon
+  showed no bolt -- register and icon agree. `CMD:CHARGE OFF` then
+  `CMD:CHARGE ON` restarted the charge cycle (a documented use of that
+  command, meant for bench measurement): `chrg_stat` moved to `2` ("fast
+  charging"), and the very next screenshot
+  (`docs/device-shots/2026-09-18-t5s3prob-charging-positive-zoom.png`,
+  parent repo) shows the bolt lit inside the battery outline. This is a
+  register-level positive, not an inference from a screenshot alone.
+- **Map screen repaint gap, found by the maintainer testing X4 Pro's
+  positive case.** The map's `updateHeaderStatus()`
+  (`src/activities/map/MapActivity.cpp:1640-1789`) only repainted the
+  battery on the minute tick or a destination change --
+  `"charge moves slowly enough that it has never earned a repaint of its
+  own"` was true only because `isCharging()` had been hardcoded `false` on
+  these boards until this fix, so the state never actually flipped while
+  the map was up. Home already repaints every frame, so it looked fine
+  there and stale on the map. Fixed by adding `chargingChanged` as an
+  immediate whole-row trigger, same class as a destination appearing/
+  disappearing, rather than folding it into the rate-capped BLE
+  `structural` bucket (which does not reach the battery). Confirmed by the
+  maintainer on X4 Pro hardware after the fix: "perfektne, funguje."
+
+`fix/x4pro-charging-icon` branch, commits `65403ac7` (the fallback),
+`664808f6` (the map repaint fix). Flashed and confirmed on X4 Pro and T5 S3
+Pro (board B).
+
 ## First real-draw numbers: two rides
 
 **Measured on hardware, 2026-08-07, real rides, not a bench measurement.**
@@ -127,8 +812,8 @@ connected the whole time:
 
 | Ride | Log | Duration | Battery drop | Implied avg draw |
 |---|---|---|---|---|
-| 1 | `docs/rides/trailink-gps-20260807-142303.jsonl` (parent repo) | 34 min | 4% = 26 mAh | ~46 mA |
-| 2 | `docs/rides/trailink-gps-20260807-173058.jsonl` (parent repo) | 46.6 min | 2% = 13 mAh | ~17 mA |
+| 1 | `docs/rides/explorink-gps-20260807-142303.jsonl` (parent repo) | 34 min | 4% = 26 mAh | ~46 mA |
+| 2 | `docs/rides/explorink-gps-20260807-173058.jsonl` (parent repo) | 46.6 min | 2% = 13 mAh | ~17 mA |
 
 Neither is a clean isolated sample of the plan's "Map screen, phone connected,
 fix every 10 s" row (`optimization/07-power-and-lifecycle.md`, step 1): both
@@ -147,6 +832,351 @@ resolution), the X4's actual capacity vs. the 650 mAh spec number, and
 whether the battery's discharge curve is linear enough at this state of
 charge for the mAh math above to hold. A bench measurement with an inline
 meter (the plan's step 1) is still the number to trust over either of these.
+
+## The T5 S3 Pro's first ride: 131 mA, and the panel is not the reason
+
+> **Corrected 2026-09-04, twice.** The ride drew **134.8 mA**, not 131 -- the
+> older figure counted a gauge step the boot did not measure. And the frontlight
+> was **~18 to ~43 mA of it, not ~8**: a frontlight-off ride the next day
+> measured a 43 mA difference, and how much of that is the light rather than a
+> GNSS rail that may have changed state between the runs is unresolved. The title keeps its number because five docs cite this section by
+> name. See "The frontlight is tens of milliamps, not 8".
+
+**Measured on hardware 2026-09-03**, one ride, map screen up, phone connected,
+frontlight at 40 %, GNSS enabled by the rider. Build `0.2.0-t5s3pro`. The log is
+boot 55 of the device's `power.csv`, pulled over the web server
+(`GET /download?path=/explorink/power.csv`).
+
+**This is the first device in the project with a real fuel gauge on the ride**,
+so it is the first ride whose draw does not come from a voltage slope. That
+changes what the numbers mean, and it is why this section does not just add a
+row to the scoreboard.
+
+| | |
+|---|---|
+| Duration | 191.3 min (3.21 h), 193 rows |
+| SoC, BQ27220 at `0x55` | 100 % -> 72 %, **-28 %** = **420 mAh** of the 1500 mAh nameplate |
+| Voltage | 4048 -> 3832 mV (-216 mV) |
+| **Average draw** | **134.8 +/- 1.5 mA**, about 519 mW at 3.85 V. Read 131 until 2026-09-04, when the endpoint counting error was found |
+| Full to flat at that rate | **11.1 h** |
+| Of which the frontlight at 40 % | **~18-43 mA, 13-32 %** -- measured by difference 2026-09-04; the range is an unresolved GNSS rail, see "The frontlight is tens of milliamps, not 8" |
+| BLE | connected 183 of 193 rows (`ble=2`) |
+| Panel busy | 23.8 min = **12.4 %** of the ride |
+| Refreshes | 1574: `ref_full` **0**, `ref_half` 3, `ref_fast` 159, `ref_window` 1412 |
+| Refresh rate | 8.2/min, about 905 ms panel busy each |
+| CPU | 240 MHz 7.8 %, 80 MHz 92.3 % |
+| Loop | busy 18.2 %, `loop_max_ms` **5278** |
+| Heap | 119-121 kB throughout, min 108.7 kB -- no leak |
+
+No crash during the ride. Both `crash_report.txt` files on the card are from
+other, shorter boots (uptime 29.8 min and 14.7 min).
+
+### `ref_full` is 0 because the map has no full-refresh path
+
+The rider reported "frequent partial and full refreshes at z2". The counters say
+zero full refreshes in 3.2 hours. Both are right, and the counters are not
+missing a path: `MapActivity` only ever asks for `FAST_REFRESH`, with
+`HALF_REFRESH` on an entry clean (`src/activities/map/MapActivity.cpp:4831`,
+`:5326`, `:5764`). Three half refreshes is three entries into the map.
+
+What the rider saw is in the next section: on this board a `ref_window` is a
+full-screen operation.
+
+### The draw does not follow the work, and two instruments disagree about that
+
+The ride has quiet stretches and busy ones. Split it:
+
+| Window | Panel | 240 MHz | `ref_window` | mV/h | mA from SoC |
+|---|---|---|---|---|---|
+| quiet, 5700-7000 s | 4.1 % | 0.1 % | 2.38/min | **-27.2** | **128.6** |
+| busy, 7900-9100 s | 17.3 % | 6.5 % | 10.30/min | **-92.1** | **141.9** |
+| busy, 600-2400 s | 13.3 % | 13.7 % | 8.36/min | **-96.7** | **123.8** |
+| whole ride | 12.4 % | 7.8 % | 7.36/min | -66.2 | 131.7 |
+
+mV/h is a least-squares slope over the rows in the window. mA is `dPct/100 *
+1500 mAh` over the window's duration.
+
+Panel work swings **4x** and the gauge's SoC barely moves (129 against 142 mA).
+The voltage slope swings **3.4x** over the same windows. One of the two is
+wrong about this ride.
+
+**The gauge is the one to believe, and the reason is in the shape of its
+output.** Its SoC steps one percent every 6-7 minutes, metronomically, for the
+whole ride, while mV/h is anything from -27 to -97 in the same stretches. A
+voltage-derived SoC would have tracked the voltage. This one does not, so it is
+integrating charge, not reading a curve -- which is what a BQ27220 with a sense
+resistor is for.
+
+That makes the steep busy-window slopes **IR sag under panel bursts**, not
+faster discharge. The +1.2 mV/min recovery at 9019 s, right after a busy
+stretch ends, is the same effect relaxing.
+
+**So the drain is a large constant load, and the panel and CPU ride on top of it
+for at most ~10 %.** That inverts the working assumption for this board.
+
+**The limit on this.** One ride, one device, and the gauge's own profile is
+probably not learned: it reported 100 % at 4048 mV, where a full LiPo is 4200.
+So the 420 mAh figure carries the nameplate assumption plus an unlearned gauge,
+and the -216 mV of voltage movement is what independently supports "about a
+quarter of the pack". Treat 134.8 mA as good to maybe 20 %, and the *constancy*
+as the finding rather than the value. **The 2026-09-04 walk narrows that:** two
+rides on the same nameplate assumption and the same unlearned gauge differ by
+43 mA, and a difference between two runs of one instrument does not carry the
+instrument's absolute error. What that difference is *made of* is a separate
+question, and it is the open one.
+
+### Where the 131 mA is not
+
+| Item | mA | Confidence |
+|---|---|---|
+| Frontlight at 40 % | **~18-43** | **[measured by difference]** 2026-09-04 -- two runs of one instrument, with the frontlight state attested by the maintainer rather than logged. Not the same confidence as a single direct reading. The range is the unresolved GNSS rail. Was `~8`, an `[arithmetic]` guess that assumed duty is linear in current. It is not. See "The frontlight is tens of milliamps, not 8" |
+| ESP32-S3 at 80 MHz, no light sleep | ~22-25 | **[open]**, datasheet not read |
+| BLE connected, 30 ms interval | ~10-20 | **[open]** |
+| L76K tracking, if the rail was up | ~20-25 | **[open]** -- the 7.6 mA figure in this file is the MIA-M10Q's, not the L76K's |
+| SX1262, held in reset | ~0 | reset is asserted before the rail goes up |
+| PSRAM, mounted SD, panel PMIC | ? | **[open]**, nobody has attributed it |
+| **Known items** | **~95-115** | was ~70-80 before the frontlight was measured |
+| **Measured** | **135** | |
+| **Unattributed** | **~20-40** | was ~50-60 |
+
+Two things that fall out of that table.
+
+**The frontlight is 32 % of the ride's draw** (corrected 2026-09-04; this
+paragraph read "6 %" and said the vendor number was confirmed). The 6 % came
+from the `[arithmetic]` row above, not from a measurement, and a frontlight-off
+ride the next day put the real cost at ~18 to ~43 mA. The board doc's "a night
+ride is affordable on this board" rests on the same vendor number and has to be
+reweighed (`../../docs/devices/lilygo-t5-s3-pro.md`, "The frontlight costs about
+20 mA"). See "The frontlight is tens of milliamps, not 8".
+
+**The panel PMIC is not a constant load.** `epdPowerOn()` and `epdPowerOff()`
+cycle the TPS65185 rails around each refresh and do not leave them up
+(`freeink-sdk/libs/hardware/BoardT5S3/src/LilyGoT5S3LgfxConfig.cpp:85-150`).
+**[read-off-code, not measured]** So the ~50 mA is somewhere else.
+
+**The GNSS/LoRa rail was probably up for the whole ride whatever the settings
+said**, which would put the receiver in the budget: one expander pin gates both
+parts, nothing calls `BoardT5S3::begin()`, so `disableGpsLora()` has never run
+on this board and the PCA9535 latches whatever was last written to it until it
+loses power (`gnss.md`, "The power rail is shared with the LoRa radio"). That is
+T-244 in the parent repo's `docs/TODO.md`, and this ride is the first
+measurement it has a claim on.
+
+### Against the X4
+
+| | X4 | T5 S3 Pro |
+|---|---|---|
+| Cell | 650 mAh | 1500 mAh (2.3x) |
+| Map connected, measured draw | ~44 mA | **134.8 mA (3.1x)**, frontlight 40 % |
+| Map connected, frontlight off | n/a, no frontlight | **91.3 mA (2.1x)** |
+| Map open, full to flat | ~14.6 h | **11.1 h** lit, **16.4 h** dark |
+
+**A 2.3x bigger cell and a shorter ride** -- and with the light off, a longer
+one, 16.4 h against 14.6. Half the gap this comparison originally showed was the
+frontlight, which the X4 does not have at all. The X4 figure is this file's "The
+state-3 baseline: ~45 mA over 11.5 hours"; it comes from a voltage slope on a
+board with no gauge, so the two columns are not the same instrument and the
+ratio is a ballpark rather than a measurement.
+
+### What this ride could not answer, and what the next one will
+
+The log has no column for the frontlight duty, none for the GNSS rail, and none
+for current. So nothing in it can separate the constant load into parts, and the
+gauge-against-voltage disagreement above had to be settled by argument rather
+than by reading.
+
+The fix is small and the gauge is already on the bus: log register `0x0C`. See
+"The BQ27220 already reads current, and throws it away" below. T-250.
+
+**And the GNSS half of the ride has an answer, which the budget above has to
+carry.** `mapGnssPosition` was 0, left over from the BLE regression run of
+2026-09-02, so the map drew from the phone and the firmware never opened the
+receiver's UART (`gnss.md`, "What a ride with the setting off costs the power
+log", and `gnss-to-map-plan.md` for the cause and the Settings row that now
+makes it visible). **That does not remove the L76K from the budget.** The rail
+is an expander pin that latches until it loses power and nothing on this board
+calls `disableGpsLora()`, so the receiver may have been powered and tracking the
+whole ride with nothing reading it. Powered-but-unread is the most expensive
+state it has, and no column in this log can tell it from powered-off.
+
+## The frontlight is tens of milliamps, not 8
+
+**Measured on hardware 2026-09-04.** A 5.26 h walk around Barcelona, map up,
+phone connected, **frontlight off all day**, same build `0.2.0-t5s3pro` as the
+2026-09-03 ride. **91.3 +/- 0.6 mA.**
+
+That `+/- 0.6` is **precision, not accuracy**: it is gauge-step timing only. The
+absolute figure still carries the nameplate-capacity assumption and an unlearned
+gauge, which this file elsewhere calls good to maybe 20 %. A **difference**
+between two runs of one instrument does not carry that error; a single value
+does. The ride the day before, same device, same
+screen, same build, **frontlight at 40 %**, drew **134.8 +/- 1.5 mA**.
+
+**The difference between the two runs is ~43 mA**, and the frontlight's own
+share of it is **~18 to ~43 mA** -- see "The rail is not provably identical"
+below for what takes the rest. The table above priced the frontlight at ~8 mA
+from LilyGo's "~20 mA at full current" scaled linearly to 40 %. That estimate
+was marked `[arithmetic]` and it was wrong by 5x. The measured cost is also more
+than **twice the vendor's full-current figure, at less than half brightness**.
+
+| | 2026-09-03 | 2026-09-04 (walk) | 2026-09-04 (before the walk) |
+|---|---|---|---|
+| Boot in `power.csv` | 55 | 78 | 77 |
+| Frontlight | **40 %** | **off** | **off** |
+| Duration | 3.21 h | **5.26 h** | 0.82 h |
+| Draw | **134.8 +/- 1.5 mA** | **91.3 +/- 0.6 mA** | 92.2 +/- 4.5 mA |
+| Runtime from full | 11.1 h | **16.4 h** | 16.3 h |
+| Panel busy | 12.35 % | 4.77 % | 11.07 % |
+| Refreshes/min | 8.2 | 2.9 | 7.1 |
+| BLE | connected | connected | connected |
+
+### Why the panel is not what changed
+
+Boot 77 is the control. It ran **the same day** as the walk with the frontlight
+off, and it carries **the same panel load as the 2026-09-03 ride** -- 11.07 %
+against 12.35 % panel busy, 7.1 against 8.2 refreshes a minute. It drew
+**92.2 mA against that ride's 134.8**.
+
+And boots 77 and 78 bracket the panel from the other side -- but **not to
+0.9 mA**, which is what this paragraph claimed until 2026-09-04. Boot 77 is
+92.2 mA **+/- 4.5**, because 4 gauge steps in 0.65 h is all it has. So the pair
+does not show that 2.3x the panel work costs 0.9 mA; it shows it costs **less
+than the measurement can resolve, and the bound is about 5 mA**, roughly 5 % of
+the draw. Still small, and not zero. What it does rule out is the panel carrying
+a 40 mA difference.
+
+That is the same conclusion the 2026-09-03 ride reached from one ride's internal
+variation, now with a between-ride control instead of an argument.
+
+### How the mA is counted, and why the older number moved
+
+The BQ27220 reports state of charge in whole percent. Differencing the first and
+last row of a boot counts **the step the device booted into**, which it did not
+measure -- the pack was already partway through that percent when the boot
+started. That biases a short boot high.
+
+So every mA here counts **from the first row of the second step to the first row
+of the last**, which measures only whole steps:
+
+```
+boot 55: 99 % -> 72 %, 27 steps in 3.005 h -> 134.8 mA
+boot 78: 90 % -> 59 %, 31 steps in 5.092 h ->  91.3 mA
+```
+
+That is why the 2026-09-03 ride now reads 134.8 where this file said **131**.
+Same log, same gauge, one fewer counting error; 131 was inside the endpoint
+method's own error bar.
+
+### What this does to the budget
+
+With the frontlight off, 91.3 mA measured:
+
+| Item | mA | Confidence |
+|---|---|---|
+| ESP32-S3 at 80 MHz, no light sleep | ~22-25 | **[open]**, datasheet not read |
+| BLE connected, 30 ms interval | ~10-20 | **[open]** |
+| L76K tracking, if the rail was up | ~20-25 | **[open]** |
+| **Known items** | **~52-70** | |
+| **Measured** | **91.3** | |
+| **Unattributed** | **~21-39** | |
+
+**The residual is the same from both ends.** Add the measured frontlight back
+and the frontlight-on ride reads 52-70 + 43 = 95-113 known against 134.8
+measured, leaving ~22-40 unattributed. Two rides, two frontlight states, the
+same ~20-40 mA nobody can name. That is now what T-250 is about; the frontlight
+half of it is answered.
+
+### Why the vendor number may be low -- all [open]
+
+- **Not two channels** -- ruled out. This board's frontlight is **warm only, one
+  PWM pin, `GPIO11`** into the `PT4103B23F` (`../../docs/devices/lilygo-t5-s3-pro.md`).
+  Warm plus cool on `GPIO8`/`GPIO9` is the **X4 Pro**, a different device
+  (`../../docs/device-fit.md`, the frontlight row). So the vendor's ~20 mA cannot
+  be a per-channel figure being doubled.
+- **"40 %" may not be 40 % duty.** It may be a step index into a table.
+- **The measurement is on the cell, the vendor's is on a rail.** `PT4103B23F` is
+  a boost LED driver; what it draws from a 3.9 V cell is its output current plus
+  conversion loss, not the LED current.
+- **Duty need not be linear in current** for a boost driver, whichever dimming
+  scheme it uses.
+
+Settling this needs no ride: `CMD:BATT` reads the gauge directly, so a bench run
+of off / 40 % / 100 % with nothing else changed and **USB unplugged** prices all
+three. T-250 in the parent repo's `docs/TODO.md`.
+
+### What this measurement rests on, and what it does not
+
+**The frontlight state is not in the log.** No column carries it. That both
+rides differed only in the frontlight is **the maintainer's own statement**, made
+2026-09-04, not something this file can check. It is the load-bearing input.
+
+**The two runs are not proven to be the same binary.** This is the strongest
+objection to the whole section. The `build` column is `TRAILINK_VERSION`, a
+version string: both runs read `0.2.0-t5s3pro` and neither records a commit. The
+walk's is known only from a coredump the crash session decoded that evening --
+`gnss-settings-row` @ `6b34fb69`, compiled 09-03 22:12
+(`../../docs/crashes/2026-09-04-map-exit-restart/`). The ride's is unrecorded.
+
+`PowerLog.h` says the `build` column is "the only thing that makes two runs
+comparable". **It is not, and this is the run that proves it.** Make it carry a
+commit. Folded into T-250.
+
+**Two candidate differences were checked, and neither takes the finding down.**
+
+- **The BLE connection interval.** `df62de7b` (09-03 16:08) pins the link at one
+  interval, **15 ms**, where it previously asked for 12-24 units and the central
+  answered 24 (**30 ms**). The walk's build carries it. If the ride's did not,
+  the walk ran the *costlier* link and still came out 43 mA lower -- which makes
+  **43 mA a floor for the difference between the two runs**, not a ceiling.
+  (It says nothing about how that difference splits between the frontlight and
+  the GNSS rail; that is the section below.) Which side of 16:08 the ride fell
+  on is not recorded.
+- **"One radio per session"** (`5c8797ab`, 09-03 21:46) never fired. It skips
+  `BlePositionServer::begin()` when `mapGnssPosition` is on; BLE was connected
+  for the whole walk, so it was off. It does not touch the GNSS/LoRa rail either
+  way.
+
+**The rail is not provably identical in both runs, and this was argued wrongly
+here on 2026-09-04.** The first version of this section said nothing calls
+`disableGpsLora()`. That is true and it is irrelevant: `disableGpsLora()` is not
+the function that controls the rail. The rail is raised by `Gnss::start()` ->
+`config_.powerEnable(true)` and lowered by `Gnss::stop()` ->
+`config_.powerEnable(false)` (`lib/Gnss/src/Gnss.cpp:116`, `:185-186`), wired to
+`main.cpp`'s `gnssPowerEnable()` at `src/main.cpp:287`. And
+`MapActivity.cpp:2309` states the policy outright: *the receiver comes up with
+the map and goes down with it*.
+
+So **any session that opened the map with `mapGnssPosition` on and then left it
+dropped the rail.** Twenty-one boots sit between the two measured runs in the
+log, and that evening was GNSS work -- the Settings row, one-radio-per-session,
+the UTC clock suffix. It is the **most** likely thing to have moved that rail,
+not the least.
+
+**What that does to the number.** If the rail was up for the 2026-09-03 ride
+(latched from earlier, which is what this file already argues) and down for the
+walk (dropped by a clean `stop()` during the evening's work), then the L76K --
+`[open]` at 20-25 mA in the budget above -- takes part of the 43.
+
+**So the frontlight costs somewhere between ~18 and ~43 mA.** The uncertainty is
+the GNSS rail and nothing else. **Every value in that range is more than double
+the ~8 mA this file carried**, so the correction to that figure stands on its
+own; the single number 43 does not.
+
+**What is solid:** the gauge is a coulomb counter, both numbers come from it,
+both boots ran the same build on the same device, and boot 78 is 31 whole steps
+over 5.09 hours -- the longest and tightest discharge measurement in this file.
+
+### The voltage slope lied again, the same way
+
+Within the walk, the 10-minute segments swing 1.7x in voltage slope
+(`+29.1 +/- 2.1` mV/h at 3.37 % panel busy, `+50.6 +/- 5.1` at 15.44 %) while
+the gauge steps at a flat 90-105 mA across the whole 5 hours regardless of panel
+load. Busy stretches sag the cell under load; they do not discharge it faster.
+
+Same artefact as 2026-09-03, reproduced on a longer log. **On a board with a
+gauge, read the gauge.** `tools/powercsv.py` in the parent repo fits voltage
+slopes and is the right tool for the X4, which has no gauge; on this board its
+mV/h columns are IR sag as much as discharge.
 
 ## A windowed update costs the same panel time as a fast full refresh
 
@@ -219,6 +1249,46 @@ across all of them -- it barely depends on where the cut goes, because window
 updates dominate the counts on both sides. `ref_fast` is softer, 435-497 ms. So
 the headline ("both cost about the same; area does not set the price") is
 robust; the exact `ref_fast` figure is not.
+
+### On the T5 S3 Pro there is no windowed path at all (2026-09-03)
+
+The X4 finding above holds from the other direction on this board, and harder.
+`PanelDriver::displayWindow()` has a default body that **throws the rectangle
+away**:
+
+```cpp
+// freeink-sdk/libs/display/FreeInkDisplay/src/driver/PanelDriver.h:53
+virtual void displayWindow(EpdBus& bus, const uint8_t* fb, const uint8_t* prev,
+                           uint16_t x, uint16_t y, uint16_t w, uint16_t h, bool turnOff) {
+  display(bus, fb, prev, RefreshMode::Fast, turnOff);
+}
+```
+
+Exactly one driver overrides it, `Ssd1677Driver` (X4). The T5 S3 Pro runs
+`LgfxEpdDriver`, which does not (`LgfxEpdDriver.h:32-49` -- every `override` it
+declares, and `displayWindow` is not among them). So the ride's **1412
+`ref_window` calls each executed a full-screen `FAST_REFRESH`**, and with the
+159 real fast refreshes and 3 half that is 1574 whole-panel operations in 191
+minutes. That is what the rider saw at z2, and `ref_full` was 0 the whole time.
+
+**Do not read that as 1412 wasted full redraws.** LovyanGFX's `Panel_EPD` does a
+per-pixel diff and skips unchanged pixels
+(`freeink-sdk/libs/hardware/BoardT5S3/src/LilyGoT5S3LgfxConfig.cpp:19-25`), so
+the pixels driven are already close to what a window would have driven. What is
+not skipped is the panel's gate scan.
+
+**And implementing `displayWindow` here would probably buy nothing.** A
+row-ranged partial refresh on a parallel EPD does not shorten the scan:
+FastEPD's `bbepPartialUpdate` clocks out every row at full width regardless of
+the requested range, and the row range only decides which rows get a
+non-neutral drive (`fastepd.md`, "Row-ranged partial refresh saves data, not
+scan time"). Our own X4 numbers say the same thing from measurement -- window
+508 ms against fast 490 ms.
+
+So both boards, two drivers, and an upstream library all agree: **the price is
+per refresh, not per pixel.** The lever is the count. 8.2 refreshes a minute to
+move a dot is the thing to attack, and it is T-249 in the parent repo's
+`docs/TODO.md`.
 
 ## BLE modem sleep cuts the draw a third (measured 2026-08-16)
 
@@ -459,10 +1529,26 @@ Today's "off" measures near zero only because cutting the latch
 **Consequence for every number in this file.** If that floor is 1 mA or more, the
 SoC's 5 uA deep sleep is irrelevant, and on X4 it is the only term left to argue
 about at all now that the crystal is ruled out.
-It has never been measured, it needs a uA meter in series with the battery -- the
-`power.csv` instrument cannot see microamps and a USB meter charges the cell --
-and it is the first experiment in
-[`power-idle-sleep.md`](power-idle-sleep.md).
+It has never been measured and **on X4 and X3 it never will be**: measuring it needs
+a uA meter in series with the battery, and no device is ever opened (parent
+`CLAUDE.md`, "Never open a device. Ever. Add to it instead.", 2026-08-22). The
+`power.csv` instrument cannot see microamps and a USB meter charges the cell.
+
+**The "never" is about devices, not about this project.** The parent rule's scope was
+clarified 2026-08-26: it covers a finished product with a case and a cell inside it,
+not a bare development board whose cell arrives on a connector. So this same floor
+**is** measurable on the LilyGo T5 E-Paper S3 Pro, whose cell lands on connector `P2`
+and which already carries a 10 mOhm shunt into a BQ27220 -- see
+`power-test-runbook.md`, "But the rule stops at a finished product". That number will
+not transfer to an X4: different silicon, different rails, a different PMIC. What it
+gives is the first floor this project can measure at all, and a method that works the
+next time hardware arrives on a connector.
+
+So the floor is not an open question with a plan behind it, it is a **permanent
+upper bound**: whatever it is, it is below the cheapest state a run has reached,
+which is run 5's **1.76 %/h** in Observe with the radio off. Every sleep-state
+number in this file inherits that bound rather than a value, and experiment 1 in
+[`power-idle-sleep.md`](power-idle-sleep.md) is retired rather than pending.
 
 ## Wake sources on this chip: deep sleep is the button, light sleep is anything
 
@@ -661,9 +1747,17 @@ shipped:
 - **Idle set** -- 24-40 units (30-50 ms), latency 9, timeout 600 units (6 s).
   Requested 5 s after connect, or 5 s after a transfer ends, whichever the
   code is timing (`connParamsQuietSinceMs_`).
-- **Fast set** -- 12-24 units (15-30 ms), latency 0, timeout 400 units (4 s).
-  Requested the tick a file transfer begins (`MapTransferReceiver`'s
-  `active_` flag, read via `Status::active`).
+- **Fast set** -- 12 units (15 ms), min and max the same value, latency 0,
+  timeout 400 units (4 s). Requested the tick a file transfer begins
+  (`MapTransferReceiver`'s `active_` flag, read via `Status::active`).
+  **It was 12-24 until 2026-09-03, and the window was the defect.** The central
+  owns the parameters, the phone had already asked for 15 ms with
+  `requestConnectionPriority(HIGH)`, and this request named 30 ms as an
+  acceptable answer -- so the link settled at 30 and the transfer rate halved.
+  Measured 3.9 kB/s before, 13.6 kB/s after (with MTU 517 alongside it):
+  `../../../docs/ble-map-transfer-protocol.md`, "Two levers".
+  **Open -- needs measurement:** what closing the window to a point costs in
+  idle power. The throughput side was measured, the power side was not.
 
 T6.2's own justification for the 4/6 s timeouts was `(1 + latency) *
 maxInterval * 2` -- 60 ms and 1000 ms worst case respectively -- against the
@@ -982,6 +2076,65 @@ Nothing here says whether a rider could hit it -- a ride has far fewer
 disconnects than a test session -- but it should not be filed as a rig
 problem, because the rig was demonstrably working.
 
+## Observe mode reopened the 10 MHz BLE window (2026-08-22)
+
+The hang below is old news and was fixed where it was found. It came back
+through a door nobody had guarded, and it took a rider's device down solid.
+
+**The chain**, every link already correct on its own:
+
+1. Observe mode stops the radio: `MapActivity::loop()` calls `ble.end()` when
+   the screen is not in Follow and no transfer is moving bytes
+   (`MapActivity.cpp`, the `needBle` block; `map-observation-mode.md`).
+2. With the controller disabled, `HalPowerManager::lowPowerFloorMhz()` stops
+   returning the BLE_SAFE_FREQ floor -- correctly, there is no radio to protect.
+3. So the 3 s idle throttle takes the CPU to **10 MHz** while the rider is
+   looking around.
+4. Leaving Observe asks for the radio back, and that call site called
+   `ble.begin()` **with no clock guard**. `onEnter()` has one, with a comment
+   that says exactly why ("NimBLEDevice::init() hangs at a low clock", verified
+   2026-08-04). The `loop()` restart path was added later and did not carry it.
+
+**Measured 2026-08-22**, from a serial capture running when it happened:
+
+```
+[301252] MAP   render 1817 ms ... heap: 104560 before tile load, 104564 after
+[301821] PWR   Going to low-power mode (10 MHz)
+[301881] MEM   Free: 104564 bytes, Total: 245892, Min Free: 14684
+[301890] BLEPOS begin: start, begun_=0, isInitialized=0
+[301893] BLEPOS begin: calling NimBLEDevice::init
+```
+
+Nothing after that line, ever. 104 kB of heap free, so this was never an
+allocation problem -- the first three hypotheses on the day (heap exhaustion,
+the menu backdrop, the new point layer) were all wrong, and the log settled it
+in one line.
+
+Fixed by mirroring `onEnter()`'s guard: `powerManager.setPowerSaving(false)`
+immediately before that `begin()`.
+
+**The fix's own verification is one reproduction, not a soak.** The rider crossed
+Observe -> Follow with a pause longer than the throttle and the device lived;
+nobody ran that transition dozens of times or left the device running for an
+hour. What would close it: a script that drives the transition 50 times over
+`CMD:` and watches whether the log keeps ticking. The alternative -- teaching
+`preventThrottle()` about "a BLE restart is pending" -- closes the window
+instead of surviving it, and is the better shape if this ever grows a third call
+site.
+
+**Why it matters more than a debug note:** a hung X4 cannot be reset by any
+button, tested to 25 seconds on the power button
+(`../../../docs/device-notes.md`). So this class of bug is field-fatal: the
+rider gets the device back when they next reach a computer, and not before.
+
+**How it was reached in practice.** Anything that makes a rider enter and leave
+Observe repeatedly crosses this transition many times in a session instead of
+once or twice -- panning to look ahead, showing a pin, browsing points. The
+`Nearby` menu's `View on map` is the one that made it ordinary
+(`nearby-menu.md`): it enters Observe by design, so a rider browsing points
+crosses this many times a session. The frequency is what turned a latent bug
+into a device that dies in the hand.
+
 ## Why 10 MHz breaks BLE: APB, and a lock that is compiled out
 
 **Read off the code 2026-08-16 (ESP-IDF and Arduino core sources), explains
@@ -1029,8 +2182,9 @@ construction and needs no PM machinery.
 `main.cpp:638` calls `powerManager.setPowerSaving(true)` after the device has
 been idle for a while (no button press, no touch, no tilt, nothing holding
 `activityManager.preventAutoSleep()` true). This lowers CPU frequency to save
-battery: `HalPowerManager::LOW_POWER_FREQ` is **10 MHz** on X4 (80 MHz only
-where `BOARD_HAS_PSRAM`), and the threshold is
+battery: `HalPowerManager::LOW_POWER_FREQ` is **10 MHz** on X4 (80 MHz on a
+PSRAM board, for a reason that is not the radio -- see "A PSRAM board's floor
+is 80 MHz too"), and the threshold is
 `HalPowerManager::IDLE_POWER_SAVING_MS`, **3 seconds**
 (`lib/hal/HalPowerManager.h:29-33`). Confirmed on real hardware via `LOG_DBG`
 output: `[PWR] Going to low-power mode`, ~3 s after the last input.
@@ -1040,6 +2194,94 @@ output: `[PWR] Going to low-power mode`, ~3 s after the last input.
 halTiltSensor.hadActivity() || activityManager.preventAutoSleep()` is true --
 i.e. on the very next iteration after any physical input, before that input's
 effect (a menu selection, an activity switch) is even acted on.
+
+## A PSRAM board's floor is 80 MHz too, and the radio has nothing to do with it
+
+**Read off the code, 2026-09-07.** Two independent rules set the idle floor, and
+on an S3 with PSRAM they both land on 80. Turning the radio off does not lower
+the clock there.
+
+| board | BT controller up | BT controller down |
+|---|---|---|
+| X4, X3 (C3, no PSRAM) | 80 (`BLE_SAFE_FREQ`) | **10** |
+| T5 S3 Pro, any `BOARD_HAS_PSRAM` board | 80 | **80** |
+
+The two rules:
+
+1. `HalPowerManager::lowPowerFloorMhz()` returns `BLE_SAFE_FREQ` = 80 while
+   `esp_bt_controller_get_status()` says enabled, otherwise `LOW_POWER_FREQ`
+   (`lib/hal/HalPowerManager.cpp:18-27`). That is the BLE rule, above.
+2. `LOW_POWER_FREQ` itself is **80 where `BOARD_HAS_PSRAM`, 10 where not**
+   (`lib/hal/HalPowerManager.h:29-33`). That is the PSRAM rule, and it does not
+   ask about the radio at all.
+
+The T5 S3 Pro build is a PSRAM build: `[env:t5s3pro]` sets `board =
+esp32-s3-devkitc1-n16r8` (on `release/lilygo-t5-s3-pro`), and that board
+definition carries `-DBOARD_HAS_PSRAM` with `memory_type` `qio_opi`
+(`~/.platformio/platforms/espressif32/boards/esp32-s3-devkitc1-n16r8.json`).
+PSRAM is not incidental on this board either: `LgfxEpdDriver` keeps its 8-bit
+grayscale canvas there, so PSRAM sits in the hot path of every render.
+
+**Consequence for the GNSS map.** In GNSS mode the map never brings the BT
+controller up -- `bleInUse_ = SETTINGS.mapGnssPosition == 0`
+(`src/activities/map/MapActivity.cpp`, `onEnter`, on
+`release/lilygo-t5-s3-pro`), and `BlePositionServer::begin()` sits behind it.
+Rule 1 stops applying and rule 2 takes over at the same number. A radio-down
+GNSS session on T5 S3 Pro idles at 80 MHz, exactly like a BLE session. The
+radio still costs what it costs; the clock is not part of that saving.
+
+So **M13 in the scoreboard above -- "10 MHz vs 80 MHz idle floor, radio down"
+-- is an X4 experiment and does not transfer.** On a PSRAM board there is no
+lower clock to compare against. The equivalent question there is light sleep
+versus 80 MHz.
+
+### Why PSRAM forbids the crystal
+
+Same shape as the BLE bug in "Why 10 MHz breaks BLE": the defence exists in
+ESP-IDF and compiles out of this firmware. Read off the pinned tree,
+`~/.platformio/packages/framework-espidf` (`version.txt`: 5.5.2.260206):
+
+1. On S3 the MSPI clock -- the bus that flash **and** PSRAM hang off -- is bound
+   to the CPU's clock source: `#define MSPI_TIMING_LL_FLASH_CPU_CLK_SRC_BINDED 1`
+   (`components/hal/esp32s3/include/hal/mspi_ll.h:52`).
+2. So dropping the CPU to the crystal has to retune MSPI timing in the same
+   breath. `esp_clk_utils_mspi_speed_mode_sync_before_cpu_freq_switching()`
+   does it -- `if (target_cpu_src_freq <= clk_ll_xtal_load_freq_mhz())
+   mspi_timing_change_speed_mode_cache_safe(true)`
+   (`components/esp_hw_support/clk_utils.c:30-49`), with the mirror-image call
+   after a switch back up.
+3. **Its only callers are in `esp_pm`**: `components/esp_pm/pm_impl.c:708` and
+   `:715`, plus `pm_c5_flash_freq_limit.c:66,74`. And `esp_pm_configure()`
+   returns `ESP_ERR_NOT_SUPPORTED` outright without `CONFIG_PM_ENABLE`
+   (`pm_impl.c:435-439`), which this firmware does not set -- same reason the
+   BLE controller's `ESP_PM_APB_FREQ_MAX` lock is absent.
+4. Arduino's `setCpuFrequencyMhz()`, which is what `setPowerSaving()` actually
+   calls, goes straight to `rtc_clk_cpu_freq_set_config_fast()`
+   (`framework-arduinoespressif32/cores/esp32/esp32-hal-cpu.c:283`). It has no
+   MSPI or PSRAM handling anywhere in the file -- only the APB callback list
+   and, on targets with dynamic APB, `rtc_clk_apb_freq_update()`.
+
+So at 10 MHz on a PSRAM S3 the CPU leaves the PLL and MSPI keeps timing tuned
+for a clock that is gone. Flash and PSRAM both sit on that bus, so the failure
+is not a slow board.
+
+**This is the second subsystem in this firmware whose safety depends on a lock
+inside `#ifdef CONFIG_PM_ENABLE`.** BLE was the first. Treat any future
+"just throttle harder" idea as needing this check first.
+
+### What is not known
+
+- **Not measured: what a sub-80 clock actually does on a PSRAM board.** The
+  reading above predicts a hang or memory corruption rather than a slow device.
+  Nobody has tried it. Do not try it on the reference device without an
+  archived fallback build (`../../docs/firmware-builds/`).
+- **Not measured: what the 80 MHz floor costs on T5 S3 Pro.** Every idle-floor
+  number in the scoreboard is X4.
+- **Not ours: where the 80 came from.** The `#if BOARD_HAS_PSRAM` arrived from
+  upstream CrossPoint in `f42fab1c` ("feat: Add touch coordinate mapping and
+  RTOS task yielding", #2481, 2026-07-20) with no comment and no upstream doc.
+  The mechanism above is our reading of the IDF, not upstream's stated reason,
+  and it agrees with the choice.
 
 ## NimBLEDevice::init() hangs solid in low-power mode
 
@@ -1103,6 +2345,23 @@ never arrives.
 With the 80 MHz floor this only applies where the floor does not: screens with
 the BLE controller down, Home among them.
 
+**Reproduced on an Xteink X3, 2026-09-09**, so this is not an X4 quirk. Same
+shape as the 2026-08-16 run: after the device sat idle on Home,
+`CMD:GOTO_MAP`, `CMD:BUTTON` and `CMD:SCREENSHOT` all went unanswered for six
+minutes while the 10 s `[MEM]` heartbeat kept printing and the reported free
+heap stayed identical to the byte. **That combination reads like a hung main
+loop and is not one** -- it is a live device that cannot hear you, and the
+session spent those six minutes deciding whether the firmware had crashed. A
+button press on the device, then the same commands, worked immediately.
+
+**Do not read a low-power log line as the board's floor.** The same X3 printed
+`Going to low-power mode (80 MHz)` on the map screen, which is `BLE_SAFE_FREQ`
+because the BT controller was up (`lowPowerFloorMhz()`,
+`lib/hal/HalPowerManager.cpp`), not a per-board tier. The X3 has no PSRAM, so
+with the radio down its floor is `LOW_POWER_FREQ` = 10 MHz -- and 10 MHz is the
+state that starves RX. A session that reads 80 MHz off the map screen and
+concludes the board never throttles below it has the mechanism backwards.
+
 
 ### The RX side after idle: observed, not explained
 
@@ -1128,6 +2387,59 @@ idle, same cable, same port, and compare. If both fail, the clock is innocent.
 Practical consequence either way: **a host that needs the console should reset the
 device and talk inside the boot window**, or drive the map screen, which holds the
 clock up while BLE is running.
+
+**Reproduced 2026-09-01 on a LilyGo T5S3 Pro (ESP32-S3, not the X4's C3).** Same
+shape but not "straight after a flash" -- `CMD:GOTO_MAP` was ignored across
+several attempts spanning minutes of idle (heap log kept ticking every 10 s, so
+the loop was alive), months after the device's last flash. The same DTR/RTS
+reset + send-inside-the-3s-boot-window recipe worked. So this is not a C3-only
+or fresh-flash-only quirk -- same symptom on a different chip, after arbitrary
+idle time, not just right after upload.
+
+**Third occurrence, 2026-11-03, on an X4 Pro (ESP32-S3).** Same shape again:
+`CMD:SCREENSHOT` and `CMD:BUTTON` both answered nothing while the `[MEM]`
+heartbeat kept printing on schedule, about ten seconds after a flash. The boot
+log read `[5467] [PWR] Going to low-power mode (80 MHz)` -- **80 MHz, not 10**,
+because this is a PSRAM board and 80 is its floor. The commands that failed
+were all sent after that line; a screenshot taken inside the boot window had
+worked a minute earlier.
+
+That is worth recording precisely because it does **not** fit "the low clock
+deafens the RX" cleanly: 80 MHz is eight times the clock the original X4
+observation blamed, and the symptom is identical. So if the clock is involved
+at all, it is **being in the throttled state** rather than any particular MHz
+number. The experiment proposed above is still the one that would settle it,
+and still has not been run.
+
+One thing that fits the throttled-state reading without proving it:
+`docs/serial-button-injection.md` records that an injected press counts as user
+input in `loop()` for both the auto-sleep deadline and the CPU throttle. That
+explains why a board stays responsive for a long walk through the UI once the
+first command lands -- every press un-throttles it again -- and why a board
+that has already gone deaf cannot be rescued by sending one, since the press
+would have to arrive through the channel that is not listening. It is a
+consistent story, not evidence: nothing here rules out a cause that merely
+correlates with the throttle.
+
+The recipe worked first try, same as both earlier times: reset with
+`esptool --chip esp32s3 --port <by-id> --no-stub chip-id`, then send the
+command about 3 s later -- after `Entering activity: Home` (2.4 s on this
+board) and before the low-power switch (5.5 s). Sending immediately on reset
+is too early: the app is not up and the reply never comes.
+
+**And be careful reaching for a "passive" pyserial reader to watch what the
+device says instead.** It appears to reset the board even with `dtr`/`rts` set
+false before `open()`: on 2026-11-03 a 12-second capture came back holding the
+boot log from `[587]` to `[10009]` and then nothing, on a board that had been
+reset by esptool a minute or more earlier -- the shape of a board that booted
+*when the port opened*, not one that had been up a while.
+
+**Observed once, and the obvious alternative is not excluded**: the board may
+have reset itself seconds before the read for an unrelated reason. What would
+settle it: open the port while a known-high `[MEM]` timestamp is ticking and
+see whether the timestamps restart from zero. Until then, treat a pyserial
+capture as possibly disturbing what it observes, and prefer a tool that already
+handles the port (`tools/screenshot_gate.py`, `tools/mapcmd.py`).
 ## The fix
 
 **Every `CMD:` handler runs at full CPU.** `main.cpp` calls
@@ -1149,3 +2461,75 @@ Same rule for any *other* programmatic path that switches activities or talks to
 the radio without a button press behind it (an automation hook, a BLE command
 that switches screens): it needs the same call. This is a class of bug, not a
 one-off.
+
+## The BQ27220 already reads current, and throws it away
+
+`BatteryMonitor.cpp:211` reads register `0x0C` (average current, signed mA) and
+uses it **only** to decide the sign of `charging`. The public `Status` struct
+carries percentage, millivolts, `charging` and `externalPower`, and **no current
+field** (`BatteryMonitor.h`, the `Status` fields). Read off the code 2026-09-01,
+not measured.
+
+So on a board with this gauge the power campaign needs **no external meter**.
+One way to get it is `currentMa` plus a `currentKnown` flag added where `0x0C`
+is already read; the firmware took the other way, below.
+
+**Half done, and the better half.** `CMD:BATT` on this branch reads `0x08`,
+`0x2C`, `0x0C` and the charger's `0x0B` straight off the bus and answers
+`BATT:mv=4102 pct=100 curr_ma=-38 chg=1 gauge=0x55 charger=0x6b`
+(`src/main.cpp`, the `BATT` case). A field it cannot read prints `?`. It does
+this from our side on purpose rather than adding a field to `BatteryMonitor`,
+and it is `env:t5s3pro` only. **So a state can be priced on the bench today, by
+hand, with no meter and no SDK change.**
+
+Two things it is not. It is **not in `power.csv`**, so it prices a state
+somebody is standing in front of and says nothing about a ride -- which is
+exactly what the 2026-09-03 ride needed and did not have. And the sign is TI's:
+**positive into the cell**, so a charging board reports the opposite of what
+"draw" suggests, and a reading taken over USB is about the charge path.
+
+A logged column was written the same day and dropped unmerged. Two design
+points from it are worth keeping whenever it is written for real: the column has
+to be **empty rather than 0** on a board with no gauge, because 0 is a real
+reading on a rested cell; and `tools/powercsv.py` zips by column name, so a new
+column costs an older reader nothing. T-250.
+
+One stale comment to know about, not fixed here: the `CMD:BATT` block explains
+its from-our-side approach with "editing freeink-sdk, which is upstream's repo
+and whose submodule pointer stays on upstream main". **That stopped being true
+on 2026-09-03**, when the SDK was forked -- the same expiry that moved T-247.
+The approach is still the right one; only the reason given for it is out of
+date.
+
+**And charging can be switched off from the console** since 2026-09-12, which is
+what makes a VBUS reading board draw rather than board-plus-charger:
+`CMD:CHARGE OFF` (`charge-control.md`), measured at 370 mA charging against
+102 mA with charging disabled on the T5 S3 Pro. **With that, a feature can be
+priced in minutes**: `power-bench.md` has the A-B-A method and the first
+results -- BLE advertising **+11.7 mA**, the frontlight **+29.7 mA at 40 %** and
+**+72.4 mA at 100 %**, all at VBUS, all on one binary.
+
+**And there is a second instrument now**, since 2026-09-03: a Joy-IT JT-UM120
+USB meter, read with `tools/usbmeter_read.py --live` (parent `CLAUDE.md`, "The
+USB meter hangs if you write to it"). It is not a substitute here -- it reads
+VBUS with a charger in the path, not the cell -- so it prices a state only where
+the charge path is understood. `docs/usb-power-meter.md` has what a VBUS number
+does and does not mean.
+
+**The 2026-09-03 ride is what makes this the next thing to do, not a nice-to-have.**
+That ride's panel work swung 4x while the gauge's SoC held flat and the voltage
+slope swung 3.4x, and with no current column there was no way to read which of
+the two was describing the ride -- it had to be argued from the shape of the SoC
+steps. A `curr_ma` column in `power.csv` turns per-state attribution from a
+day-long discharge into a minute of log ("The T5 S3 Pro's first ride").
+That is a small change in `freeink-sdk`, which is upstream, so it is a candidate
+for the same PR queue as the frontlight fix rather than a local fork.
+
+Two caveats, both of which decide whether a number means anything:
+
+- The gauge measures **battery** current. A reading taken with USB attached is
+  about the charge path, not about what the device draws. Unplug USB and read on
+  the cell.
+- It needs a cell attached at all. Whether this board has one is **assumed** as
+  of 2026-09-01, from conversation rather than from the device -- see
+  `gnss.md`, "The experiment was run", for the two free ways to check.

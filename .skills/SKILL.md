@@ -194,6 +194,45 @@ if (Storage.openFileForRead("MODULE", "/path/to/file.bin", file)) {
 * Private Members: memberVariable (no prefix)
 * File Names: Match Class names (e.g., EpubReaderActivity.cpp)
 
+### Comments Answer WHY, Not WHAT
+
+**A comment's primary job is to say why the code is the way it is.** What it does
+is already in the code; why it is there usually is not.
+
+Measured in this repo, 2026-08-31: two reviewers read `lib/Gnss/` cold, with its
+topic doc withheld, and answered nine of ten questions about it correctly. Every
+one of those nine landed on a comment saying *why* -- why GGA's time field is
+unused, why GSV accumulates and commits per cycle, why checksum and framing
+errors are separate counters. **The one failure was the one place documented only
+by what**: `timeToFirstFixMs()` said "milliseconds from begin() to the first valid
+fix", which is accurate and complete as a description, and both readers concluded
+a fast acquisition from it. One called a 530 ms reading a "cold-start
+acquisition", which is physically impossible. The author had made the same
+mistake from the same code that morning.
+
+A conclusion the code invites is the code's problem. Three consequences:
+
+* **Put the why where the reader is when they are tempted to break it.** The
+  reasoning for skipping GGA's time sat *after* the skip; a reader arriving to
+  improve the function met the unparsed field first. It is now at the top of
+  `parseGga()`, where it acts as a regression guard.
+* **A why that rests on a measurement names the measurement.** "about 816 B/s,
+  measured 2026-08-31" survives a reader who does not trust you. "fast" does not.
+  Same discipline as Documenting Findings below.
+* **If the why is load-bearing at runtime, a comment is not enough.** `poll()`
+  carried a true, measured warning that a blocked caller loses sentences -- and a
+  real loss happens inside the UART driver, so **84 of 85 lost sentences moved no
+  counter**. The fix was `rxNearlyFullEvents()`, not better prose. Test: if a
+  comment tells the reader to avoid something, ask how they would know they
+  failed. No answer means it is a wish.
+
+WHAT earns its place only where the code cannot be read: a named algorithm whose
+steps mean nothing locally (`days_from_civil`'s era arithmetic), bit layouts,
+register sequences, datasheet formulas. There the comment is a translation.
+
+Full version, including why a rename often beats a comment and what a WHAT
+comment costs: `docs/code-comments.md` in the parent repo.
+
 ### Header Guards
 * Use #pragma once for all header files.
 
@@ -565,6 +604,13 @@ Running it over all of `src/` reformats files that carry pre-existing drift and
 buries the real diff in churn. Never undo that churn with an inverse-grep
 `git checkout --` -- it silently reverts your own edits in every file the grep
 did not happen to name.
+
+**Never run `clang-format` on a non-C-family file** (a `.py` script, a `.md`
+doc). It does not error -- it silently mangles things like a shebang line
+(`#!/usr/bin/env python3` became `#!/ usr / bin / env python3`, 2026-10-20,
+still valid Python so nothing caught it until a harness diff warning did).
+The grep above already scopes to `.cpp`/`.h` for exactly this reason; do not
+run the tool by hand outside it.
 
 ### Debugging Crashes
 
@@ -966,8 +1012,16 @@ PNG. Its `--selftest` round-trips the byte packing through
 `tools/screenshot_gate.py`'s proven decoder and needs no device -- run it after
 touching either end of the layout.
 
-**Untested on hardware** as of 2026-08-07: builds clean, the byte layout is
-proven by the selftest, but nothing has been on the glass yet.
+**Confirmed on hardware 2026-08-21.** A 480x800 render pushed with
+`tools/show_on_device.py` landed on the panel, and `CMD:SCREENSHOT` read the
+framebuffer back **bit-identical** -- 0 of 384,000 pixels differed from the file
+that was sent. So the two commands really are inverses, and the whole path
+(paced 256-byte chunks, RenderLock across read and refresh, FULL_REFRESH) works
+end to end. It replaced the previous "untested as of 2026-08-07" note.
+
+The frame was a `test/map_preview` render of the POI marks, pushed to judge a
+9 px glyph on the glass -- which is the use this command was built for: a laptop
+LCD cannot answer that question.
 
 ### `CMD:SCREENSHOT_GRAY` -- the same channel, with the grey
 
@@ -1086,7 +1140,8 @@ Existing topic docs: `docs/eink-grayscale.md`, `docs/file-formats.md`,
 `docs/power-management.md`, `docs/sleep-screen.md`,
 `docs/map-observation-mode.md`, `docs/map-memory.md`, `docs/zoom-rungs.md`,
 `docs/map-menu.md`, `docs/place-labels.md`, `docs/refresh-modes.md`,
-`docs/wallet-viewer.md`, `docs/wallet-crypto.md`, `docs/wallet-grey.md`.
+`docs/wallet-viewer.md`, `docs/wallet-crypto.md`, `docs/wallet-grey.md`,
+`docs/nearby-menu.md`, `docs/map-chrome-register.md`.
 Extend one before adding another.
 
 `docs/power-plan.md` is not a topic doc -- it is the running power-measurement
@@ -1126,6 +1181,11 @@ Two hard rules, both about trust:
   more than no doc at all -- especially for panel behaviour, where much of it is
   empirical and two hardware-observed comments in this tree already contradict
   each other.
+* **A migration/decision function's no-op branch should still log at DBG.** A
+  silent `Nothing` return makes a hardware capture unable to tell "nothing to
+  do" from "never ran" -- found 2026-10-31 testing `CardRootMigration.h` on an
+  X3, the same gap `GroupFiles.h`'s own `/trailink/team` -> `/trailink/group`
+  migration already had and was fixed the same day.
 
 Never write "deterministic", "bounded" or "cannot spin" in a comment until you
 have checked it. Twice on 2026-08-13 a claim of that shape was committed and
@@ -1147,3 +1207,14 @@ Note that `SCOPE.md` and the `scope-discipline` skill are inherited and still
 phrased around reading. Their reasoning holds -- one thing done well, the RAM
 gate, prefer no code -- but read "reading experience" as "navigation" until they
 are rewritten.
+
+## A feature nobody can use yet stays on its own branch
+
+**Decision, 2026-09-16.** Tests and a hardware pass make a merge safe; they do
+not make it worth doing. A feature no user can reach -- because its transport,
+its screen or its data source does not exist yet -- stays on its own branch, is
+synced *from* `develop` rather than into it, and is pushed. **Do not propose
+merging one**: from inside the diff it always looks ready. `docs/branching.md`,
+"A feature nobody can use yet stays on its own branch", has the reasoning; the
+register of which branches these are lives in the parent repo's
+`docs/feature-branches.md`.

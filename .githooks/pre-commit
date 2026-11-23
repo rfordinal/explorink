@@ -13,10 +13,17 @@ while IFS= read -r -d '' file; do
   staged_files+=("${file}")
 done < <(git diff --cached --name-only -z --diff-filter=ACMR)
 
-# Intentionally format all currently modified tracked C/C++ files.
+# Format only the C/C++ files this checkout has actually modified -- `-g` is
+# `git ls-files --modified`, staged or not.
+#
+# Without `-g` the helper formats every tracked C/C++ file in the repo, which is
+# what this hook used to do while the comment above it claimed otherwise.
+# Measured 2026-09-09: 544 files in scope, 35 of them rewritten, 13 in
+# src/activities/map alone. In a repo several sessions work at once that lands
+# other people's files in your working tree, reformatted, on your commit.
 # The helper handles no-op cases and exits 0 when nothing matches.
-echo "Running clang-format fix before commit..."
-./bin/clang-format-fix
+echo "Running clang-format fix on modified files before commit..."
+./bin/clang-format-fix -g
 
 # Ensure formatting changes are included in the pending commit without
 # staging unrelated tracked modifications from other files in the

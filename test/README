@@ -14,6 +14,10 @@ Run a single suite directly:
 Google Test is fetched via CMake FetchContent on first configure; the pinned
 version lives in test/CMakeLists.txt.
 
+gnss_sky_view covers the satellite wait screen's projection: azimuth and
+elevation to a pixel, the signal buckets and the mountain ridge profile
+(docs/gnss-acquire.md).
+
 Three targets here are host tools, not gtest suites, so ctest does not run them:
 
   map_preview  renders a map frame with the device's own MapRenderer --
@@ -36,3 +40,29 @@ Three targets here are host tools, not gtest suites, so ctest does not run them:
                window, which tools/greyshot.py decodes off-device;
                `--synth-grey DIR` writes a synthetic grey tree to render --
                docs/wallet-grey.md
+  map_window   the map screen at 480x800 in an SDL2 window: a replayed ride or
+               a position you choose, the real decisions and the real renderer
+               together, a menu for rungs/modes/layers, and the map module's own
+               log -- docs/map-follow.md, "map_window"
+
+map_window needs SDL2 (`apt install libsdl2-dev`). Without it CMake skips that
+one target and everything else still configures.
+
+These live in test/build/, which is gitignored -- so a worktree that is removed
+takes its binaries with it. Rebuild in whichever checkout you are using:
+
+  cmake -S test -B test/build && cmake --build test/build --target map_window
+
+A new file under src/ that a *shared* unit calls -- MapRenderer,
+MapPreviewPipeline, anything several suites link -- must be added to **every**
+test target that links that unit, not only to the new suite's own
+CMakeLists.txt. The symptom is a link error that reads like a missing
+implementation:
+
+  undefined reference to `MapPointSource::MapPointSource(IFileSource&, ...)'
+
+MapTileReaderGoldenTest stopped linking when the point layer landed, because
+test/map_tile_reader/CMakeLists.txt never gained MapPointReader.cpp,
+MapPointSource.cpp and MapPointMarks.cpp while MapRenderer.cpp started calling
+into them. Fixed 2026-08-22. Grep the new file's class name across
+test/*/CMakeLists.txt after adding one.

@@ -68,8 +68,9 @@ the store is inside the heap-allocated activity, not static.
 
 ## The log on the card
 
-`/trailink/pins/pins.log`. The `/trailink` prefix stays: the on-card layout is
-infrastructure not yet renamed (parent `CLAUDE.md`, Naming).
+`/explorink/pins/pins.log`. Renamed from `/trailink/pins/pins.log` 2026-10-31
+(`src/CardRootMigration.h`); a card carrying old data gets it moved on first
+boot with the new firmware.
 
 One record per line, ASCII, `\n`-terminated:
 
@@ -102,7 +103,7 @@ v1|4|1755400000|60000|rep|parking|2|484372000|170186000||0afa87b9
   over every byte **before the final separator**, 8 lowercase hex digits.
 
 ASCII rather than binary, deliberately: the card gets read on a laptop, and
-`/trailink/power.csv` set that precedent.
+`/explorink/power.csv` set that precedent.
 
 ### Writing
 
@@ -151,6 +152,13 @@ whether it ever discards.
 
 Added to the existing grammar (`MapCommandParser.h`), so the USB serial console
 and the BLE command characteristic cannot drift.
+
+Answered on both screens that build a `MapConsoleState` -- the map screen and
+the Sync map tiles screen (`TileSyncActivity`) -- each with its own `MapPins`
+rebuilt from the card in `onEnter()`. No popup on the Sync screen: the phone
+does the managing, the device just answers the wire the same way it does on
+the map. Any other screen has no `IMapPinsSource` wired in, so `pin` there
+answers `INFO pins=unavailable`.
 
 ```
 pin set <key> <lat> <lon> [<utc>]   create or replace, from anywhere
@@ -256,25 +264,82 @@ Camp                   -      Meet
 - The distance column is the popup's existing value column
   (`showWithValues()`), and it is `-` when there is no fix to measure from.
   Never `0 m`: zero is a real distance and reads as "you are standing on it".
-- Add / Replace lists all ten catalogue slots and scrolls inside the popup's
+- Add / Replace lists all eleven catalogue slots and scrolls inside the popup's
   six-row window. List length costs one refresh per selection step and no RAM
   (`BaseTheme::optionPopupGeometry()`).
 - A pin whose key this build does not know shows the raw key, and can still be
   shown, replaced and deleted.
+- **Added 2026-08-26: each Add / Replace row carries the same 22px glyph the
+  pin's own balloon draws on the map** (`PinIcons.h::pinGlyphIcon()`, wrapping
+  the existing `pinGlyphBits()` bitmaps as a `freeink::Icon`), through a new
+  icon column on `OptionPopup` (`BaseTheme::OptionPopupSpec::icons`,
+  `OptionPopup::setIcons()`) that Nearby's category list
+  (`docs/nearby-menu.md`) uses the same way for its POI icons. **Untested on
+  hardware** -- read off the code that the 22px glyph fits the compact popup's
+  row height; not measured, not on the panel.
 
 ### What is confirmed, and what a save refuses
 
-- **Replace is always confirmed** -- `Replace Parking with current location?`,
-  `Cancel` first so the destructive row is never under the cursor.
+- **Replace is always confirmed** -- `Replace Parking here?`, `Cancel` first so
+  the destructive row is never under the cursor. Shortened from `Replace
+  Parking with current location?` 2026-08-24, alongside the wrap fix below --
+  worth trimming on its own, not just because it now has to fit.
 - **Delete is always confirmed.** Nothing on the card is erased; a `del` record
   is appended.
 - **An empty slot saves with no confirmation** -- unless the fix is old, and then
-  it asks anyway, with the age in the question: `Replace Camp with current
-  location? (fix 7 min old)`. This is a deliberate addition to the plan, which
-  said an empty slot never confirms. An unconfirmed save on a stale fix records
-  where the rider *was*, and by the time a notice could say so the position is
-  already written.
+  it asks anyway: `Replace Camp here?`, same question as a normal replace. This
+  is a deliberate addition to the plan, which said an empty slot never
+  confirms. An unconfirmed save on a stale fix records where the rider *was*,
+  and by the time a notice could say so the position is already written. The
+  question used to spell out the age (`... (fix 7 min old)`); dropped
+  2026-08-24 as unnecessary detail for a question whose only two answers are
+  "yes" and "no" -- the confirmation step itself is the warning, not the
+  wording of it.
 - **No fix at all refuses**, with a reason, and never writes 0,0.
+
+**The confirm dialog's title used to run off both edges of the screen.**
+`BaseTheme::drawOptionPopup()` drew the title with `drawCenteredText()`,
+centered on the full panel width with no wrap and no truncation -- fine for
+the popup's usual short static titles, but a dynamic one long enough
+(`Replace Camp with current location? (fix is from the last session)`, the
+wording before the trim above) simply overflowed on both sides instead of
+wrapping, since the dialog box itself is correctly capped to the panel width
+but nothing capped the text drawn on top of it. Reported on the S8
+2026-08-24. Fixed by wrapping the title (`wrapOptionPopupTitle()`,
+`BaseTheme.cpp`) to the same width the dialog box is ever allowed to reach,
+in both `optionPopupGeometry()` (so the dialog reserves the right height) and
+`drawOptionPopup()` (so it actually draws that many lines) -- general to
+every `OptionPopup` title, not pin-specific.
+
+**And even wrapped, the confirm box still came out wider than the list it
+replaces.** The mechanism then was `setSizeHint()`, a floor -- "be no smaller
+than the dialog you replaced" -- and a floor cannot hold a title that wants
+more: a title wrapped to the full-screen budget won `maxTextWidth` on its own
+and dragged the dialog past the hint. Measured on the S8 2026-08-24: the
+Add/Replace list at 280px, a one-line "Replace Base here?" confirm at 363px,
+both hinted at 280.
+
+**Superseded.** The hint is gone. Every popup the map opens now asks for one of
+two fixed boxes instead (`OptionPopup::setSize()`, `Menu` for the lists,
+`Confirm` for `confirmPinReplaceSlot()`/`confirmPinDelete()`), and the title
+wraps to the box's own width in both the layout and the drawing pass. See
+`docs/map-menu.md`, "Two fixed boxes, defined per board" -- it carries the
+reasoning and the metrics.
+
+**Saving to a never-touched catalogue slot was broken until 2026-08-24** --
+every save of an empty slot (including the plain, no-warning case above)
+failed with "Card refused the write", logged as `PINS "no slot for ''"`.
+`confirmPinReplaceSlot()` decided "foreign key, read it off the entry" from
+`entry.catalogIndex >= kPinSlotCount` -- but an empty entry defaults
+`catalogIndex` to `kPinIndexUnknown` (`PinStore.h`), which equals
+`kPinSlotCount`, so every never-saved catalogue slot looked foreign and the
+function read `entry.key` (empty, nothing had ever written it) instead of
+`kPinCatalog[slot].key`. Fixed by checking `slot` itself, which is what
+actually determines foreign-ness in `PinStore` (`MapActivity.cpp`,
+`confirmPinReplaceSlot()`). Found on the S8 after firmware log output was
+routed to `adb logcat` (`explorink-simulator`'s `ANDROID.md`, "`HWCDC`'s
+stderr never reaches `adb logcat`") -- without that, the refusal had no
+visible cause beyond the notice text.
 - "Old" is `MapActivity::kPinStaleFixMs`, 2 minutes, or any frame still showing
   the fix restored from the card. **Not measured, and not the answer to "how old
   is too old"** -- that stays open in `pins-plan.md`. Two minutes is simply longer
@@ -422,7 +487,8 @@ relative to this whole route" is what that frame is for.
 ### Off-screen markers
 
 `mapPinsOffscreen`, **default off**, in Settings (category Map) and over
-`CMD:SETTING mapPinsOffscreen 1`.
+`CMD:SETTING mapPinsOffscreen 1` -- devel builds only, the command is gated on
+`ENABLE_SETTING_CMD` and no release env sets it (`build-environments.md`).
 
 **The marker is the pin, turned so its point aims at where the pin is.** Three
 iterations on the panel got here (2026-08-17):
@@ -447,6 +513,21 @@ Rotation happens at generation time, oversampled and downscaled, because rotatin
 a 1bpp bitmap at 1:1 turns a 3 px outline into dashes. Cost: ~6 KB of flash for
 sixteen frames, no runtime cost, no float per frame beyond one `atan2`.
 
+**The rotation pivot inside `gen_pin_icons.py` is the point (tail tip), not the
+head.** `MapActivity::drawPinEdgeMark()` used to anchor the drawn frame on the
+point, per the "point aims at where the pin is" goal above -- but the head (where
+the glyph sits) then landed at a different screen offset for every one of the 16
+frames, since it swings around the point rather than staying still. Reported from
+the panel 2026-08-23: the glyph looked like it was jumping as the marker turned.
+Fixed the same day by anchoring the *head* instead: `drawPinEdgeMark()` clamps and
+targets `frame.headX/headY` against `pinEdgeArea()`, then back-solves the point
+target from the frame's own point-to-head offset before calling
+`drawPinBalloon()`. The head, and the glyph on it, now sit at the same screen spot
+across all 16 rotations; the point is what swings, and it no longer sits exactly on
+the area boundary -- it now pokes past it by a frame-dependent amount. Accepted
+trade: a moving point reads as an arrow doing its job, a moving glyph read as a
+bug.
+
 **Where a marker may land** is `MapActivity::pinEdgeArea()`: the panel minus
 everything this screen already draws over the map -- the bottom hint bar, the
 side-hint boxes and the compass. The geometry comes from whoever owns each piece
@@ -456,6 +537,37 @@ compass constants), because both of the first two were found the hard way: an
 bottom one sat behind the button bar. On X3 the side hints are one band across the
 full width, which this does not special-case -- read off the code, untested, no X3
 here.
+
+**The distance label is `SMALL_FONT_ID` (8pt) with a white halo, not `UI_10_FONT_ID`
+in an opaque box** (changed 2026-08-23, reported alongside the pivot as too big and
+too bold for what is detail-view chrome, not a primary label). The halo is the same
+technique place labels use (`MapLabels.cpp:315-325`, `kHaloRing`): the string is
+redrawn white at 8 ring offsets for two pixels of radius, then black on top, so the
+map still shows between the letters instead of disappearing under a filled
+rectangle.
+
+**The numeral/letter glyphs baked into a pin's head** (`pin_c1`..`pin_c5`, the
+parking `P`) come from a **regular**-weight system font since 2026-08-23 --
+`DejaVuSans.ttf` / `LiberationSans-Regular.ttf` in `gen_pin_icons.py`'s
+`DIGIT_FONTS`. They were baked bold before that, reported too heavy at the same
+time as the pivot bug.
+
+**The head's centre, for every frame, is a tracked point, not a re-detected
+one.** The first version of this fix still called `head_circle()` -- the same
+"widest interior run in the upper half" scan used to find the glyph's clear
+area on the upright shape -- on each *rotated* frame to find `frame.headX/Y`.
+Confirmed on the S8 the same day: at rotated (non-cardinal) steps the tail's
+own stroke sweeps into that scan and drags the detected centre sideways, well
+off the ring the panel actually draws -- the flag glyph sat visibly left of
+centre inside the head. A circle is rotation-invariant -- only its position
+moves -- so `gen_pin_icons.py` now measures the head's centre once, on the
+upright raster, marks it with a filled dot in a side-channel image, and carries
+that dot through the exact same rotate/resize/crop/pad pipeline the shape
+artwork itself goes through; the dot's centroid in the finished frame is
+`headX/Y`. That tracks the real transform instead of re-guessing it from a
+silhouette the tail can contaminate. The per-frame clear-radius scan stays --
+only step 0's result is ever used (for the glyph's pixel size), and that
+number is unchanged.
 
 **The bearing origin is the rider only while the rider is on the frame.** Panned
 away in Observe mode they are not, and a ray between two points that are both off
@@ -568,3 +680,41 @@ tables are `constexpr` in flash. Flash went 59.5 % to 59.7 %.
 
 Pins will be drawn by `MapActivity`, not `MapRenderer`, so the webapp's firmware
 preview panel will not show them (parent `docs/device-preview.md`).
+
+## A pin under the screen's own furniture
+
+Since 2026-09-15 a pin whose balloon lands on the header, the compass, the scale
+bar, the debug window or a button box is handled as a pin that is off the panel:
+an edge marker when those are on, and a logged count either way. The balloon is
+not moved and not flipped -- the tip is the coordinate, and the shape's rotation
+already carries a direction. `docs/map-chrome-register.md`.
+
+An edge marker is also kept off that furniture, since 2026-09-15: after it is
+clamped into `pinEdgeArea()` it is slid in 8 px steps until its box clears the
+chrome register, and dropped with a `LOG_ERR` if nothing within 80 px does.
+Sliding is allowed there and not for a pin's own balloon, because an edge
+marker's position is already synthetic and its bearing is carried by the shape's
+rotation. Measured on an X4 Pro panel that day: without it, the marker for a pin
+below the panel landed squarely on the scale bar's `5 km`.
+
+## Putting a pin on a chosen pixel, for a placement test
+
+A placement rule is only testable if a pin can be aimed at a known pixel. The
+device takes lat/lon, so the screen position has to be computed back, and the
+anchor has to be measured rather than read from the style: the marker ladder
+moves it off `marker_x_px`/`marker_y_px`.
+
+1. Pin the frame: `pin set c1 <lat> <lon>` at the device's own position after
+   `pos <lat> <lon> heading 0`. Heading 0 makes the frame north-up, so x is east
+   and y is south.
+2. Grab two framebuffers, one before and one after that pin, and diff them. The
+   changed box is the balloon: its **width matches the frame's own** (42 px for
+   step 0), which fixes the tip's x; its bottom fixes the tip's y to within a
+   pixel or two.
+3. With `mpp` from `CMD:INFO` and that anchor `(ax, ay)`, a target pixel
+   `(x, y)` is
+   `lon = lon0 + (x-ax)*mpp/(111320*cos(lat0))` and
+   `lat = lat0 - (y-ay)*mpp/111320`.
+
+Used 2026-09-15 to aim six pins at six pixels on an X4 Pro and settle the chrome
+register on the glass (`docs/map-chrome-register.md`).

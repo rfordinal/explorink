@@ -6,9 +6,12 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <cerrno>
 #include <charconv>
+#include <cstdlib>
 #include <cstring>
 #include <string_view>
+#include <type_traits>
 
 namespace {
 
@@ -100,17 +103,62 @@ constexpr size_t FNV_PRIME =
 
 constexpr size_t fnv1aMix(size_t hash, unsigned char byte) { return (hash ^ byte) * FNV_PRIME; }
 
+// Longest decimal number tryParseNumber will convert; longer input is
+// rejected rather than truncated.
+constexpr size_t MAX_NUMBER_CHARS = 64;
+
 // Parse the entirety of s as a number into `out`. Accepts an optional leading
 // '+' (which std::from_chars rejects by spec) so callers can pass CSS-style
 // signed numbers without manual trimming. Returns false on empty input, a
-// non-numeric suffix, or any from_chars error.
+// non-numeric suffix, or any conversion error.
+//
+// Floating point does not go through std::from_chars: libc++ ships only the
+// integral overloads and deletes the rest, so an Android build of the simulator
+// fails to compile it (docs/simulator-android.md). libstdc++ does implement it,
+// which is why the device and Linux builds never noticed.
 template <typename T>
 bool tryParseNumber(std::string_view s, T& out) {
   const char* begin = s.data();
   const char* end = s.data() + s.size();
   if (begin < end && *begin == '+') ++begin;
-  const auto r = std::from_chars(begin, end, out);
-  return r.ec == std::errc{} && r.ptr == end;
+  if (begin >= end) return false;
+
+  if constexpr (std::is_floating_point_v<T>) {
+    // strtof needs a NUL-terminated string, and it accepts forms from_chars
+    // rejects: hex floats, inf, nan, leading whitespace. Whitelisting the
+    // characters a decimal number can contain shuts all of those out, so on
+    // everything that gets through, strtof and from_chars agree. Verified over
+    // 39 inputs; the only remaining difference is that "inf" and "nan" are now
+    // rejected, which is what CSS wants anyway.
+    const size_t len = static_cast<size_t>(end - begin);
+    if (len >= MAX_NUMBER_CHARS) return false;
+    for (size_t i = 0; i < len; ++i) {
+      const char c = begin[i];
+      const bool allowed = (c >= '0' && c <= '9') || c == '.' || c == '-' ||
+                           c == '+' || c == 'e' || c == 'E';
+      if (!allowed) return false;
+    }
+    char buf[MAX_NUMBER_CHARS];
+    std::memcpy(buf, begin, len);
+    buf[len] = '\0';
+
+    // No setlocale() call exists in this firmware, so the C locale is in force
+    // and the decimal separator is '.', as CSS requires.
+    errno = 0;
+    char* stop = nullptr;
+    T value;
+    if constexpr (std::is_same_v<T, float>) {
+      value = std::strtof(buf, &stop);
+    } else {
+      value = static_cast<T>(std::strtod(buf, &stop));
+    }
+    if (errno == ERANGE || stop != buf + len) return false;
+    out = value;
+    return true;
+  } else {
+    const auto r = std::from_chars(begin, end, out);
+    return r.ec == std::errc{} && r.ptr == end;
+  }
 }
 
 // Collect up to 4 whitespace-separated tokens for a CSS edge-value shorthand

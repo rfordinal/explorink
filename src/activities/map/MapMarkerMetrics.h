@@ -1,5 +1,6 @@
 #pragma once
 
+#include "MapMarkerShape.generated.h"
 #include "MapViewport.h"
 
 // The position marker's dimensions, per zoom rung.
@@ -13,18 +14,52 @@
 // three sizes rather than three shapes.
 constexpr int kMarkerRingDiameter = 54;
 constexpr int kMarkerRingWidth = 3;
-constexpr int kMarkerHikeDotDiameter = 18;
+constexpr int kMarkerHikeDotDiameter = 12;  // was 18 until 2026-10-28, judged too heavy on an X4 Pro panel
 // Hike's heading hand: from the dot out to the ring's inner edge
 // (kMarkerRingDiameter / 2 - kMarkerRingWidth = 24), 4 px wide. The reach must
 // stay inside the patch box's half-extent or a marker move leaves the hand
 // behind on the map -- see the note where it is drawn.
 constexpr int kMarkerHikeHandReach = kMarkerRingDiameter / 2 - kMarkerRingWidth;
 constexpr int kMarkerHikeHandHalfW = 2;
-constexpr int kMarkerCycleTipLen = 16;    // center to tip, pixels
-constexpr int kMarkerCycleBaseHalfW = 9;  // center to each base corner, pixels
+// Tourist/Ride draw a heading arrow whose whole shape (base width, waist notch,
+// shoulders -- see MapMarkerShape.generated.h) is a fixed ratio of this one
+// center-to-tip length, generated from src/components/icons/marker-ride.svg
+// by scripts/gen_marker_shape.py. Only the tip length is a free knob per mode.
+// Still the arrow cycle used, now drawn for tourist. OPEN, 2026-10-27: a
+// walker's heading comes from a phone in a pocket and an arrow is a claim
+// about direction that hike deliberately refuses to make (see the dot above).
+// Left unchanged with the rename because a marker is judged on the panel and
+// nothing has been judged yet -- changing it blind would trade one unargued
+// shape for another.
+constexpr int kMarkerTouristTipLen = 16;
 constexpr int kMarkerRideTipLen = 25;
-constexpr int kMarkerRideBaseHalfW = 18;
 constexpr int kMarkerHaloMargin = 5;  // white backing, past the ring's own radius
+
+// A ring that is not claiming to know where the rider is gets broken into arcs
+// instead of drawn whole (MapFixTrust::MarkerStyle::ringBroken). Eight gaps,
+// punched as white squares on the ring at every other heading step.
+//
+// **A count, not a length.** Fixing the count and letting the gap scale with the
+// rung keeps the shape reading as "a broken ring" at every size; fixing the gap
+// length in pixels would leave the coarse rungs looking like a whole ring with a
+// nick in it, which is the one thing this must not be mistaken for.
+//
+// **Five, and it has to be ODD.** Judged on an X4 Pro panel three times on
+// 2026-10-28. Eight gaps of 8 px took more than half the ring and read as a
+// dotted circle. Four gaps of 5 px took 17 percent and read as a whole ring
+// with nicks. Four gaps of 9 px read as a **crosshair**, which is the worst of
+// the three: four-fold symmetry on a circle is a reticle, and no gap size
+// fixes that because it is the symmetry talking, not the size.
+//
+// An odd count cannot form one. Five leaves enough breaks to read as broken
+// without reading as dots.
+//
+// Positions used to come off the heading table as `i += 16 / count`, which
+// admitted only the divisors of 16 -- 2, 4, 8, 16 -- every one of them even
+// and axis-symmetric. The loop computes `g * 16 / count` per gap now, so any
+// count works and the spacing rounds to whole table steps. At five that is
+// steps 0, 3, 6, 9 and 12: slightly uneven, which helps rather than hurts.
+constexpr int kMarkerRingGapCount = 5;
 
 // The sleep marker: what replaces the live marker on the way into a quick-resume
 // sleep (MapActivity::drawSleepMarker). Deliberately NOT scaled by rung -- it is
@@ -48,9 +83,10 @@ constexpr int kMarkerHaloMargin = 5;  // white backing, past the ring's own radi
 // the dot read as one blob. Per CLAUDE.md a laptop PNG is the wrong medium for
 // this call, so it goes on the panel and gets looked at.
 constexpr int kSleepMarkerRing = 27;
-// Does not scale with the ring. 2 px is the panel's stroke floor
-// (markerMetricsFor() drops to it for every rung below full), and the live
-// marker's 3 px is what this shape should NOT be mistaken for.
+// Does not scale with the ring. It is 2 px because the live marker's 3 px is
+// what this shape must NOT be mistaken for, not because 2 px is any kind of
+// limit -- see markerMetricsFor() for why the old "stroke floor" claim here was
+// wrong.
 constexpr int kSleepMarkerRingWidth = 2;
 constexpr int kSleepMarkerDot = 9;
 // 4.5 rounded up, which also lands on the live marker's own full-scale halo
@@ -75,10 +111,13 @@ struct MarkerMetrics {
   int hikeDot;
   int hikeHandReach;
   int hikeHandHalfW;
-  int cycleTipLen;
-  int cycleBaseHalfW;
+  // Side of the white square punched at each of kMarkerRingGapCount points to
+  // break the ring. Derived from the stroke rather than chosen: a gap has to be
+  // wider than the line it is cutting or it reads as a bruise on the ring
+  // instead of a hole through it.
+  int ringGap;
+  int touristTipLen;
   int rideTipLen;
-  int rideBaseHalfW;
   int haloMargin;
   // The marker's halo box: the unit of every partial operation. Everything the
   // marker can draw is inside it (the halo is the outermost thing
@@ -94,21 +133,63 @@ constexpr int markerScaled(int fullSize, uint8_t scale8) {
   return scaled > 0 ? scaled : 1;
 }
 
-constexpr MarkerMetrics markerMetricsFor(uint8_t scale8) {
+// A length scaled by the style's own percentage first, then by the rung.
+// Applied to the FULL size rather than to scale8, because scale8 is eighths
+// and cannot express a 30 percent step: 8/8 to 6/8 is 25 percent and 5/8 is
+// 37.5, with nothing between them.
+constexpr int markerScaledPct(int fullSize, uint8_t scale8, int pct) {
+  return markerScaled(fullSize * pct / 100, scale8);
+}
+
+// `pct` is MapStyle::markerScalePct: 100 leaves every number below exactly
+// where it was, so a style that never set it is byte-identical.
+//
+// Strokes are deliberately NOT scaled by it, the same rule the rung scale
+// already follows below: a ring is a shape and its outline is a line, and a
+// thinner line at a smaller shape would fade rather than shrink.
+constexpr MarkerMetrics markerMetricsFor(uint8_t scale8, int pct = 100) {
   MarkerMetrics m{};
-  m.ring = markerScaled(kMarkerRingDiameter, scale8);
-  // Strokes do not scale with the shape: a 3 px ring is already near the
-  // thinnest line that survives on this panel at arm's length, and 2 px is the
-  // floor. Same for the hand's half-width.
+  m.ring = markerScaledPct(kMarkerRingDiameter, scale8, pct);
+  // Strokes do not scale with the shape, and the two values below are a
+  // **choice that has never been judged on a panel**, not a limit.
+  //
+  // The comment that stood here until 2026-09-05 said 3 px was "near the
+  // thinnest line that survives on this panel at arm's length" and that 2 px
+  // was "the floor". Both are wrong, and nothing ever measured them. The map
+  // itself is the counter-evidence: the road style floors a visible class at
+  // **1 px** (docs/map-style.md, "floors a visible class at 1 px"), tertiary
+  // and unclassified roads draw as 1 px hairlines, and a 1 px line across a
+  // bend of the Morava was spotted on the panel on 2026-08-08. If 1 px were
+  // under the panel's floor, half the road network would be invisible.
+  //
+  // The claim most likely slid in from toneWayInterior's real 2 px floor, which
+  // is about **dither fill**, not strokes: a 1 px dither reads as a dashed line
+  // and a dash already means water (docs/map-style.md).
+  //
+  // So this stays 3/2 for now because that is what the panel has been showing,
+  // not because thinner was ruled out. T-259 puts 1, 2 and 3 px rings side by
+  // side on the glass; a thinner ring at the coarse rungs would put less ink
+  // over the map exactly where the marker starts hiding what it points at.
+  // Same for the hand's half-width.
   m.ringWidth = scale8 >= 8 ? kMarkerRingWidth : 2;
-  m.hikeDot = markerScaled(kMarkerHikeDotDiameter, scale8);
+  m.hikeDot = markerScaledPct(kMarkerHikeDotDiameter, scale8, pct);
   m.hikeHandReach = m.ring / 2 - m.ringWidth;
   m.hikeHandHalfW = kMarkerHikeHandHalfW;
-  m.cycleTipLen = markerScaled(kMarkerCycleTipLen, scale8);
-  m.cycleBaseHalfW = markerScaled(kMarkerCycleBaseHalfW, scale8);
-  m.rideTipLen = markerScaled(kMarkerRideTipLen, scale8);
-  m.rideBaseHalfW = markerScaled(kMarkerRideBaseHalfW, scale8);
-  m.haloMargin = markerScaled(kMarkerHaloMargin, scale8);
+  // Ring over count, which keeps the BROKEN FRACTION near 31 percent of the
+  // circumference whatever the count is: changing the count changes the
+  // rhythm and not the weight.
+  //
+  // Derived from the RING and not from the stroke that draws it. A gap is a
+  // piece of the shape -- it is how much of the ring is missing -- so it has
+  // to scale with the shape at every rung and every marker percentage. Sizing
+  // it off ringWidth was the bug behind the panel reading the ring as a dotted
+  // circle on 2026-10-28: the stroke deliberately does not scale, so the gaps
+  // stayed full size while the circumference shrank by 30 percent.
+  m.ringGap = m.ring / kMarkerRingGapCount;
+  if (m.ringGap < m.ringWidth + 1) m.ringGap = m.ringWidth + 1;
+  m.touristTipLen = markerScaledPct(kMarkerTouristTipLen, scale8, pct);
+  m.rideTipLen = markerScaledPct(kMarkerRideTipLen, scale8, pct);
+  m.haloMargin = markerScaledPct(kMarkerHaloMargin, scale8, pct);
   m.box = m.ring + 2 * m.haloMargin;
   return m;
 }
@@ -133,3 +214,24 @@ constexpr bool markerHandFitsAtEveryRung() {
 }
 static_assert(markerHandFitsAtEveryRung(),
               "hike heading hand must stay inside the marker patch box at every rung, or a move smears it");
+
+// The uncertainty wedge (MapFixTrust::MarkerStyle::Head::Wedge) needs no bound
+// of its own: its two edges run out to hikeHandReach in the directions one
+// heading step either side of the fix, so every vertex sits on the same circle
+// the hand's tip does and the assert above already covers it. Using the heading
+// table for those two directions is what makes that true -- an arbitrary angle
+// would not land on that circle in integer arithmetic.
+
+// Same bound, for Tourist/Ride's heading arrow: its farthest vertex
+// (kMarkerArrowMaxReachPermille, from marker-ride.svg) scaled by tipLen must
+// stay inside the patch box too, or a move leaves it behind on the map.
+constexpr bool markerArrowFitsAtEveryRung() {
+  for (int step = 0; step < MapViewport::kZoomStepCount; ++step) {
+    const MarkerMetrics m = markerMetricsFor(MapViewport::kZoomLadder[step].markerScale8);
+    if (m.touristTipLen * kMarkerArrowMaxReachPermille / 1000 > m.box / 2) return false;
+    if (m.rideTipLen * kMarkerArrowMaxReachPermille / 1000 > m.box / 2) return false;
+  }
+  return true;
+}
+static_assert(markerArrowFitsAtEveryRung(),
+              "cycle/ride heading arrow must stay inside the marker patch box at every rung, or a move smears it");

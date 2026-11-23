@@ -13,6 +13,11 @@
 #include <vector>
 
 #include "CrossPointSettings.h"
+#if defined(ENABLE_LORA_MESH) && ENABLE_LORA_MESH
+// For the two Group rows that drive the running node rather than a field:
+// kLoraBeaconChoices, loraPresenceSetBeacon(), loraPresenceSetName().
+#include "lora/LoraPresence.h"
+#endif
 #include "KOReaderCredentialStore.h"
 #include "ReaderFontSizes.h"
 #include "activities/settings/SettingsActivity.h"
@@ -191,16 +196,31 @@ inline SettingInfo buildDictionarySetting(const std::vector<DictionaryEntry>& di
 inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* registry = nullptr,
                                                 const std::vector<DictionaryEntry>* dictionaries = nullptr) {
   static const std::vector<SettingInfo> baseList = [] {
-    // Enum settings are persisted as numeric values. Assign these labels by enum
-    // value so a reordered menu or enum cannot silently swap their behavior.
-    std::vector<StrId> sleepScreenValues(CrossPointSettings::SLEEP_SCREEN_MODE_COUNT);
-    sleepScreenValues[CrossPointSettings::DARK] = StrId::STR_DARK;
-    sleepScreenValues[CrossPointSettings::LIGHT] = StrId::STR_LIGHT;
-    sleepScreenValues[CrossPointSettings::CUSTOM] = StrId::STR_CUSTOM;
-    sleepScreenValues[CrossPointSettings::LOCATION] = StrId::STR_LOCATION;
-    sleepScreenValues[CrossPointSettings::LOCATION_CUSTOM] = StrId::STR_LOCATION_CUSTOM;
-    sleepScreenValues[CrossPointSettings::BLANK] = StrId::STR_NONE_OPT;
-    sleepScreenValues[CrossPointSettings::QUICK_RESUME] = StrId::STR_QUICK_RESUME;
+    // The menu offers five of the seven stored modes -- Custom and
+    // LocationCustom dropped (docs/settings-menu.md, "Pruning Sleep Screen"):
+    // both relied on a BMP, and the only on-device way to set one,
+    // BmpViewerActivity::doSetSleepCover()'s "set as sleep screen" action, has
+    // no path to it from Home today (the reader-era file browser it needs is
+    // itself unreachable -- grep `goToFileBrowser` callers). QuickResume stays:
+    // it is NOT the same thing as the independent STR_QUICK_RESUME_TIMEOUT row
+    // below -- that toggle only applies to an auto-sleep-from-timeout
+    // (main.cpp:2804-2807 guards it on `fromTimeout`), so a rider who wants
+    // quick resume on a *manual* sleep (the sleep button, a deliberate press)
+    // needs this mode, not the toggle.
+    //
+    // The stored byte still carries the full SLEEP_SCREEN_MODE range -- a
+    // settings.json a power user hand-edited to Custom still renders that way
+    // (SleepActivity.cpp) -- so this is a DynamicEnum, not an Enum: the picker
+    // shows this short list and the getter/setter below translate between its
+    // index and the real enum value. fromJson() migrates LocationCustom only
+    // (CrossPointSettings.cpp, "sleepScreen mode") -- Custom is left stored
+    // as-is, because unlike LocationCustom it has that real (if currently
+    // unreachable) on-device setter, and migrating it away would silently
+    // discard a value a rider actually chose, the one thing this project's own
+    // hide-don't-delete convention exists to prevent.
+    static constexpr uint8_t kVisibleSleepScreenModes[] = {CrossPointSettings::DARK, CrossPointSettings::LIGHT,
+                                                           CrossPointSettings::LOCATION, CrossPointSettings::BLANK,
+                                                           CrossPointSettings::QUICK_RESUME};
 
     std::vector<StrId> statusBarClockValues(CrossPointSettings::STATUS_BAR_CLOCK_MODE_COUNT);
     statusBarClockValues[CrossPointSettings::STATUS_BAR_CLOCK_HIDE] = StrId::STR_HIDE;
@@ -209,46 +229,288 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
 
     std::vector<SettingInfo> v = {
         // --- Display ---
-        SettingInfo::Enum(StrId::STR_SLEEP_SCREEN, &CrossPointSettings::sleepScreen, std::move(sleepScreenValues),
-                          "sleepScreen", StrId::STR_CAT_DISPLAY),
+        // No JSON key: the full range is hand-serialised in CrossPointSettings.cpp
+        // ("sleepScreen mode"), same reason as loraBeaconSec above -- a DynamicEnum
+        // row writing through a key would store the narrowed 0-4 index instead of
+        // the real 0-6 mode.
+        SettingInfo::DynamicEnum(
+            StrId::STR_SLEEP_SCREEN,
+            {StrId::STR_DARK, StrId::STR_LIGHT, StrId::STR_LOCATION, StrId::STR_NONE_OPT, StrId::STR_QUICK_RESUME},
+            [] {
+              switch (SETTINGS.sleepScreen) {
+                case CrossPointSettings::LIGHT:
+                  return uint8_t{1};
+                case CrossPointSettings::LOCATION:
+                  return uint8_t{2};
+                case CrossPointSettings::BLANK:
+                  return uint8_t{3};
+                case CrossPointSettings::QUICK_RESUME:
+                  return uint8_t{4};
+                default:
+                  // DARK, LocationCustom until fromJson() migrates it away, and
+                  // Custom -- which fromJson() deliberately leaves alone (see
+                  // the comment above kVisibleSleepScreenModes), so a device
+                  // with a real Custom BMP set shows "Dark" here until the
+                  // rider picks something from this list, at which point it is
+                  // a real DARK rather than a mislabeled Custom. The render
+                  // path is unaffected either way: SleepActivity.cpp switches
+                  // on the raw stored value, not on this display mapping.
+                  return uint8_t{0};
+              }
+            },
+            [](const uint8_t idx) {
+              if (idx < std::size(kVisibleSleepScreenModes)) SETTINGS.sleepScreen = kVisibleSleepScreenModes[idx];
+            },
+            nullptr, StrId::STR_CAT_DISPLAY),
+        // Configures the Custom/LocationCustom BMP the menu no longer offers
+        // picking (see the Sleep Screen row above) -- hidden rather than deleted,
+        // same reason as every other row in this file: the field keeps existing
+        // and keeps working for a settings.json that still names Custom by hand.
         SettingInfo::Enum(StrId::STR_SLEEP_COVER_MODE, &CrossPointSettings::sleepScreenCoverMode,
-                          {StrId::STR_FIT, StrId::STR_CROP}, "sleepScreenCoverMode", StrId::STR_CAT_DISPLAY),
+                          {StrId::STR_FIT, StrId::STR_CROP}, "sleepScreenCoverMode", StrId::STR_CAT_DISPLAY)
+            .withHidden(),
         SettingInfo::Enum(StrId::STR_SLEEP_COVER_FILTER, &CrossPointSettings::sleepScreenCoverFilter,
                           {StrId::STR_NONE_OPT, StrId::STR_FILTER_CONTRAST, StrId::STR_INVERTED},
-                          "sleepScreenCoverFilter", StrId::STR_CAT_DISPLAY),
+                          "sleepScreenCoverFilter", StrId::STR_CAT_DISPLAY)
+            .withHidden(),
         SettingInfo::Enum(StrId::STR_QUICK_RESUME_TIMEOUT, &CrossPointSettings::quickResumeSleepScreen,
                           {StrId::STR_STATE_OFF, StrId::STR_STATE_ON}, "quickResumeSleepScreen",
                           StrId::STR_CAT_DISPLAY),
         SettingInfo::Enum(StrId::STR_HIDE_BATTERY, &CrossPointSettings::hideBatteryPercentage,
                           {StrId::STR_NEVER, StrId::STR_IN_READER, StrId::STR_ALWAYS}, "hideBatteryPercentage",
                           StrId::STR_CAT_DISPLAY),
+        // Hidden: it counts *pages of a book* between full refreshes and has
+        // exactly one consumer, ReaderActivity.cpp:34. The map screen decides
+        // its own refresh cadence.
         SettingInfo::Enum(
             StrId::STR_REFRESH_FREQ, &CrossPointSettings::refreshFrequency,
             {StrId::STR_PAGES_1, StrId::STR_PAGES_5, StrId::STR_PAGES_10, StrId::STR_PAGES_15, StrId::STR_PAGES_30},
-            "refreshFrequency", StrId::STR_CAT_DISPLAY),
+            "refreshFrequency", StrId::STR_CAT_DISPLAY)
+            .withHidden(),
         SettingInfo::Enum(StrId::STR_UI_THEME, &CrossPointSettings::uiTheme,
                           {StrId::STR_THEME_CLASSIC, StrId::STR_THEME_LYRA, StrId::STR_THEME_LYRA_EXTENDED,
                            StrId::STR_THEME_ROUNDEDRAFF},
                           "uiTheme", StrId::STR_CAT_DISPLAY),
         SettingInfo::Toggle(StrId::STR_SUNLIGHT_FADING_FIX, &CrossPointSettings::fadingFix, "fadingFix",
                             StrId::STR_CAT_DISPLAY),
+#if FREEINK_CAP_FRONTLIGHT
+        // The frontlight level, 10 to 100 % in tens. Off is deliberately not a
+        // value here: it is a state the two buttons produce (the home key's hold
+        // toggles, the user button's hold walks the rungs), and storing it would
+        // lose the level the rider chose. That is also why the row carries no
+        // JSON key -- frontlightOn and frontlightBrightness are serialised by
+        // hand in CrossPointSettings.cpp, and a second writer would fight it.
+        SettingInfo::Value(StrId::STR_FRONTLIGHT, &CrossPointSettings::frontlightBrightness, {10, 100, 10}, nullptr,
+                           StrId::STR_CAT_DISPLAY),
+#endif
+#if FREEINK_CAP_WARMLIGHT
+        // Warm/cool mix, only on boards with a second frontlight channel (X4 Pro
+        // today). Gated on FREEINK_CAP_WARMLIGHT rather than FREEINK_CAP_FRONTLIGHT
+        // so single-channel boards (de-link, LilyGo, Murphy, Paper Mono) never see
+        // a row for a mix their hardware can't produce. Opens a slider dialog
+        // (SettingsActivity::openFrontlightColorTemperaturePicker(), same pattern
+        // as STR_TIME_TO_SLEEP) rather than cycling in place -- no JSON key here
+        // for the same hand-serialization reason as frontlightBrightness above.
+        SettingInfo::Value(StrId::STR_FRONTLIGHT_COLOR_TEMP, &CrossPointSettings::frontlightColorTemperature,
+                           {0, 100, 5}, nullptr, StrId::STR_CAT_DISPLAY),
+#endif
 
-        // --- Map ---
+    // --- Map ---
+#ifdef ENABLE_GNSS_CMD
+        // Where the map's position comes from: off (default) the phone over
+        // BLE, on the receiver on this board (MapActivity::onEnter(), which
+        // only calls gnssStart() when this is set).
+        //
+        // Compiled in only where a receiver exists. ENABLE_GNSS_CMD is set in
+        // env:t5s3pro and nowhere else, and today it means "this build has a
+        // receiver" rather than anything about the console (GnssAccess.h). On an
+        // X4 or X4 Pro build there is no driver to switch to, so a row here
+        // would be a toggle that does nothing.
+        //
+        // It has a row at all because not having one cost a bring-up session.
+        // 2026-09-03 this was reported as a GNSS regression: it had been left at
+        // 0 by the previous day's BLE test, it persists in settings.json, and
+        // with no screen and no boot log naming it the symptom is
+        // indistinguishable from dead hardware. A setting a rider can be left
+        // sitting on needs somewhere a rider can see it
+        // (../docs/gnss-to-map-plan.md, "And it was reported as a GNSS
+        // regression").
+        // The label says GNSS and not GPS because GPS would be false, not merely
+        // pedantic: the L76K on this board emits `GPGSV` *and* `GLGSV`, and an
+        // `inview` of 19 was measured as 10 GPS plus 9 GLONASS
+        // (../docs/gnss.md, "GPS and GLONASS in this configuration"). The
+        // satellite count this toggle turns on is a sum across constellations
+        // (`Gnss::satsInView()`), so a "GPS" label would misname our own
+        // readout. The only other UI string with "GPS" in it is the phone app's
+        // name, ExplorInk GPS, which is a product name and not a claim about a
+        // receiver.
+        SettingInfo::Toggle(StrId::STR_MAP_GNSS_POSITION, &CrossPointSettings::mapGnssPosition, "mapGnssPosition",
+                            StrId::STR_CAT_MAP),
+        // How long the satellite wait screen holds before it opens the map by
+        // itself (GnssAcquireActivity.h). Same build gate as the row above --
+        // without a receiver there is no wait to limit.
+        //
+        // A row rather than a constant because the right answer is the rider's
+        // and it changes with what they are doing: somebody parked and watching
+        // the sky fill wants no limit, somebody who just wants their map wants
+        // two minutes. The screen states the countdown while it runs, so the
+        // setting is never something that happens to them silently.
+        SettingInfo::Enum(StrId::STR_MAP_GNSS_WAIT, &CrossPointSettings::mapGnssWaitLimit,
+                          {StrId::STR_GNSS_WAIT_NEVER, StrId::STR_GNSS_WAIT_2MIN, StrId::STR_GNSS_WAIT_5MIN,
+                           StrId::STR_GNSS_WAIT_10MIN},
+                          "mapGnssWaitLimit", StrId::STR_CAT_MAP),
+        // One CSV row per accepted fix to /explorink/gnss.csv (GnssLog.h). Same
+        // build gate and the same reason as the row above.
+        //
+        // **The label says "track" on purpose.** This writes where the rider
+        // went, not a single point, so on a lost or stolen device the file is a
+        // record of their movements (the field's own comment,
+        // CrossPointSettings.h). A rider switching it on has to be told that by
+        // the row itself -- "GNSS log" would read as diagnostics.
+        //
+        // Off by default and the default does not move. A row makes it
+        // reachable, which is the point: before this it needed a USB cable and
+        // CMD:SETTING, so the one person who could turn it on was whoever had
+        // the device on a desk. Reaching it is not the same as defaulting it on.
+        SettingInfo::Toggle(StrId::STR_MAP_GNSS_LOG, &CrossPointSettings::mapGnssLog, "mapGnssLog", StrId::STR_CAT_MAP),
+#endif
         // Off by default. On, the map screen asks the phone for a tile as soon
-        // as it hatches one, and shows a globe in the header while the transfer
-        // is in flight (MapActivity::maybeAutoSyncTiles(),
+        // as it hatches one, and shows a transfer icon in the header while the
+        // transfer is in flight (MapActivity::maybeAutoSyncTiles(),
         // docs/missing-tiles.md). It spends the phone's mobile data, so the
         // rider turns it on deliberately or not at all.
         SettingInfo::Toggle(StrId::STR_MAP_AUTOSYNC_TILES, &CrossPointSettings::mapAutoSyncTiles, "mapAutoSyncTiles",
+                            StrId::STR_CAT_MAP),
+        // On by default, unlike the two data-spending toggles around it: this
+        // one is "does this device deal in POIs at all", and *when* a shard is
+        // fetched is mapTileFreshnessMode's question
+        // (../docs/point-layer-lifecycle.md, decision 2). Off dims the map
+        // menu's `Nearby` row and stops the marks being drawn.
+        SettingInfo::Toggle(StrId::STR_MAP_NEARBY_POINTS, &CrossPointSettings::mapPointsEnabled, "mapPointsEnabled",
                             StrId::STR_CAT_MAP),
         // Off by default, and it stays off until the panel cost of edge markers
         // has been measured (CrossPointSettings::mapPinsOffscreen). Pins inside
         // the viewport are drawn either way.
         SettingInfo::Toggle(StrId::STR_MAP_PINS_OFFSCREEN, &CrossPointSettings::mapPinsOffscreen, "mapPinsOffscreen",
                             StrId::STR_CAT_MAP),
-        // Off by default -- the GPS/tile/BLE readout is diagnostic text, not
-        // something a rider needs. Same field the map's own menu toggles live
-        // (MapActivity::openMapMenu()).
+#if defined(ENABLE_GROUP_MARKERS) && ENABLE_GROUP_MARKERS
+        // --- Group ---
+        //
+        // **Its own tab since 2026-10-30, not the Map tab's tail.** These three
+        // and the radio rows below them were spread across the Map tab and the
+        // Group screen's own control rows, with `loraMeshOn` carrying a row in
+        // both -- two places showing one switch, which is how a rider ends up
+        // believing the radio is off because the other screen said so
+        // (docs/settings-menu.md, "The Group tab").
+        //
+        // The group's dots. On by default and free with an empty roster
+        // (CrossPointSettings::mapGroupMarkers).
+        SettingInfo::Toggle(StrId::STR_MAP_GROUP_MARKERS, &CrossPointSettings::mapGroupMarkers, "mapGroupMarkers",
+                            StrId::STR_CAT_GROUP),
+        // Their positions to the card's black box. On: the feature's whole point
+        // is that the trace outlives the ride.
+        SettingInfo::Toggle(StrId::STR_MAP_GROUP_LOG_PEERS, &CrossPointSettings::mapGroupLogPeers, "mapGroupLogPeers",
+                            StrId::STR_CAT_GROUP),
+        // The rider's own trace into the same file. **Off by default**, and the
+        // label says "my track" rather than "black box": switching this on
+        // writes where the rider went, on a card that is lost with the device.
+        // Same call, same wording rule as the GNSS track row above.
+        SettingInfo::Toggle(StrId::STR_MAP_GROUP_LOG_SELF, &CrossPointSettings::mapGroupLogSelf, "mapGroupLogSelf",
+                            StrId::STR_CAT_GROUP),
+#endif
+    // Off by default -- the GPS/tile/BLE readout is diagnostic text, not
+    // something a rider needs. Same field the map's own menu toggles live
+    // (MapActivity::openMapMenu()).
+#if defined(ENABLE_LORA_MESH) && ENABLE_LORA_MESH
+        // The LoRa radio. Off out of the box: a listening SX1262 costs 5.4 mA
+        // continuously and drags the shared GNSS rail up with it
+        // (CrossPointSettings::loraMeshOn). This row only says the radio *may*
+        // be used -- it runs while the map or the Group screen is open and at
+        // no other time.
+        //
+        // **The Group screen's Radio row is the same field, deliberately.**
+        // Maintainer's call, 2026-10-30: somebody setting the group up should
+        // not have to walk between two screens to finish, so the controls
+        // appear in both places and both write here. Not a duplicate of the
+        // kind this pass removed -- that one was two *names* for one switch
+        // (docs/settings-menu.md, "The Group tab").
+        SettingInfo::Toggle(StrId::STR_MAP_LORA, &CrossPointSettings::loraMeshOn, "loraMeshOn", StrId::STR_CAT_GROUP),
+        // How often this device tells the air where it is. Off by default:
+        // transmitting is what a stolen or lost device must not do on its own,
+        // and it is the only row here that spends the battery rather than
+        // reading it (../docs/lora-mesh.md, "When a position goes out").
+        //
+        // The same five values the Group screen's row cycles through, and the
+        // 70 s floor is enforced in LoraPresence rather than here -- a cap a
+        // settings row could clear would not be a cap.
+        //
+        // DynamicEnum and not Enum: the stored field is `loraBeaconSec`, a
+        // uint16_t holding seconds, and a plain Enum row can only point at a
+        // uint8_t. Writing the index to a second field would have given the
+        // cadence two homes -- the exact defect this pass is removing -- so
+        // the row converts instead, and the row carries no JSON key because
+        // CrossPointSettings already persists the seconds by hand.
+        //
+        // It also goes through loraPresenceSetBeacon() rather than writing the
+        // field, so the running node picks the new cadence up without a
+        // restart, the same call the Group screen's row makes.
+        SettingInfo::DynamicEnum(
+            StrId::STR_LORA_BEACON_ROW,
+            {StrId::STR_LORA_BEACON_OFF, StrId::STR_LORA_BEACON_70S, StrId::STR_LORA_BEACON_2MIN,
+             StrId::STR_LORA_BEACON_5MIN, StrId::STR_LORA_BEACON_15MIN},
+            [] {
+              // A cadence the console set to something outside the five reads
+              // as the nearest one at or below it, and never as "Never" unless
+              // it really is off -- a row that showed 0 for a running beacon
+              // would be a lie about a radio that is transmitting.
+              // Through loraPresenceStatus(), not SETTINGS directly, so this row
+              // and the Group screen's row cannot disagree -- they read one
+              // accessor. Reading the field here while the screen read the
+              // running cache is how one cadence came to be shown two ways.
+              const uint32_t current = loraPresenceStatus().beaconSec;
+              constexpr size_t n = sizeof(kLoraBeaconChoices) / sizeof(kLoraBeaconChoices[0]);
+              uint8_t best = 0;
+              for (size_t i = 0; i < n; ++i) {
+                if (current >= kLoraBeaconChoices[i]) best = static_cast<uint8_t>(i);
+              }
+              return best;
+            },
+            [](const uint8_t index) {
+              constexpr size_t n = sizeof(kLoraBeaconChoices) / sizeof(kLoraBeaconChoices[0]);
+              if (index < n) loraPresenceSetBeacon(kLoraBeaconChoices[index]);
+            },
+            nullptr, StrId::STR_CAT_GROUP),
+        // What this device calls itself on the air. Same field and the same
+        // setter as the Group screen's row.
+        //
+        // **It is broadcast, so it is not a place for a name.** The advert
+        // carries it in clear to everyone in radio range, roster or not
+        // (../docs/lora-mesh.md), which is why the label says "this device's
+        // name" and the default is empty.
+        [] {
+          // The advert carries at most sizeof(loraNodeName) - 1, so the
+          // keyboard has to stop there rather than silently truncating on
+          // save (CrossPointSettings::loraNodeName).
+          SettingInfo s = SettingInfo::DynamicString(
+              StrId::STR_LORA_NAME_ROW,
+              [] {
+                // The **running node's** name, not SETTINGS.loraNodeName.
+                // They are not the same: a device that has never been named
+                // by hand still advertises one, derived from its key, and
+                // only an explicit rename ever reaches the settings field.
+                // Reading the field here left this row blank on a board whose
+                // Group screen plainly showed `EI-3e8f` -- found on a T5 S3
+                // Pro, 2026-10-30, and the whole point of this pass is that
+                // one thing does not get shown two ways.
+                return std::string(loraPresenceStatus().nodeName);
+              },
+              [](const std::string& name) { loraPresenceSetName(name.c_str()); }, nullptr, StrId::STR_CAT_GROUP);
+          // The buffer size, matching SettingInfo::String()'s convention --
+          // the row that reads it subtracts one for the character limit.
+          s.stringMaxLen = sizeof(CrossPointSettings::loraNodeName);
+          return s;
+        }(),
+#endif
         SettingInfo::Toggle(StrId::STR_MAP_DEBUG_INFO, &CrossPointSettings::mapDebugInfo, "mapDebugInfo",
                             StrId::STR_CAT_MAP),
         // Manual (default): zoom is the button ladder, unchanged. Auto
@@ -308,10 +570,18 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
         SettingInfo::Toggle(StrId::STR_HYPHENATION, &CrossPointSettings::hyphenationEnabled, "hyphenationEnabled",
                             StrId::STR_CAT_READER)
             .withTextSettings(),
+        // Moved out of the dead Reader tab and left in Display as a dimmed
+        // placeholder. Today the field rotates the *reader* only
+        // (EpubReaderActivity, TxtReaderActivity, SleepActivity read it; the
+        // map and the rest of the UI do not), so offering it here would rotate
+        // nothing the rider is looking at. It stays visible because a device
+        // carried in landscape wants a real screen orientation and this is the
+        // field that will carry it — see docs/settings-menu.md.
         SettingInfo::Enum(
-            StrId::STR_ORIENTATION, &CrossPointSettings::orientation,
+            StrId::STR_SCREEN_ORIENTATION, &CrossPointSettings::orientation,
             {StrId::STR_PORTRAIT, StrId::STR_LANDSCAPE_CW, StrId::STR_ORIENTATION_INVERTED, StrId::STR_LANDSCAPE_CCW},
-            "orientation", StrId::STR_CAT_READER),
+            "orientation", StrId::STR_CAT_DISPLAY)
+            .withDisabled(),
         SettingInfo::Toggle(StrId::STR_EXTRA_SPACING, &CrossPointSettings::extraParagraphSpacing,
                             "extraParagraphSpacing", StrId::STR_CAT_READER)
             .withTextSettings(),
@@ -325,37 +595,73 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
         SettingInfo::Enum(StrId::STR_SIDE_BTN_LAYOUT, &CrossPointSettings::sideButtonLayout,
                           {StrId::STR_PREV_NEXT, StrId::STR_NEXT_PREV, StrId::STR_DISABLED}, "sideButtonLayout",
                           StrId::STR_CAT_CONTROLS),
+        // Hidden: reader-only tap zones (ReaderUtils.h). The map has its own
+        // touch handling and does not read this.
         SettingInfo::Enum(StrId::STR_TOUCH_READER_CONTROLS, &CrossPointSettings::touchReaderControls,
-                          {StrId::STR_STATE_OFF, StrId::STR_STATE_ON}, "touchReaderControls", StrId::STR_CAT_CONTROLS),
+                          {StrId::STR_STATE_OFF, StrId::STR_STATE_ON}, "touchReaderControls", StrId::STR_CAT_CONTROLS)
+            .withHidden(),
+        // Touch policy. Dropped below on a board with no digitizer, where it
+        // would offer a choice between identical behaviours. Stays visible --
+        // this one is the device's own input policy, not the reader's.
+        //
+        // Two values, not three: OFF is deliberately unreachable from here. A
+        // rider who picked it could not get back to Settings to undo it, and on
+        // an X4 Pro -- Back and Confirm both come from touch there -- that is a
+        // device with no input at all. The lock lives on a gesture that can also
+        // undo it (CrossPointSettings::touchLocked).
+        SettingInfo::Enum(StrId::STR_TOUCH_MODE, &CrossPointSettings::touchMode,
+                          {StrId::STR_TOUCH_MODE_ANYWHERE, StrId::STR_TOUCH_MODE_BUTTONS}, "touchMode",
+                          StrId::STR_CAT_CONTROLS),
+        // Hidden: it rotates the front-button mapping to follow
+        // CrossPointSettings::orientation, which is the *reader's* orientation
+        // (MappedInputManager.cpp:48). With the reader row gone there is
+        // nothing left to follow.
         SettingInfo::Toggle(StrId::STR_FRONT_BTN_FOLLOW_ORIENTATION, &CrossPointSettings::frontButtonFollowOrientation,
-                            "frontButtonFollowOrientation", StrId::STR_CAT_CONTROLS),
+                            "frontButtonFollowOrientation", StrId::STR_CAT_CONTROLS)
+            .withHidden(),
+        // Hidden: skip-chapter and rotate-the-page, both consumed only by the
+        // reader activities (EpubReaderActivity, XtcReaderActivity).
         SettingInfo::Enum(StrId::STR_LONG_PRESS_BEHAVIOR, &CrossPointSettings::longPressButtonBehavior,
                           {StrId::STR_LONG_PRESS_BEHAVIOR_OFF, StrId::STR_LONG_PRESS_BEHAVIOR_SKIP,
                            StrId::STR_LONG_PRESS_BEHAVIOR_ORIENTATION},
-                          "longPressButtonBehavior", StrId::STR_CAT_CONTROLS),
+                          "longPressButtonBehavior", StrId::STR_CAT_CONTROLS)
+            .withHidden(),
+        // Hidden: every option (KOReader sync, bookmark, dictionary) is a book
+        // action, and EpubReaderActivity.cpp is the only reader of the field.
         SettingInfo::Enum(StrId::STR_LONG_PRESS_MENU, &CrossPointSettings::longPressMenuFunction,
                           {StrId::STR_KOSYNC, StrId::STR_DISABLED, StrId::STR_BOOKMARK_OPTION, StrId::STR_DICTIONARY},
-                          "longPressMenuFunction", StrId::STR_CAT_CONTROLS),
+                          "longPressMenuFunction", StrId::STR_CAT_CONTROLS)
+            .withHidden(),
         SettingInfo::Enum(
             StrId::STR_SHORT_PWR_BTN, &CrossPointSettings::shortPwrBtn,
             {StrId::STR_IGNORE, StrId::STR_SLEEP, StrId::STR_PAGE_TURN, StrId::STR_FORCE_REFRESH, StrId::STR_FOOTNOTES},
             "shortPwrBtn", StrId::STR_CAT_CONTROLS),
+        // Hidden: footnotes are an EPUB concept.
         SettingInfo::Toggle(StrId::STR_PWR_BTN_FOOTNOTE_BACK, &CrossPointSettings::pwrBtnFootnoteBack,
-                            "pwrBtnFootnoteBack", StrId::STR_CAT_CONTROLS),
+                            "pwrBtnFootnoteBack", StrId::STR_CAT_CONTROLS)
+            .withHidden(),
+        // Hidden: the file browser is the book library's entry point
+        // (ReaderUtils.h).
         SettingInfo::Toggle(StrId::STR_BACK_SHORT_TO_FILE_BROWSER, &CrossPointSettings::backShortToFileBrowser,
-                            "backShortToFileBrowser", StrId::STR_CAT_CONTROLS),
+                            "backShortToFileBrowser", StrId::STR_CAT_CONTROLS)
+            .withHidden(),
 
         // --- System ---
         SettingInfo::Value(
             StrId::STR_TIME_TO_SLEEP, &CrossPointSettings::sleepTimeoutMinutes,
             {CrossPointSettings::MIN_SLEEP_TIMEOUT_MINUTES, CrossPointSettings::MAX_SLEEP_TIMEOUT_MINUTES, 1},
             "sleepTimeoutMinutes", StrId::STR_CAT_SYSTEM),
+        // Hidden, all three: the file browser's dotfile filter, the recent-books
+        // list, and moving a finished book to /read. Book-library housekeeping.
         SettingInfo::Toggle(StrId::STR_SHOW_HIDDEN_FILES, &CrossPointSettings::showHiddenFiles, "showHiddenFiles",
-                            StrId::STR_CAT_SYSTEM),
+                            StrId::STR_CAT_SYSTEM)
+            .withHidden(),
         SettingInfo::Toggle(StrId::STR_REMOVE_READ_FROM_RECENTS, &CrossPointSettings::removeReadBooksFromRecents,
-                            "removeReadBooksFromRecents", StrId::STR_CAT_SYSTEM),
+                            "removeReadBooksFromRecents", StrId::STR_CAT_SYSTEM)
+            .withHidden(),
         SettingInfo::Toggle(StrId::STR_MOVE_FINISHED_TO_READ, &CrossPointSettings::moveFinishedToReadFolder,
-                            "moveFinishedToReadFolder", StrId::STR_CAT_SYSTEM),
+                            "moveFinishedToReadFolder", StrId::STR_CAT_SYSTEM)
+            .withHidden(),
 
         // OPDS download folder: persisted + web-exposed, but category-less so it
         // is hidden from the on-device Settings screen (edited via OPDS UI).
@@ -451,9 +757,12 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
       // Insert after the short power button setting (end of Controls section)
       for (auto it = v.begin(); it != v.end(); ++it) {
         if (it->nameId == StrId::STR_SHORT_PWR_BTN) {
+          // Hidden: turning pages by tilting. The IMU itself may earn a map
+          // use later; this row is not it.
           v.insert(it + 1, SettingInfo::Enum(StrId::STR_TILT_PAGE_TURN, &CrossPointSettings::tiltPageTurn,
                                              {StrId::STR_STATE_OFF, StrId::STR_NORMAL, StrId::STR_INVERTED},
-                                             "tiltPageTurn", StrId::STR_CAT_CONTROLS));
+                                             "tiltPageTurn", StrId::STR_CAT_CONTROLS)
+                               .withHidden());
           break;
         }
       }
@@ -464,7 +773,9 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
   std::vector<SettingInfo> v = baseList;
   if (!BoardConfig::hasTouch()) {
     v.erase(std::remove_if(v.begin(), v.end(),
-                           [](const SettingInfo& s) { return s.nameId == StrId::STR_TOUCH_READER_CONTROLS; }),
+                           [](const SettingInfo& s) {
+                             return s.nameId == StrId::STR_TOUCH_READER_CONTROLS || s.nameId == StrId::STR_TOUCH_MODE;
+                           }),
             v.end());
   }
   if (BoardConfig::hasTouch()) {

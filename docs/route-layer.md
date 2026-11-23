@@ -20,7 +20,7 @@ The measured numbers are in "What it costs" below. Known-good build archived as
    `ActivityManager::goToRouteSelect()` (`ActivityManager.cpp:211`) checks
    `MapRouteStore::anyRoutes()` first and goes straight to the map when the card
    has no routes.
-2. `RouteSelectActivity` lists `/trailink/trips/*.tir` plus a **Skip** row. Each
+2. `RouteSelectActivity` lists `/explorink/trips/*.tir` plus a **Skip** row. Each
    row's name and point count come out of that file's header
    (`MapRouteStore.cpp`, `list()`).
 3. Picking a route calls `ActivityManager::goToMap(path)`; Skip calls
@@ -86,15 +86,45 @@ the one orientation a rider can always read
 
 ### When nothing fits
 
-The coarsest rung is 20 m/px, which is 9.6 x 16 km of screen. A day's ride is
-longer than that. Then `Result::fits` is false, the coarsest rung and the best
-heading are used anyway, and the middle of the route is what lands on screen. The
-frame says so out loud (`STR_MAP_ROUTE_PARTIAL`, `MapActivity.cpp`'s
-`renderRouteOverview()`), because a frame showing the middle of a long route looks
-exactly like one showing all of a short one.
+The coarsest rung is rung 6, 45 m/px, which is 24 x 40 km of screen
+(`zoom-rungs.md`, the ladder table). A day's ride can still be longer than that.
+Then `Result::fits` is false, the coarsest rung and the best heading are used
+anyway, and the middle of the route is what lands on screen. The frame says so
+out loud (`STR_MAP_ROUTE_PARTIAL`, `MapActivity.cpp`'s `renderRouteOverview()`),
+because a frame showing the middle of a long route looks exactly like one
+showing all of a short one.
 
-The alternative would be a sixth ladder rung reading a z10 tile set that does not
-exist — see `docs/map-data-spec.md` open question 1 in the parent repo.
+**This said 20 m/px until 2026-11-02**, which was rung 4 and the top of the
+ladder when the fit was written. Rungs 5 and 6 were added later for the regional
+view; going past rung 6 would need a z10 tile set that does not exist, see
+`docs/map-data-spec.md` open question 1 in the parent repo.
+
+### The group age check wipes it, and the rider never sees it
+
+**Measured on an X4 Pro 2026-11-02, three times**, through the picker and
+through `CMD:GOTO_MAP <route>`. The group age re-check requests a redraw before
+the overview renders, and that redraw lands after it:
+
+```
+0.23 s  group: an age crossed a 5-minute step, redrawing
+0.90 s  route overview: heading 14, zoom step 3, 4 tiles, 0 missing, 721 ms, whole route
+2.35 s  renderViewport start: lat=483165700 lon=172796100 heading=10 seq=0
+```
+
+That last frame is the persisted fix, which on a trip picked at home is nowhere
+near the route. So the panel settles on an ordinary follow frame and the opening
+frame of a trip is never on the glass. `overviewShown_` exists and does not gate
+the group redraw.
+
+**The published X4 Pro and T5 S3 Pro downloads have this.** The gate is
+`ENABLE_GROUP_MARKERS`, which `gh_release` and `gh_release_x4pro` do not set --
+and those envs are not what ships. The public images come from the devel envs
+(`build-environments.md`, and the parent repo's `docs/public-release.md`, "The
+published build is the devel environment"), so `env:x4pro` and `env:t5s3pro`
+carry it. The C3 image (`env:default`, X4 and X3) does not set the flag and is
+clear. Reading the flag against the `gh_release*` envs instead of against the
+publishing path is what made the first version of this section say no download
+was affected. Parent repo `docs/TODO.md`, `T-2057`.
 
 ### The overview is not a follow frame
 
@@ -141,6 +171,57 @@ Two ways round it, both on the laptop side:
 a guard on the device eventually -- the transfer path knows the destination path
 and `MapRouteSource` knows what it has open -- but nothing here is broken enough to
 justify it before the console command below exists.
+
+## Deleting one from the picker
+
+**Added 2026-10-27, verified on a T5 S3 Pro the same day.** Before it, nothing
+could delete a route: not this screen, not the console, not the phone. A card
+collected every route ever pushed to it against `MapRouteStore::kMaxRoutes`
+(24), and the 25th was unreachable.
+
+Held Select on a route row opens a confirm; Delete removes the file and the
+card is re-listed. Three decisions worth keeping:
+
+- **Held Select, not a fifth button.** The four hints (Back/Select/Up/Down) are
+  full, and this is the gesture and the hold length the reader's bookmark list
+  already uses (`EpubReaderBookmarksActivity`, 700 ms). Short press still rides
+  the route, so the destructive action is not on the press a rider makes every
+  time.
+- **`MapRouteStore::remove()` takes a file name, never a path.** Everything that
+  reaches it comes from a listed row. A path-taking version would be one BLE
+  verb away from deleting anything on the card, on a channel with no pairing
+  and no bonding.
+- **No open-route guard, and none can be needed here.** `ActivityManager`
+  replaces activities rather than stacking them, so opening the picker has
+  already destroyed any `MapActivity`: the picker and the map are never both
+  alive. The hazard the section above describes belongs to the phone's push
+  path, which *can* arrive while the map is up.
+
+  **Read off the code, not measured**: `ActivityManager::replaceActivity` keeps
+  one current activity and no stack, and nothing under `src/activities/map/`
+  calls `pushActivity`. A future screen that pushes over the map breaks this,
+  and then the guard stops being unnecessary and becomes real work.
+
+Deleting the last trip leaves through `goToRouteSelect()`, which already
+chooses between the picker and `RouteEmptyActivity` -- a one-row list whose only
+row is Skip explains nothing.
+
+### Two bugs the first flash had, both about the same press
+
+Worth keeping because both are shapes that repeat on this device.
+
+**The hint line was overdrawn.** It was given a line of its own under the status
+line, and `listRect()` measures the list from a top that allows for exactly one
+line there. The list drew over it and left half a sentence showing. A second
+line of chrome on this screen means changing the geometry, not just drawing it;
+the hint is appended to the status line instead.
+
+**Cancel re-opened the prompt inside a second.** The press that picks Cancel is
+the *same press* that opened the prompt -- the button is still down when the
+popup closes, so `getHeldTime()` is already past the threshold and the next
+`loop()` opens it again. A hold that opens something must be re-armed on the
+button being physically up; a timer would re-open it for a rider who simply
+keeps a thumb down.
 
 ## Drawing
 
@@ -224,7 +305,7 @@ allocated on demand.
   area, which is the case that matters.
 - ~~**No console command.**~~ Done 2026-08-07: **`CMD:GOTO_MAP <card path>`** takes
   an optional route, e.g.
-  `CMD:GOTO_MAP /trailink/trips/baba-serp.tir` (`src/main.cpp`). It goes through the
+  `CMD:GOTO_MAP /explorink/trips/baba-serp.tir` (`src/main.cpp`). It goes through the
   same `ActivityManager::goToMap(path)` the picker uses, so it exercises the load,
   the fit and the overview for real. With no argument it behaves exactly as before.
 

@@ -34,7 +34,7 @@ Whole-route row already uses.
 `panBy()` does not track a separate "where am I looking" coordinate. It reads
 the projection the frame *on screen* was drawn with (`proj_`, whether that
 frame came from a real fix or the previous pan step), inverse-projects the
-screen point `MapActivity::kPanStepPercent` of a screen away from the anchor
+screen point `MapViewport::kPanStepPercent` of a screen away from the anchor
 (`MapProjection::screenToMerc()`), converts back to lat/lon
 (`MapProjection::mercToLonLat()`), and calls `renderViewport()` with that as
 the new anchor -- the exact same function a ladder step or a real fix uses. A
@@ -89,6 +89,44 @@ as `drawSleepMarker()`'s ring-and-dot (`MapMarkerMetrics.h`'s
 would be exactly the kind of claim this mode already avoids for the anchor.
 Skips silently, same as today, when the fix projects off the current
 viewport -- no off-screen arrow, that would be a separate feature.
+
+## The pan target is not the rider, and persistence had that wrong
+
+**Found on hardware 2026-08-21 by the maintainer, through Nearby's `View on
+map`.** The reported symptom: "it moved my position marker onto the water
+source", at a place the rider was not.
+
+The chain, and none of the three links is wrong on its own:
+
+1. `renderViewport()` repoints `lastLatE7_`/`lastLonE7_` at whatever it draws
+   (`MapActivity.cpp`, `renderViewport()`). That is deliberate and load-bearing:
+   a zoom step re-anchors around the same place instead of jumping back to the
+   rider.
+2. So after a pan, a pin's `Show`, or Nearby's `View on map`, those two variables
+   hold **the place being looked at**, not the fix. The code already knew this --
+   it is why `riderLatE7()`/`riderLonE7()` exist and why `observeReturnLatE7_` is
+   a separate field.
+3. The ladder/fix save wrote `SETTINGS.mapLastLatE7 = lastLatE7_`. Which is the
+   pan target.
+
+The effect only shows up later, which is why it survived: the next entry into the
+map bootstraps from the persisted value with `screenMode_ = Follow`, and Follow
+draws the full position marker -- ring plus heading arrow -- at the anchor. So
+the device claims the rider is standing wherever they last looked.
+
+Fixed by persisting `riderLatE7()`, `riderLonE7()` and `riderHeading()`. In
+Observe those return `observeReturn*`, which *is* the rider's last real fix,
+kept up to date by `applyFix()`'s Observe branch. In Follow they are the same
+variables as before, so nothing changes for the normal case.
+
+**Pre-existing, and not a Nearby bug.** Panning away in Observe and leaving the
+map does it, and so does a pin's `Show`; Nearby only made it easy to reach,
+because `View on map` re-anchors on something that can be kilometres away.
+
+Open: whether the ring-and-dot fix marker is distinct enough at a glance from a
+POI square. If the rider's real fix is off the current viewport it is drawn
+nowhere at all (deliberate, above), and that is the case a rider is most likely
+to misread as "I am at the thing I looked at".
 
 ## Zoom while observing: a hold, plus two menu rows
 
@@ -271,3 +309,158 @@ base class dispatched through a base-typed reference) that wants a
 per-override default value has this exposure. A default argument can only
 safely vary by override if every override's caller reaches it through that
 override's own static type -- never true for anything called via `GUI`.
+
+## Finding: the zoom side hints never checked the ladder ends, and were weaker than the pan hints
+
+**Verified on hardware (X4 Pro), 2026-09-19.** `drawZoomSideHints()` drew
+`"+"`/`"--"` at `SMALL_FONT_ID` (this file's default), unconditionally --
+unlike the pan hints just above, it had no bounds check at all. Three
+rider-visible gaps, all against a box that stays plausible-looking while
+lying:
+
+- **Weak glyphs, two ways.** `SMALL_FONT_ID` has no bold face (`main.cpp`'s
+  single-glyph constructor) and is two points smaller than the pan hints'
+  `UI_10_FONT_ID` -- the doubled `"--"` (this file's own note above, and
+  `MapActivity.cpp`'s `drawZoomSideHints()` comment) was already compensating
+  for a thin hyphen at that size. Switching the font to `UI_10_FONT_ID` alone
+  was not enough: `drawTextRotated90CW()`'s `style` parameter defaults to
+  `EpdFontFamily::REGULAR` and no caller of `drawSideButtonHints()` had ever
+  passed anything else, pan hints included -- harmless for the arrows, whose
+  U+2190-U+2193 glyph data is identical in both cuts of `ubuntu_10` (neither
+  Ubuntu face supplies them; both cuts borrow the same bitmap from
+  `OpenDyslexic-Bold`, this file's finding above), but `+`/`-` really do
+  differ between `ubuntu_10`'s regular and bold cuts. `drawSideButtonHints()`
+  gained a `bold` parameter (a plain `bool`, not `EpdFontFamily::Style` --
+  `BaseTheme.h` only forward-declares `GfxRenderer` and has no reason to pull
+  in that type), and `MapActivity::drawZoomSideHints()` is the one caller
+  that passes `true`.
+- **No hard stop.** `stepZoom()` (`MapActivity.cpp`) already refuses past
+  `zoomStep() == 0` or `zoomStep() + 1 == MapViewport::kZoomStepCount`, and
+  `openMapMenu()`'s Zoom In/Out rows already hide at those exact bounds
+  (this file's "Zoom while observing" section) -- the side-hint box was the
+  one place on the same screen that still let a rider press a button that
+  does nothing.
+
+**First fix attempt was wrong and was caught by the maintainer watching the
+live device, not by review.** The first cut dimmed the disabled box with
+`BaseTheme::dimDisabledRow()` (the every-2nd-row line screen `OptionPopup`
+uses for a disabled list row) drawn *over* the box's own border -- on glass
+this read as the border partially vanishing, not as a button, because a
+1-2 px rounded-rect outline and a 2 px line screen collide directly. The
+actual established convention for "this control still exists here but can't
+fire right now", already shipping on the *same screen* for the front hint
+band, is `LyraTheme::drawButtonHints()`'s SMALL-sized button (`LyraTheme.cpp`,
+`smallButtonHeight = HintGeometry::scaleMetricY(15)` vs the active
+`buttonHeight` of 40): an empty front label shrinks that box to a stub
+anchored at the bottom edge rather than removing it or dimming it. Side
+hints had never needed this before, so no equivalent existed there --
+`dimDisabledRow()` was a plausible-sounding but invented substitute, not a
+reuse of anything already on screen.
+
+Fixed for real by giving the side-hint box the same treatment, along its own
+anchor edge: `LyraTheme::drawSideButtonHints()` shrinks a `topDisabled`/
+`bottomDisabled` box to `kSideBoxSmallWidth` (11 px, the same 15/40 ratio
+`drawButtonHints()` uses, applied to `sideButtonHintsWidth`'s 30 instead of
+`buttonHintsHeight`'s 40) while keeping the edge it's anchored to flush --
+the screen's right edge on X4 (`x + width` constant), the left/right screen
+edges on X3 -- exactly mirroring how the front box keeps its bottom edge
+flush while its top edge sinks. No text, no fill difference otherwise. `Base`
+theme (Classic) has no such stub in its own front hints either, so its
+`drawSideButtonHints()` just treats `topDisabled`/`bottomDisabled` as an
+empty label -- consistent with itself, not a second convention.
+`topDisabled`/`bottomDisabled` take priority over a non-empty label at each
+call site (`MapActivity` always passes `"+"`/`"--"` literally and lets the
+flag decide the box's shape, the same division of responsibility `fontId`
+already has between caller and theme).
+
+**Does not re-trip the default-argument trap two sections above.** All three
+new parameters (`topDisabled`, `bottomDisabled`, `bold`) default to `false`
+in `BaseTheme.h` *and* in `LyraTheme.h`'s override -- unlike `fontId`, where
+`BaseTheme`'s and `LyraTheme`'s declared defaults actually disagreed, every
+existing `GUI.drawSideButtonHints(...)` call that omits these arguments
+(`OptionPopup.h`, `KeyboardEntryActivity.cpp`, `drawPanSideHints()`) resolves
+the omitted value against `BaseTheme`'s static type and gets `false` baked in
+at compile time -- which is also what every override's own default would
+have produced, so there is no value to diverge from. Safe only because the
+values happen to agree everywhere; a future default that must differ per
+theme needs the `fontId = 0` sentinel pattern instead, not a plain default.
+
+## Finding: the X3 side-hint boxes were transparent -- the X4 fix for the same bug never reached the X3 branch
+
+**Verified on hardware (X3), 2026-10-18.** `57157ce8` (2026-08-06) backed the
+X4 branch of `drawSideButtonHints()` with a white fill before the outline, in
+both `BaseTheme.cpp` and `LyraTheme.cpp` -- `drawRect`/`drawRoundedRect` only
+stroke a border, so without a fill first, whatever the map already drew at
+that spot shows straight through the box. The commit's own message said "both
+themes", meaning `BaseTheme` and `LyraTheme`; it did not mean both device
+layouts. Each file's `gpio.deviceIsX3()` branch was left exactly as it was
+before the fix -- outline and text only -- so the X3 side-hint boxes kept
+showing map ink through them, for over two months, on the one board the
+original report never ran on.
+
+Fixed by adding the matching `fillRect(..., false)` (`BaseTheme.cpp:315-345`)
+and `fillRoundedRect(..., Color::White)` (`LyraTheme.cpp:468-510`) calls
+ahead of each existing outline call, inside the `gpio.deviceIsX3()` branch,
+sized to that branch's own one-box-per-side geometry (not copied from the
+X4 branch's stacked two-box footprint, which does not apply to X3's layout).
+
+**Caught by the maintainer looking at the device, not by review or a host
+test** -- there is no host-side rendering check that would catch a missing
+fill call, because the bug produces a syntactically ordinary draw sequence
+that merely omits one call. Confirmed fixed with
+`tools/device_map_shot.py --width 792 --height 528`: the Follow-mode `+`/`--`
+boxes sit on an opaque white tag with no map lines showing through, at
+`kSideHintX3Y = 155` (landscape).
+
+**A verification trap while chasing this**: the first screenshot attempt
+showed neither hints nor the header -- not a transparency bug, a mid-render
+capture. The console's `zoom` command had just loaded a dense tile area
+(16,595 ways, 1.42 MB read), and `device_map_shot.py`'s 4 s `SETTLE_S` is not
+long enough for every area -- `composeViewport()` draws the header and
+`drawMapButtonHints()` only after the layer pass finishes, so a screenshot
+taken too early catches tiles with no chrome at all, which looks like chrome
+is missing rather than like a slow frame. Re-grabbing the same frame a few
+seconds later (no new `zoom` command, so no new render) showed the finished
+frame with both boxes present and opaque.
+
+## Finding: zoom side hints moved from text to icons, and the first icon rotation guess was wrong
+
+**Maintainer's call, 2026-10-18.** `drawZoomSideHints()`'s plain-text `"+"`/
+`"--"` read too faint on the X3 to be sure which box did what -- the doubled
+hyphen (this file's earlier finding, above) was already a workaround for a
+legibility problem, not a design choice. Replaced with Lucide `plus`/`minus`
+icons, rasterized bold (`scripts/gen_side_hint_icons.py`, stroke-width bumped
+from Lucide's default 2 to 3.2) into `src/components/icons/side_hint_icons.h`.
+`drawSideButtonHints()` (`BaseTheme.cpp`, `LyraTheme.cpp`) gained optional
+`topIcon`/`bottomIcon` parameters: when set, the box's fill/border/
+disabled-stub logic is unchanged and only the content step swaps from rotated
+text to a plain icon draw.
+
+**First cut used `GfxRenderer::drawIcon()`, and that was wrong -- caught on
+hardware, 2026-10-20.** The reasoning seemed solid: this box's TEXT already
+goes through `drawTextRotated90CW()` because the box sits sideways on the
+screen edge, so an icon should go through the matching rotation
+(`drawIcon()`'s baked-in quarter turn) to read right-side-up the same way.
+Flashed it, screenshotted the Follow screen: the plus looked fine (a plus is
+rotation-symmetric, so the mistake was invisible there), but the minus came
+out as a **vertical bar**, not horizontal.
+
+The reasoning's flaw: `drawTextRotated90CW()`'s rotation is not a convention
+this box's content is supposed to read correctly through -- it is *why* the
+plain-text `-` was already thin and `--` had to be doubled. Rotating a
+horizontal stroke into a box like this one turns it into a near-vertical
+sliver; that is the bug drawMono1bpp/drawIcon's existing doc comments already
+warn about for the map's *other* icons (`MapActivity.cpp:2239`, `:2457`), and
+it applies here too even though the bug was first noticed as "the text is
+thin" rather than "the icon is rotated". The box's own border is drawn in
+plain, unrotated coordinates and always read correctly; an icon drawn with
+`drawMono1bpp()` (no extra rotation -- the ordinary map-screen convention)
+reads correctly for the same reason, and was the fix.
+
+**Lesson for the next sideways-box icon**: this box's established "the text
+goes through a special rotation" is local plumbing for how fonts render
+glyphs upright at this position, not a reusable orientation contract. A new
+element in the same box should default to the *unrotated* coordinate frame
+(same as the box's own border) and only add a transform if a screenshot shows
+it is actually needed -- not because a neighboring text call happens to use
+one, for an unrelated reason.

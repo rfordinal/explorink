@@ -3,6 +3,7 @@
 #include <cstdint>
 
 #include "IMapCanvas.h"
+#include "IMapPointSource.h"
 #include "IMapSource.h"
 #include "MapStyle.h"
 
@@ -16,12 +17,19 @@
 // on screen. Second, it needs the text width, which only the canvas knows
 // (IMapCanvas::measureText).
 //
-// The knowledge of what is on screen is kept as a coarse occupancy grid rather
-// than by re-reading any layer. Roads and buildings are deliberately NOT in it:
-// a name is meant to sit over the map -- that is what the halo or the box is
-// for -- and tracking road pixels would cost a second roads pass over the SD
-// card for no decision. The route is in it, because the route is the one thing
-// on screen a label must not hide.
+// What is on screen is known two ways, and the split is deliberate.
+//
+// The **route** is in a coarse occupancy grid, marked by the pass that draws it,
+// and it is a hard rule: a label may not cover more than
+// `max_route_overlap_pct` of itself with the line the rider is following.
+//
+// **Everything else** -- roads, buildings, area tones, contours, dots, POI marks,
+// the labels already placed -- is read straight back off the canvas at placement
+// time (IMapCanvas::inkCoverage), and it is a preference: among the positions the
+// hard rules allow, the one covering the least ink wins. That read is free
+// because names are drawn last, over the finished frame; there is no second pass
+// over any layer. Until 2026-09-15 it was not done at all and the first position
+// that fitted was taken, which chose which part of the map to erase by accident.
 
 // One bit per kCellPx square of screen. 8 px is about half a label's height, so
 // a box test lands on 3-4 rows of cells: fine enough that a name beside the
@@ -71,11 +79,65 @@ class MapOccupancyGrid {
 // and placement cannot start until the whole layer has been walked -- the
 // rank-first order is the whole point.
 struct MapLabelCandidate {
-  static constexpr int kNameLen = 32;
+  // 63 bytes of UTF-8 plus a terminator -- exactly what the point file allows
+  // a name to be (kPointNameMaxBytes, docs/point-file-spec.md) and more than a
+  // place name has ever needed.
+  //
+  // It was 32, which is fine for a village and short for a landmark: Slovak
+  // names run long ("Chranena krajinna oblast Strazovske vrchy" is 47 bytes)
+  // and the cut landed mid-name, sometimes mid-codepoint. Widening costs
+  // kMaxCandidates x 32 = 1,152 bytes of the label scratch, which MapActivity
+  // allocates once on the heap for the map screen (T-2034).
+  //
+  // A name still longer than this is cut on a codepoint boundary, never inside
+  // a UTF-8 sequence -- half a sequence draws a replacement glyph in the
+  // middle of a word. Fitting it to the panel is a separate job and belongs to
+  // fitName()'s ellipsis, which measures pixels rather than bytes.
+  static constexpr int kNameLen = 64;
   int16_t x = 0;
   int16_t y = 0;
   uint8_t rank = 0;
+  // A landmark name rather than a place name: its own text size and its own
+  // cap, because the two answer different questions and a ridge full of peaks
+  // must not be able to spend the village names' budget.
+  bool landmark = false;
+  // How far this candidate's own mark reaches from its anchor, so the label is
+  // pushed clear of it. A place dot and an 18 px POI square are not the same
+  // distance, and a text-only landmark's dot is smaller than either.
+  uint8_t markHalfPx = 0;
   uint32_t distSq = 0;
+  char name[kNameLen] = "";
+  // A second line drawn UNDER the mark while `name` goes above it: a summit's
+  // height, the layout a paper map gives one. Empty for everything else.
+  char below[8] = "";
+};
+
+// One street name waiting to be drawn, already projected and already rotated.
+//
+// Street names are held apart from MapLabelCandidate on purpose. They are a
+// different mechanism, not a third tier of the same one: the text lies ALONG
+// its street at the street's own angle, the way a contour's height number lies
+// along its line, so there is no eight-position search, no dot to clear and no
+// per-cell quota. Sharing the place placer's array would also have let a city
+// tile's hundreds of street records starve the settlement names it is tuned
+// for.
+struct MapRoadLabelSlot {
+  // 48 bytes of UTF-8 plus a terminator. The longest named street in the
+  // measured Bratislava extract is 37 bytes and the median is 10; a longer one
+  // is cut on a codepoint boundary and then fitted to the panel by pixel.
+  static constexpr int kNameLen = 49;
+  int16_t x = 0;
+  int16_t y = 0;
+  // The street's direction on SCREEN, already turned with the viewport.
+  int16_t dx = 0;
+  int16_t dy = 0;
+  // How many pixels of straight street this anchor sits on. A name wider than
+  // this is refused: the alternative is a long name bent around a corner, which
+  // is what no paper map does and what the builder's run_q field exists to
+  // prevent (docs/map-data-spec.md, "Road label record").
+  uint16_t runPx = 0;
+  // Road class, which is the rank. Lower wins.
+  uint8_t classId = 0;
   char name[kNameLen] = "";
 };
 
@@ -100,22 +162,126 @@ struct MapLabelScratch {
   // 32 costs 1,280 bytes of the budget above and covers every rung measured so
   // far. A frame with more on-screen places than this still names the nearest 32,
   // which is the right thing to lose.
-  static constexpr int kMaxCandidates = 32;
+  static constexpr int kMaxCandidates = 36;
+
+  // The panel is bucketed into kCellsX x kCellsY, and each cell keeps at most
+  // kPerCell candidates. This is what stops the names bunching.
+  //
+  // Rank decides first and always will: a city at the corner beats a town by
+  // the marker. But among equal ranks the tie-break is distance from the
+  // anchor, and at a coarse rung there are hundreds of villages -- so every
+  // slot went to the ring nearest the marker and whole regions of the panel
+  // got dots and no names. Seen over Prague at rung 6: thirteen names in one
+  // band across the middle, the top third empty (maintainer, 2026-08-25).
+  //
+  // A per-cell cap fixes it without inventing a scoring function: the buffer
+  // cannot be monopolised by one part of the screen, and inside a cell the
+  // rank-then-distance order is still exactly right. 3 x 4 over 480x800 is
+  // 160x200 px cells, and 12 x 3 = 36 is why kMaxCandidates is 36.
+  static constexpr int kCellsX = 3;
+  static constexpr int kCellsY = 4;
+  static constexpr int kPerCell = 3;
 
   MapOccupancyGrid route;
   MapOccupancyGrid taken;
   MapLabelCandidate candidates[kMaxCandidates];
   uint8_t count = 0;
+  // Street names, kept apart from the place candidates above.
+  //
+  // Eight slots for a cap of two or three, which is the same reasoning the
+  // contour numbers use: the extras are what a collision has to fall back on.
+  // It is NOT a candidate buffer -- the tile hands records over
+  // most-important-first already, so this only has to hold the front of that
+  // order across the two to four tiles a close rung reads.
+  //
+  // About 480 bytes on top of MapLabelScratch, which MapActivity allocates on
+  // the heap once for the map screen.
+  static constexpr int kMaxRoadLabels = 8;
+  MapRoadLabelSlot roadLabels[kMaxRoadLabels];
+  uint8_t roadCount = 0;
+  uint8_t roadPlaced = 0;
+  // Refused because the name is wider than its own straight street. Counted
+  // separately from `dropped`: a name with nowhere straight to lie was never a
+  // candidate, and lumping the two makes the declutter rules read as if they
+  // were rejecting everything.
+  uint8_t roadTooLong = 0;
+
   // Filled in by draw(), for the debug readout and the preview's stderr line.
   uint8_t placed = 0;
   uint8_t dropped = 0;
+
+  // What the ink test cost this frame: boxes probed, and pixel samples read
+  // across them (IMapCanvas::inkCoverage). Counts rather than a time, because
+  // a count is the same number on the host preview and on the panel -- the
+  // device's per-sample cost is one multiplication away, and a millisecond
+  // measured on a laptop says nothing about a C3.
+  uint16_t inkProbes = 0;
+  uint32_t inkSamples = 0;
+
+  // Switches the least-ink test off, back to first-fit placement.
+  //
+  // Kept because the two layouts have to be comparable on the SAME frame: a
+  // side-by-side built from two binaries also differs by whatever else moved
+  // between them, and a judgement on the panel is worth only as much as the
+  // pair it was made from. It is also the fallback if the test ever turns out
+  // too slow on a device -- one bool rather than a revert.
+  //
+  // Config, not per-frame state, so reset() deliberately leaves it alone. The
+  // firmware never sets it: MapActivity takes the default.
+  bool inkTest = true;
+
+  // The panel, so offer() can refuse a place that cannot be named anyway.
+  //
+  // Without it every slot is contested by the whole tile range, which is far
+  // wider than the screen: measured over Prague at rung 6, 286 places compete
+  // for 32 slots and only 17 of the winners are on the panel. The cap then
+  // silently decides *where* names may go, which is the exact failure the
+  // kMaxCandidates comment above describes at its old value of 12. Set once per
+  // frame by setClip(); zero width means "not set", and then nothing is
+  // refused -- a caller that forgets it gets the old behaviour rather than a
+  // blank map.
+  int16_t clipX = 0, clipY = 0, clipW = 0, clipH = 0;
+
+  void setClip(int x, int y, int w, int h) {
+    clipX = static_cast<int16_t>(x);
+    clipY = static_cast<int16_t>(y);
+    clipW = static_cast<int16_t>(w);
+    clipH = static_cast<int16_t>(h);
+  }
+
+  bool onScreen(int x, int y) const {
+    if (clipW <= 0 || clipH <= 0) return true;
+    return x >= clipX && y >= clipY && x < clipX + clipW && y < clipY + clipH;
+  }
+
+  // Which bucket of the panel a screen point falls in, or -1 when no clip has
+  // been set. -1 disables the per-cell cap entirely, so a caller that does not
+  // set a clip (a unit test, a probe) gets the old global behaviour rather
+  // than a silently different one.
+  int cellOf(int x, int y) const {
+    if (clipW <= 0 || clipH <= 0) return -1;
+    int cx = (x - clipX) * kCellsX / clipW;
+    int cy = (y - clipY) * kCellsY / clipH;
+    if (cx < 0) cx = 0;
+    if (cy < 0) cy = 0;
+    if (cx >= kCellsX) cx = kCellsX - 1;
+    if (cy >= kCellsY) cy = kCellsY - 1;
+    return cy * kCellsX + cx;
+  }
 
   void reset() {
     route.clear();
     taken.clear();
     count = 0;
+    roadCount = 0;
+    roadPlaced = 0;
+    roadTooLong = 0;
     placed = 0;
     dropped = 0;
+    inkProbes = 0;
+    inkSamples = 0;
+    clipW = 0;
+    clipH = 0;
   }
 };
 
@@ -131,16 +297,47 @@ namespace MapLabels {
 // (docs/map-render-spec.md, "the map underneath stays byte-identical").
 void offer(MapLabelScratch& scratch, const MapPlaceRef& place, int anchorX, int anchorY);
 
+// The same, for a point-layer landmark: a castle, a peak, a named rock, a
+// guidepost, a locality. `markHalfPx` is how far its own mark reaches from the
+// point (MapPointMarks::marksSide()/2), so the name clears the square or the
+// dot it belongs to.
+//
+// Offered during the point walk, drawn by the same draw() as the places: a
+// name has to know where every other name went, and placement cannot start
+// until both layers have been walked (MapLabels.h, the note above).
+// `below`, when non-empty, is drawn under the mark with `name` above it --
+// name, symbol, height, stacked and centred, which is how a paper map sets a
+// summit. Pass nullptr for a landmark whose whole label is its name.
+void offerLandmark(MapLabelScratch& scratch, const MapPointRef& point, const char* name, const char* below,
+                   int markHalfPx, int anchorX, int anchorY);
+
 // Places and draws what fits. Call after the route has been drawn (so
 // scratch.route is marked) and after the place dots, since a label sits over
 // the map but a dot must not be hidden by another place's label box.
 //
-// `rungMaxLabels` is the zoom rung's own ceiling
-// (MapViewport::ZoomStep::maxLabels, carried in MapViewState); the smaller of it
-// and the style's `max_labels` wins. Two caps rather than one because they
-// answer different questions: the rung knows how much ground is on the panel and
-// therefore how many names that ground deserves, the style knows how many the
-// renderer may afford. Default 255 means "rung has no opinion".
-void draw(IMapCanvas& canvas, MapLabelScratch& scratch, const MapStyle& style, uint8_t rungMaxLabels = 255);
+// The cap is the style's own `max_labels`. It is per rung since 2026-08-25
+// (data/mapstyle.json, layers.places `when`: 3 names at rung 0, 14 at rung 6),
+// which is why there is one cap here and not two. There used to be a second
+// ceiling carried in MapViewState from MapViewport::ZoomStep::maxLabels, and
+// the smaller won -- the same number in two files, free to drift, answering the
+// same question. The rung's answer now arrives as the style itself.
+void draw(IMapCanvas& canvas, MapLabelScratch& scratch, const MapStyle& style);
+
+// Offers one street name. Kept best-first by (road class, then the longer
+// straight run), which is the order the tile already wrote them in -- this only
+// has to merge the two to four tiles a close rung reads into one order.
+//
+// No anchor distance in the key, unlike places: a street name is not pointing
+// at anything the rider is near, it is saying what the line under it is called.
+void offerRoadLabel(MapLabelScratch& scratch, const MapRoadLabelRef& label);
+
+// Draws the street names that fit, over the map and under nothing.
+//
+// Call it AFTER draw() above and BEFORE the contour numbers: a settlement name
+// beats a street name, and a street name beats a height. Each one lies along
+// its own street at that street's angle, with a 1 px outline from the same
+// rotated mask, exactly as drawContourLabels sets a height -- so the line still
+// runs visibly behind the text instead of through a punched-out box.
+void drawRoadLabels(IMapCanvas& canvas, MapLabelScratch& scratch, const MapStyle& style);
 
 }  // namespace MapLabels

@@ -10,38 +10,52 @@ class HomeActivity final : public Activity {
   int selectorIndex = 0;
   const HomeMenuItem initialMenuItem;
 
-  // The menu, in the order it is drawn. `enabled == false` draws the row dimmed
-  // and refuses selection -- Trips has no activity at all and Pins lives inside
-  // the map's own popup (../../../docs/home-screen.md).
+  // The menu, in the order it is drawn. Pins lives inside the map's own popup,
+  // so it has no row here; Trips is enabled and opens the trip picker
+  // (onTripsOpen() -> ActivityManager::goToRouteSelect())
+  // (../../../docs/home-screen.md).
   //
-  // **Wallet is enabled on this branch**, because this is the branch its activity
-  // lives on. On develop the same row is there with `enabled == false`, which is
-  // why a rebase lands here every time: keep develop's table, flip that one flag,
-  // and add the WALLET case to activate().
+  // **Wallet has a row on this branch**, because this is the branch its activity
+  // lives on. Develop carries the enum value with no row at all.
   struct Row {
     HomeMenuItem item;
     StrId label;
     const freeink::Icon* icon;
-    bool enabled;
+    // Optional `(text glyph)` aside after the label -- what the row runs on,
+    // kept out of its name (BaseTheme::HomeRow, ../../docs/home-screen.md).
+    // STR_NONE_OPT means no badge text.
+    StrId badgeLabel = StrId::STR_NONE_OPT;
+    const freeink::Icon* badgeIcon = nullptr;
   };
+  // Five rider rows, plus one per bench row this build carries. Spelled as a
+  // sum rather than as four literals because the static_assert in
+  // HomeActivity.cpp checks it against the table, and two independent flags
+  // would otherwise need four spellings of the same number.
+  static constexpr int kRowCount = 6
 #if defined(ENABLE_PREVIEW_BENCH) && ENABLE_PREVIEW_BENCH
-  static constexpr int kRowCount = 8;  // + the grayscale bench row
-#else
-  static constexpr int kRowCount = 7;
+                                   + 1  // the grayscale bench
 #endif
+#if defined(ENABLE_LORA_MESH) && ENABLE_LORA_MESH
+                                   + 1  // the LoRa node list
+#endif
+      ;
   static const Row* rows();
   static int indexOf(HomeMenuItem item);
 
-  // Skip disabled rows: `step` is +1 or -1 and the walk wraps.
-  int nextSelectable(int from, int step) const;
+  // Wraps `from` by `step` (+1 or -1) within the row count.
+  static int stepRow(int from, int step);
 
   void onSettingsOpen();
   void onFileTransferOpen();
   void onMapOpen();
+  void onTripsOpen();
   void onTileSyncOpen();
   void onWalletOpen();
 #if defined(ENABLE_PREVIEW_BENCH) && ENABLE_PREVIEW_BENCH
   void onPreviewOpen();
+#endif
+#if defined(ENABLE_LORA_MESH) && ENABLE_LORA_MESH
+  void onGroupOpen();
 #endif
   void activate(int index);
 

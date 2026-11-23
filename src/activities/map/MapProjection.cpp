@@ -24,9 +24,23 @@ void MapProjection::reset(double anchorLat, double anchorLon, int16_t anchorScre
   anchorScreenY_ = anchorScreenY;
   mppMerc_ = mppMerc;
 
+  // mppMerc is mpp / cos(anchorLat), so this undoes it. Kept rather than
+  // recomputed: a ground length (a street's straight run, in metres) has to
+  // become pixels somewhere, and only this class still has the latitude.
+  mppGround_ = mppMerc * std::cos(anchorLat * kDegToRad);
+
   const double theta = (headingStep % 16) * 22.5 * kDegToRad;
   cosTheta_ = std::cos(theta);
   sinTheta_ = std::sin(theta);
+}
+
+void MapProjection::rotateTileLocalDir(double dx, double dy, double& outDx, double& outDy) const {
+  // Tile-local y grows SOUTH, so a local direction is (east, north) = (dx, -dy).
+  // Substituted into projectMerc's rotation the two sign flips cancel into this
+  // plain rotation -- which is worth keeping as arithmetic rather than as two
+  // negations somebody later "simplifies" one of away.
+  outDx = dx * cosTheta_ + dy * sinTheta_;
+  outDy = -dx * sinTheta_ + dy * cosTheta_;
 }
 
 void MapProjection::projectMerc(double mercX, double mercY, int16_t& outScreenX, int16_t& outScreenY) const {
@@ -49,9 +63,14 @@ void MapProjection::projectMercWide(double mercX, double mercY, int32_t& outScre
 }
 
 void MapProjection::projectTileLocal(int32_t originX, int32_t originY, int16_t localX, int16_t localY,
-                                     int16_t& outScreenX, int16_t& outScreenY) const {
-  const double mercX = static_cast<double>(originX) + static_cast<double>(localX);
-  const double mercY = static_cast<double>(originY) - static_cast<double>(localY);
+                                     int16_t& outScreenX, int16_t& outScreenY, const uint8_t coordShift) const {
+  // Widen before shifting: `localX` is int16 and a shift of 1 on a coordinate
+  // near the tile edge overflows it. Shift 0 leaves both arithmetic and result
+  // exactly what they were before the byte existed.
+  const int32_t offX = static_cast<int32_t>(localX) << coordShift;
+  const int32_t offY = static_cast<int32_t>(localY) << coordShift;
+  const double mercX = static_cast<double>(originX) + static_cast<double>(offX);
+  const double mercY = static_cast<double>(originY) - static_cast<double>(offY);
   projectMerc(mercX, mercY, outScreenX, outScreenY);
 }
 

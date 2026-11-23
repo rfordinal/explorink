@@ -50,7 +50,7 @@ what makes every gate in plans 01-02 cheap. That is unusual and worth saying.
 **`MapTransferReceiver` has no test at all.** It is 438 lines, it parses frames
 off an untrusted wire, it validates paths, it writes to the card and it renames
 files into place. Its failure modes are: a corrupt file accepted as a tile, a
-path escaping `/trailink`, a `.part` left behind, a transfer wedged busy.
+path escaping `/explorink`, a `.part` left behind, a transfer wedged busy.
 
 Every one of those is host-testable. The class already depends on the wire format
 and `HalStorage`, nothing else — no BLE types in its own header

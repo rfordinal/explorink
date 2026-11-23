@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 
 // The follow-the-marker policy: when a fresh fix may move the marker inside the
@@ -161,6 +162,18 @@ struct Request {
   // both are per-rung numbers since the ladder grew to seven rungs.
   int16_t minMovePx = kMinMovePx;
   int16_t keepInMarginPx = kKeepInMarginPx;
+  // The marker's own shape changed with this fix -- the ring broke or healed,
+  // or the heading glyph became a wedge or vanished (MapFixTrust::MarkerStyle).
+  //
+  // Without this a quality change is invisible whenever the rider is not
+  // moving, which is exactly when it matters: a parked rider whose heading has
+  // gone stale, or whose fix has degraded in a street canyon, produces fixes
+  // that land under the move floor and Skip. The marker would keep claiming
+  // what it claimed before, indefinitely, while MapActivity's own state said
+  // otherwise.
+  //
+  // Found in the simulator 2026-09-05, before any of this reached a panel.
+  bool markerStyleChanged = false;
   // The two heading thresholds, per request, defaulting to the constants above.
   //
   // Same pattern and the same reason as `partialMoveBudget`: a caller that has
@@ -211,6 +224,56 @@ uint8_t relativeHeadingStep(uint8_t fixHeadingStep, uint8_t anchorHeadingStep);
 // rung in hand (the host tests); decide() passes Request::keepInMarginPx.
 bool insideKeepIn(int16_t x, int16_t y, int16_t screenWidth, int16_t screenHeight, int16_t marginPx = kKeepInMarginPx);
 
+// Which check in decide() produced the action -- the branch that actually
+// fired, not a guess made afterwards from the same Request.
+//
+// This exists because guessing was the only option and the guess can be wrong.
+// decide() tests heading drift, then keep-in, then the budget; the
+// after-the-fact classifier in tools/replay_ride.py:181-187 (and, until this
+// enum, in test/map_replay's ReplayEngine) tests keep-in, then the budget, then
+// heading. A fix that satisfies two of them at once gets a different answer from
+// the two orders, and nothing on the device could contradict it: MapActivity's
+// re-anchor log line prints the fix, the two headings and the move count, and
+// never the reason.
+enum class Reason : uint8_t {
+  None,
+  // decide() check 1: the rider turned further than the drift limit, with at
+  // least minPartialMovesForHeadingReAnchor moves already spent in this frame.
+  HeadingDrift,
+  // Check 2: the marker reached the keep-in margin, so this frame has no room
+  // left in the direction of travel.
+  KeepIn,
+  // Check 3: partialMoves has spent the whole ghosting budget.
+  Budget,
+  // The fix moved less than minMovePx on both axes -- Skip.
+  BelowMoveFloor,
+  // Below the move floor, but the marker has to be repainted anyway because
+  // what it is allowed to claim changed (Request::markerStyleChanged).
+  TrustChanged,
+  // None of the above: the marker moves inside the frame that is up.
+  Moved,
+};
+
+// The wire name, for a log line and for a table column. Stable strings: the
+// console in test/map_window and the device's own log print the same word.
+const char* reasonName(Reason reason);
+
 Action decide(const Request& request);
+
+// Same decision, and the branch that made it. The one-argument form above
+// delegates here, so there is one copy of the ladder.
+Action decide(const Request& request, Reason& outReason);
+
+// The map module's own log line for one decision, formatted once so the
+// device's LOG_DBG and a host console print the same bytes.
+//
+// `seq` is the packet sequence MapActivity carries; pass the packet index off
+// the host. Writes at most outSize bytes including the terminator and always
+// terminates.
+//
+// The three shapes match what MapActivity emitted before this function existed
+// (MapActivity.cpp's applyFix() and moveMarker()), with the reason appended to
+// the re-anchor line -- the one thing that log could never say.
+void formatDecisionLog(const Request& request, Action action, Reason reason, unsigned seq, char* out, size_t outSize);
 
 }  // namespace MapFollow

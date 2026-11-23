@@ -6,6 +6,7 @@
 #include <string>
 
 #include "IMapCanvas.h"
+#include "MapRideMode.h"
 #include "MapStyle.h"
 
 // Shared by test/map_preview (the CLI tool) and the golden-file test
@@ -29,8 +30,13 @@ struct MapPreviewRequest {
   // which is why it is a free parameter here rather than a constant.
   int16_t markerY = 0;
 
-  // Style to draw with. nullptr means kDefaultMapStyle, i.e. the compiled
-  // data/mapstyle.json -- the same numbers the firmware build gets, which is
+  // Travel mode. Together with `zoom` it picks the style and the class mask,
+  // exactly as the device does -- data/mapstyle.json's `when` blocks are
+  // resolved per (mode, rung) at build time (MapStyleTable.h).
+  MapRideMode mode = MapRideMode::Ride;
+
+  // Style to draw with. nullptr means the compiled data/mapstyle.json resolved
+  // for `mode` at `zoom` -- the same numbers the firmware build gets, which is
   // the point of previewing here at all. The golden test pins its own frozen
   // style instead, so a style edit cannot break a fixture that exists to
   // guard the tile pipeline.
@@ -48,15 +54,30 @@ struct MapPreviewRequest {
   // (MapOffScreenReject in test/map_tile_reader/).
   bool rejectOffScreen = true;
 
-  // Override the rung's buildings decision (MapViewport::ZoomStep::buildings).
-  // Empty follows the rung, which is what the device does and what a preview
-  // should show by default.
+  // Place a label at the first position that fits instead of the one covering
+  // the least ink (MapLabelScratch::inkTest). The A/B switch for judging the
+  // placement change on one frame, not for the device.
+  bool labelInkTest = true;
+
+  // Override the rung's buildings decision (the style's `buildingsEnabled`,
+  // which data/mapstyle.json switches off above rung 0). Empty follows the
+  // style, which is what the device does and what a preview should show by
+  // default.
   //
   // Set it to compare the same view with and without them -- which is how the
   // "are buildings worth their cost at 3 m/px" question gets answered by looking
   // rather than by arguing, and how the test below proves the flag reaches the
   // renderer at all.
   std::optional<bool> drawBuildings;
+
+  // Draw place names. True is the device's behaviour and the default here.
+  //
+  // False draws the place dots but no text, which is what tuning the road
+  // styling wants: a name is a big opaque object and at the coarse rungs there
+  // are a dozen of them, so they hide exactly the road network being judged.
+  // The dots stay because they are one pixel each and they are what tells you
+  // which settlement you are looking at (maintainer, 2026-08-25).
+  bool drawLabels = true;
 
   // Skip the marker puck entirely, on top of whatever routeFitRan already
   // suppresses it for. On by default (draw it) -- matches every previous
@@ -86,6 +107,29 @@ struct MapPreviewRequest {
   // (../../../docs/route-file-spec.md in the parent xteink repo). This is what
   // makes route styling a two-second laptop edit rather than a flash.
   std::string routePath;
+
+  // The POI layer (safety points now, landmarks later), read from
+  // `<tilesDir>/points/10/<col>/<row>.tip` -- the same root as the tiles,
+  // because it is the same card (../../../docs/point-file-spec.md in the parent
+  // xteink repo). False draws no marks and opens no shard.
+  bool drawPoints = true;
+  // Bit N set = draw safety category id N (MapSafetyCategory).
+  //
+  // **Zero by default, because zero is what the device shows.**
+  // MapActivity::nearbyCategoryMask_ starts at 0 and is not persisted, so every
+  // boot puts no safety square on the map and the rider turns one on through
+  // `Nearby -> Show on map` when they want it -- which is a thing somebody
+  // reaches for when the ride stops going to plan, not a layer they ride with.
+  //
+  // The comment here used to say all ones was "the map's normal state" and the
+  // default was 0xFFFF to match it. Both were wrong, and the cost was real:
+  // every landmark density judgement made on 2026-10-28 was taken against
+  // panels carrying a dozen safety squares a rider would never have had, and
+  // the crowding they showed was read as the map's.
+  //
+  // `--point-categories` turns them on deliberately, which is what judging the
+  // safety layer itself wants.
+  uint16_t pointCategoryMask = 0;
 
   // Frame the whole route instead of the lat/lon/heading/zoom above: run
   // MapRouteFit over the loaded route and use what it picks. Exactly what the
@@ -122,6 +166,21 @@ struct MapPreviewResult {
   // thinning the picture -- which is the intended order.
   uint8_t labelsPlaced = 0;
   uint8_t labelsDropped = 0;
+  // Street names (T-558). `roadOffered` is how many of the tile's records the
+  // panel could have used at all, `roadTooLong` how many were refused because
+  // the name is wider than the straight street under it. A high roadTooLong is
+  // the data talking, not the declutter rules: it is the rule that keeps a long
+  // name off a short residential stub.
+  uint8_t roadOffered = 0;
+  uint8_t roadPlaced = 0;
+  uint8_t roadTooLong = 0;
+
+  // What the least-ink placement test cost: candidate boxes probed, and pixel
+  // samples read across them (IMapCanvas::inkCoverage). The same two numbers
+  // the device would report, so a cost argued here holds there -- only the
+  // per-sample time differs.
+  uint16_t labelInkProbes = 0;
+  uint32_t labelInkSamples = 0;
   uint8_t lodZoom = 0;
   uint32_t col0 = 0, row0 = 0, col1 = 0, row1 = 0;
   long smallestTileBytes = -1;
@@ -151,6 +210,16 @@ struct MapPreviewResult {
   std::string routeName;
   uint32_t routePoints = 0;
   uint32_t routeBytesRead = 0;
+  // The point layer. `pointShardsOpened` counts files that opened and passed
+  // their header; `pointShardsMissing` is the normal case for a sparse layer
+  // and not an error. A corrupt shard is counted separately because it means
+  // something different: a file that lied rather than an area nobody built.
+  uint32_t pointsDrawn = 0;
+  uint32_t pointShardsOpened = 0;
+  uint32_t pointShardsMissing = 0;
+  uint32_t pointShardsCorrupt = 0;
+  uint32_t pointBytesRead = 0;
+
   // Filled when fitRoute was set and the fit ran. `routeFits` false means even
   // the coarsest rung could not hold the whole route, and the frame shows as
   // much of it as 20 m/px allows.

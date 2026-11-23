@@ -3,6 +3,7 @@
 #include <cstdint>
 
 #include "IMapCanvas.h"
+#include "IMapPointSource.h"
 #include "IMapRouteSource.h"
 #include "IMapSource.h"
 #include "MapHeading.h"
@@ -20,28 +21,20 @@ struct MapViewState {
   int16_t markerX = 0;
   int16_t markerY = 0;
   MapHeading heading = MapHeading::N;
-  // Whether this frame draws buildings. Comes off the zoom rung
-  // (MapViewport::ZoomStep::buildings), because it is a decision about the rung
-  // rather than about the style -- and false means the layer is never opened, so
-  // it costs no card read either.
+  // Which rung of the zoom ladder this frame is drawn at.
   //
-  // Default true so a caller that does not know about rungs (a test, a probe)
-  // gets what the style asks for and nothing surprising.
-  bool drawBuildings = true;
-  // Whether this frame draws the built-up landuse class. Comes off the same rung
-  // table (MapViewport::ZoomStep::builtUp) and is the mirror of drawBuildings:
-  // rung 0 draws buildings without a wash, every rung above draws the wash
-  // instead. Forest is unaffected.
-  bool drawBuiltUp = true;
-  // Ceiling on place names for this frame, from the zoom rung
-  // (MapViewport::ZoomStep::maxLabels). The style's own `max_labels` caps it
-  // again, and the smaller of the two wins: the rung says how many names this
-  // much ground deserves, the style says how many the renderer may afford.
+  // It is here so the caller can pick the style for it -- mapStyleFor(mode,
+  // zoomStep) in MapStyleTable.h. render() itself never reads it: it is handed
+  // the resolved style and cannot tell which rung produced it, which is what
+  // keeps "the style says what is drawn" true with no second rung table beside
+  // it.
   //
-  // 255 by default so a caller that knows nothing about rungs (a test, a probe)
-  // gets the style's number and nothing surprising -- the same default reasoning
-  // as drawBuildings above.
-  uint8_t maxLabels = 255;
+  // Three fields used to live here instead -- drawBuildings, drawBuiltUp and
+  // maxLabels, each copied out of MapViewport::ZoomStep. They are now
+  // `when` blocks in data/mapstyle.json (layers.buildings.enabled, the built-up
+  // landuse rule, layers.places.max_labels), so the rung's drawing decisions and
+  // the style's are one table that is edited in one place.
+  uint8_t zoomStep = 0;
 };
 
 // Wall time each layer of one render() call spent, in milliseconds.
@@ -59,16 +52,32 @@ struct MapViewState {
 struct MapRenderTiming {
   uint32_t (*nowMs)() = nullptr;
   uint32_t landuseMs = 0;
+  uint32_t contoursMs = 0;
   uint32_t buildingsMs = 0;
   uint32_t waterMs = 0;
   uint32_t roadsMs = 0;
   uint32_t routeMs = 0;
   uint32_t placesMs = 0;
+  // The POI marks from the point layer. Its own field because it is its own
+  // files: a shard is a separate open per 39 km of ground, so a slow points
+  // pass is a card-access question and never a geometry one.
+  uint32_t pointsMs = 0;
   // Place-name layout and drawing, which is neither free nor part of the places
   // walk: the halo is the same string re-drawn eight times per ring radius
   // (MapLabels.cpp), so this is the field that says whether the halo is
   // affordable at a given size.
   uint32_t labelsMs = 0;
+
+  // Two counts rather than times, and they ride in the timing struct because
+  // that is the one thing the renderer already fills and MapActivity already
+  // logs. Without them a run has no way to say whether the relief layer drew
+  // anything: `contoursMs` is 0 both when the layer is off and when it is on and
+  // empty, and an e2e check against a screenshot cannot tell a missing layer
+  // from a flat one (docs/simulator.md, "End to end against real tiles").
+  uint32_t contourLines = 0;
+  uint32_t contourLabels = 0;
+  // Street names: the layer-8 walk plus the placement, one number (T-558).
+  uint32_t roadLabels = 0;
 };
 
 // Nearest named place to the marker, by screen-pixel distance, picked while
@@ -137,9 +146,15 @@ class MapRenderer {
   // the map gets place dots and no names -- the behaviour before labels
   // existed. Passing it forces the places layer open the same way `nearestOut`
   // does, since the names come off that walk.
+  // `points` is the POI layer (safety points, later landmarks), or nullptr when
+  // the rider has it off or no shard covers the viewport. Drawn after the place
+  // dots and before the names: a square is a bigger mark than a dot and must
+  // not be buried under one, and a name must still win over both, since a label
+  // is the only thing here that is placed rather than simply drawn.
   static void render(IMapCanvas& canvas, IMapSource& source, const MapViewState& state, const MapStyle& style,
                      IMapRouteSource* route = nullptr, MapRenderTiming* timing = nullptr,
-                     MapNearestPlaces* nearestOut = nullptr, MapLabelScratch* labels = nullptr);
+                     MapNearestPlaces* nearestOut = nullptr, MapLabelScratch* labels = nullptr,
+                     IMapPointSource* points = nullptr);
 
   // The style's position puck: white disc, black ring, heading arrow. Drawn
   // by callers with no travel mode of their own -- test/map_preview, which has

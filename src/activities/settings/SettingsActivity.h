@@ -46,6 +46,17 @@ struct SettingInfo {
   StrId category = StrId::STR_NONE_OPT;  // Category for web UI grouping
   bool obfuscated = false;               // Save/load via base64 obfuscation (passwords)
   bool inTextSettings = false;           // Surfaced in the Text Settings screen; hidden from the flat Reader list
+  // Kept out of the on-device Settings screen while the entry still exists.
+  // The reader stack is being removed in stages and this is the first one: the
+  // row stops being reachable, but getSettingsList() still carries it, so
+  // settings.json keeps serialising it and the reader keeps behaving as before
+  // (CrossPointSettings.cpp:66 and :130 walk the same list). Deleting the entry
+  // is the later, real removal -- doing it now would silently reset the field
+  // on every device that has one stored.
+  bool hiddenFromMenu = false;
+  // Drawn, dimmed, and does nothing on Confirm. For a row we intend to make
+  // work later and want the rider to see coming, rather than one we are hiding.
+  bool disabled = false;
 
   // Direct char[] string fields (for settings stored in CrossPointSettings)
   size_t stringOffset = 0;
@@ -64,6 +75,16 @@ struct SettingInfo {
 
   SettingInfo& withTextSettings() {
     inTextSettings = true;
+    return *this;
+  }
+
+  SettingInfo& withHidden() {
+    hiddenFromMenu = true;
+    return *this;
+  }
+
+  SettingInfo& withDisabled() {
+    disabled = true;
     return *this;
   }
 
@@ -159,10 +180,15 @@ class SettingsActivity final : public Activity {
 
   // Per-category settings derived from shared list + device-only actions
   std::vector<SettingInfo> displaySettings;
-  // Second tab, ahead of Reader: this is a navigation device and the e-reader
-  // stack is being stripped over time (firmware CLAUDE.md).
+  // Second tab. This is a navigation device and the e-reader stack is being
+  // stripped over time (firmware CLAUDE.md); the Reader tab was the first
+  // thing to go (docs/settings-menu.md).
   std::vector<SettingInfo> mapSettings;
-  std::vector<SettingInfo> readerSettings;
+  // The group's own tab, added 2026-10-30. Everything about who else is on
+  // the map used to be spread across the Map tab's toggles and the Group
+  // screen's own control rows, and one field (`loraMeshOn`) had a row in both
+  // (docs/settings-menu.md, "The Group tab").
+  std::vector<SettingInfo> groupSettings;
   std::vector<SettingInfo> controlsSettings;
   std::vector<SettingInfo> systemSettings;
   const std::vector<SettingInfo>* currentSettings = nullptr;
@@ -172,12 +198,29 @@ class SettingsActivity final : public Activity {
 
   OptionPopup optionPopup;
 
+  // Five tabs where a board builds the group layer or the radio, four
+  // otherwise. Compile-time, because categoryNames[] is a fixed array and a
+  // tab with nothing under it is a dead end the rider has to walk back out of.
+#if (defined(ENABLE_GROUP_MARKERS) && ENABLE_GROUP_MARKERS) || (defined(ENABLE_LORA_MESH) && ENABLE_LORA_MESH)
+#define SETTINGS_HAS_GROUP_TAB 1
   static constexpr int categoryCount = 5;
+#else
+#define SETTINGS_HAS_GROUP_TAB 0
+  static constexpr int categoryCount = 4;
+#endif
   static const StrId categoryNames[categoryCount];
+
+  // The one place the tab order is written as code. Everything that needs
+  // "which list is tab N" goes through this, so adding a tab is one edit here
+  // and one in categoryNames[] -- before 2026-10-30 the order was spelled out
+  // as a switch in three separate places.
+  const std::vector<SettingInfo>* settingsForCategory(int categoryIndex) const;
 
   void enterCategory(int categoryIndex);
   void toggleCurrentSetting();
   void openSleepTimeoutPicker();
+  void openFrontlightBrightnessPicker();
+  void openFrontlightColorTemperaturePicker();
   void rebuildSettingsLists();
   void syncQuickResumeTimeoutForSleepScreen(bool sleepScreenChanged, bool quickResumeTimeoutChanged);
 

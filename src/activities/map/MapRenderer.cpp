@@ -1,11 +1,14 @@
 #include "MapRenderer.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 
 #include "MapAreaClass.h"
 #include "MapAreaFill.h"
 #include "MapLabels.h"
+#include "MapPointMarks.h"
+#include "MapTextMask.h"
 
 namespace {
 
@@ -60,6 +63,228 @@ void strokeWay(IMapCanvas& canvas, const MapWayRef& way, int lineWidth, MapInk i
 // Restarting is the obvious implementation and it is wrong: a curved way is
 // made of many short segments, so every vertex would start a fresh dash and a
 // bend would fill in solid -- exactly where the eye is looking.
+// One mark, stamped screen-aligned at (cx, cy). Built from drawLine because that
+// and fillSpan are the whole canvas -- there is no rect primitive, and a width-N
+// line of length N is an N x N block.
+//
+// Axis-aligned on purpose (MapStyle.h, MapLineMark): the edges land on the pixel
+// grid, and on 1-bit there is no grey to soften a staircase.
+// `towardsX/towardsY` is the direction the mark should face when it has one -- for
+// a cliff, the downslope side. Only `U` reads it; every other shape is the same
+// shape turned and ignores it.
+void stampMark(IMapCanvas& canvas, const int cx, const int cy, const MapLineMark mark, const int sizePx,
+               const MapInk ink, const int towardsX = 0, const int towardsY = 0) {
+  if (mark == MapLineMark::None || sizePx <= 0) return;
+  const int half = sizePx / 2;
+  switch (mark) {
+    case MapLineMark::Dot:
+      // A dot is a square of the same width; the name is what a style author
+      // reaches for when they mean "small", so it is a size shorthand and the
+      // generator halves it rather than a second shape to judge on glass.
+      canvas.drawLine(cx, cy, cx, cy, sizePx, ink);
+      break;
+    case MapLineMark::Square:
+      // Length sizePx at width sizePx: a filled block, one call.
+      canvas.drawLine(cx - half, cy, cx - half + sizePx - 1, cy, sizePx, ink);
+      break;
+    case MapLineMark::Cross:
+      canvas.drawLine(cx - half, cy, cx + half, cy, 1, ink);
+      canvas.drawLine(cx, cy - half, cx, cy + half, 1, ink);
+      break;
+    case MapLineMark::Diamond:
+      // Row by row rather than four strokes: a stroked diamond at 5 px is two
+      // pixels of outline and three of hole, and what is wanted is a solid
+      // silhouette. Half-width shrinks by one per row from the middle.
+      for (int dy = -half; dy <= half; ++dy) {
+        const int w = half - (dy < 0 ? -dy : dy);
+        canvas.drawLine(cx - w, cy + dy, cx + w, cy + dy, 1, ink);
+      }
+      break;
+    case MapLineMark::Comb: {
+      // Bar along the line, three teeth towards the drop. Same four-way snap as
+      // `U` and for the same reason: every edge stays on the pixel grid.
+      const int ax = towardsX < 0 ? -towardsX : towardsX;
+      const int ay = towardsY < 0 ? -towardsY : towardsY;
+      int fx = 0, fy = 1;
+      if (ax > ay) {
+        fx = towardsX > 0 ? 1 : -1;
+        fy = 0;
+      } else if (ay > 0) {
+        fy = towardsY > 0 ? 1 : -1;
+        fx = 0;
+      }
+      const int px = -fy, py = fx;  // along the bar
+      // The bar sits on the line, the teeth reach `half` towards the drop.
+      canvas.drawLine(cx - px * half, cy - py * half, cx + px * half, cy + py * half, 1, ink);
+      for (int t = -1; t <= 1; ++t) {
+        const int bx = cx + px * half * t;
+        const int by = cy + py * half * t;
+        canvas.drawLine(bx, by, bx + fx * half, by + fy * half, 1, ink);
+      }
+      break;
+    }
+    case MapLineMark::U: {
+      // Two uprights and a floor, the floor on the side `towards` points at.
+      // Snapped to four directions so every edge stays on the pixel grid
+      // (MapStyle.h, MapLineMark::U).
+      const int ax = towardsX < 0 ? -towardsX : towardsX;
+      const int ay = towardsY < 0 ? -towardsY : towardsY;
+      // Which axis dominates decides the facing; ties and a zero direction fall
+      // to "floor at the bottom", the upright U.
+      int fx = 0, fy = 1;
+      if (ax > ay) {
+        fx = towardsX > 0 ? 1 : -1;
+        fy = 0;
+      } else if (ay > 0) {
+        fy = towardsY > 0 ? 1 : -1;
+        fx = 0;
+      }
+      // The floor is the edge at +f; the uprights are perpendicular to it.
+      const int px = -fy, py = fx;  // along the floor
+      const int f0x = cx + fx * half, f0y = cy + fy * half;
+      canvas.drawLine(f0x - px * half, f0y - py * half, f0x + px * half, f0y + py * half, 1, ink);
+      canvas.drawLine(f0x - px * half, f0y - py * half, f0x - px * half - fx * (sizePx - 1),
+                      f0y - py * half - fy * (sizePx - 1), 1, ink);
+      canvas.drawLine(f0x + px * half, f0y + py * half, f0x + px * half - fx * (sizePx - 1),
+                      f0y + py * half - fy * (sizePx - 1), 1, ink);
+      break;
+    }
+    case MapLineMark::Circle:
+      // A disc, by the integer circle test per row. Not a stroked ring: a ring at
+      // 5 px is one pixel wide and reads as a dash, which is the mark it has to
+      // be distinguishable from.
+      for (int dy = -half; dy <= half; ++dy) {
+        int w = 0;
+        while ((w + 1) * (w + 1) + dy * dy <= half * half + half) ++w;
+        canvas.drawLine(cx - w, cy + dy, cx + w, cy + dy, 1, ink);
+      }
+      break;
+    default:
+      break;
+  }
+}
+
+// A whole line with short combs hanging off one side of it: the rock-face mark
+// (MapStyle.h, MapLinePattern::Hachured).
+//
+// **Right of the direction of travel, and that is the whole point.** OSM puts a
+// cliff's lower ground on the right of the way's direction and the tile keeps the
+// points in that order, so the comb direction is data rather than taste. In screen
+// coordinates y grows downwards, so rotating the travel vector by +90 degrees --
+// (dx, dy) -> (-dy, dx) -- lands on the right-hand side: facing east, that is
+// south, which is right. Get the sign wrong and every cliff on the map claims the
+// drop is uphill.
+//
+// `bothSides` turns the comb into a ladder: the same tooth, drawn from `-tick` to
+// `+tick` about the line instead of from the line to `+tick`, which is the
+// topographic railway symbol (MapStyle.h, MapLinePattern::Ladder). It shares this
+// walk rather than getting its own so the two marks cannot drift apart in
+// spacing -- the rung rhythm and the comb rhythm are the same arithmetic, and a
+// second copy is a second place for the phase carry across segment boundaries to
+// be got wrong. `side` is ignored when it is set: a mark reaching both ways has
+// no side to choose.
+void strokeWayHachured(IMapCanvas& canvas, const MapWayRef& way, const int lineWidth, const int tickPx, const int gapPx,
+                       const MapInk ink, const MapTickSide side = MapTickSide::Downhill, const int tickWidth = 1,
+                       const bool bothSides = false) {
+  if (lineWidth <= 0 || way.pointCount < 2) return;
+  // The line itself, unbroken. A cliff is continuous ground; only the combs are
+  // periodic.
+  strokeWay(canvas, way, lineWidth, ink);
+  if (tickPx <= 0 || gapPx <= 0) return;
+
+  int phase = 0;  // distance since the last comb
+  for (uint16_t i = 1; i < way.pointCount; ++i) {
+    const int x0 = way.xs[i - 1], y0 = way.ys[i - 1];
+    const int x1 = way.xs[i], y1 = way.ys[i];
+    const int dx = x1 - x0, dy = y1 - y0;
+    const int len =
+        static_cast<int>(std::lround(std::sqrt(static_cast<double>(dx) * dx + static_cast<double>(dy) * dy)));
+    if (len <= 0) continue;
+
+    int walked = 0;
+    while (walked < len) {
+      const int step = std::min(gapPx - phase, len - walked);
+      if (phase + step >= gapPx) {
+        const int at = walked + step;
+        const int px = x0 + dx * at / len;
+        const int py = y0 + dy * at / len;
+        // Right of travel, scaled to the tick length. Integer, so a short segment
+        // with a large tick still points the right way.
+        // Right of travel is (dx, dy) -> (-dy, dx) with y growing downwards, which
+        // is OSM's downhill side; Uphill is the mirror.
+        const int sign = side == MapTickSide::Uphill ? -1 : 1;
+        const int tx = sign * -dy * tickPx / len;
+        const int ty = sign * dx * tickPx / len;
+        // A ladder rung starts on the far side and crosses; a comb starts on the
+        // line. Same end point either way, so the reach a style asks for is the
+        // reach it gets on each side rather than half of one.
+        const int sx = bothSides ? px - tx : px;
+        const int sy = bothSides ? py - ty : py;
+        canvas.drawLine(sx, sy, px + tx, py + ty, tickWidth < 1 ? 1 : tickWidth, ink);
+        phase = 0;
+      } else {
+        phase += step;
+      }
+      walked += step;
+    }
+  }
+}
+
+// dash, gap, mark, gap -- repeating. The rhythm a paper map uses to separate
+// route classes when it cannot use colour, which on this panel is always.
+//
+// Same arc-length walk as strokeWayDashed, with a four-slot period instead of
+// two. The mark is stamped once, at the middle of its slot, the first time the
+// walk crosses that middle -- not every step, or a segment boundary landing
+// inside the slot would stamp it twice.
+void strokeWayDashMark(IMapCanvas& canvas, const MapWayRef& way, const int lineWidth, const int dashPx, const int gapPx,
+                       const MapLineMark mark, const int markPx, const MapInk ink) {
+  if (lineWidth <= 0 || dashPx <= 0 || gapPx <= 0 || markPx <= 0) return;
+  const int markStart = dashPx + gapPx;
+  const int markEnd = markStart + markPx;
+  const int period = markEnd + gapPx;
+  const int markMid = markStart + markPx / 2;
+  int phase = 0;
+
+  for (uint16_t i = 1; i < way.pointCount; ++i) {
+    const int x0 = way.xs[i - 1], y0 = way.ys[i - 1];
+    const int x1 = way.xs[i], y1 = way.ys[i];
+    const int dx = x1 - x0, dy = y1 - y0;
+    const int len =
+        static_cast<int>(std::lround(std::sqrt(static_cast<double>(dx) * dx + static_cast<double>(dy) * dy)));
+    if (len <= 0) continue;
+
+    int walked = 0;
+    while (walked < len) {
+      // The next boundary in the period, so a step never straddles two slots.
+      int nextEdge = period;
+      if (phase < dashPx) {
+        nextEdge = dashPx;
+      } else if (phase < markStart) {
+        nextEdge = markStart;
+      } else if (phase < markEnd) {
+        nextEdge = markEnd;
+      }
+      const int step = std::min(nextEdge - phase, len - walked);
+      if (phase < dashPx) {
+        const int ax = x0 + dx * walked / len;
+        const int ay = y0 + dy * walked / len;
+        const int bx = x0 + dx * (walked + step) / len;
+        const int by = y0 + dy * (walked + step) / len;
+        canvas.drawLine(ax, ay, bx, by, lineWidth, ink);
+      } else if (phase <= markMid && phase + step > markMid) {
+        const int at = walked + (markMid - phase);
+        // Right of travel, which on a cliff record is the downslope side (OSM
+        // order; docs/map-data-spec.md, "The relief layer's second class"). y grows
+        // downwards on screen, so +90 degrees is (dx, dy) -> (-dy, dx).
+        stampMark(canvas, x0 + dx * at / len, y0 + dy * at / len, mark, markPx, ink, -dy, dx);
+      }
+      walked += step;
+      phase = (phase + step) % period;
+    }
+  }
+}
+
 void strokeWayDashed(IMapCanvas& canvas, const MapWayRef& way, int lineWidth, int dashPx, int gapPx, MapInk ink) {
   if (lineWidth <= 0 || dashPx <= 0 || gapPx <= 0) return;
   const int period = dashPx + gapPx;
@@ -90,12 +315,83 @@ void strokeWayDashed(IMapCanvas& canvas, const MapWayRef& way, int lineWidth, in
   }
 }
 
-// Width the style draws this class at, or 0 for "do not draw". A class id past
-// the enum's slots can only come from a corrupt tile; reserved slots carry
-// width 0 anyway, so this guard is about the array bound, not the style.
-int roadWidthFor(const MapStyle& style, const MapWayRef& way) {
-  if (way.classId >= kClassEnumSlots) return 0;
-  return style.roadWidthPx[way.classId];
+// The stroke one way is actually drawn with. The class's own numbers, unless a
+// flag rule matched and replaced them (MapStyle.h, MapRoadFlagRule).
+//
+// Re-resolved per way in **each** road pass, not once and shared -- an earlier
+// comment here claimed the latter and the code never did it. Harmless, because
+// roadStrokeFor is a pure function of the style and the way, so both passes get
+// the same answer; but a comment asserting a guarantee the code does not give is
+// how the next person reasons wrongly about a change.
+//
+// Width 0 means "do not draw".
+struct RoadStroke {
+  int width = 0;
+  int casing = 0;
+  MapLinePattern pattern = MapLinePattern::Solid;
+  int dash = 0;
+  int gap = 0;
+  MapAreaTone tone = MapAreaTone::None;
+  MapLineMark mark = MapLineMark::None;
+  int markPx = 0;
+  MapTickSide tickSide = MapTickSide::Downhill;
+  int tickWidth = 1;
+};
+
+// A class id past the enum's slots can only come from a corrupt tile; reserved
+// slots carry width 0 anyway, so that guard is about the array bound, not the
+// style.
+//
+// Costs one loop over kMapRoadFlagRuleSlots per way per pass, and every slot is
+// empty in every style shipped today, so it is four compares against a `flagMask
+// == 0 && roughnessMin == 0` that is in flash beside the widths already being
+// read. No allocation, no per-way state.
+RoadStroke roadStrokeFor(const MapStyle& style, const MapWayRef& way) {
+  RoadStroke stroke;
+  if (way.classId >= kClassEnumSlots) return stroke;
+  stroke.width = style.roadWidthPx[way.classId];
+  // A class the style hides stays hidden. Its ways are already intersected out
+  // of the rung's tile class mask (gen_mode_masks.py), so a flag rule that
+  // un-hid it would draw nothing at all -- see MapStyle::roadFlagRules.
+  if (stroke.width == 0) return stroke;
+  stroke.casing = style.roadCasingPx[way.classId];
+  stroke.pattern = style.roadPattern[way.classId];
+  stroke.dash = style.roadDashPx[way.classId];
+  stroke.gap = style.roadGapPx[way.classId];
+  stroke.mark = style.roadMark[way.classId];
+  stroke.markPx = style.roadMarkPx[way.classId];
+  stroke.tickSide = style.roadTickSide[way.classId];
+  stroke.tickWidth = style.roadTickWidthPx[way.classId];
+  stroke.tone = style.roadFillTone[way.classId];
+
+  // First match wins, in file order, and a match replaces the whole stroke
+  // rather than patching fields of it.
+  for (uint8_t slot = 0; slot < kMapRoadFlagRuleSlots; ++slot) {
+    const MapRoadFlagRule& rule = style.roadFlagRules[slot];
+    if (rule.flagMask == 0 && rule.roughnessMin == 0) continue;  // unused slot
+    if (rule.flagMask != 0 && (way.flags & rule.flagMask) == 0) continue;
+    if (rule.roughnessMin != 0 && (way.roughness & kMapRoughnessValueMask) < rule.roughnessMin) continue;
+    if (rule.hidden) {
+      stroke = RoadStroke{};
+      return stroke;
+    }
+    stroke.width = rule.widthPx;
+    stroke.casing = rule.casingPx;
+    stroke.pattern = rule.pattern;
+    stroke.dash = rule.dashPx;
+    stroke.gap = rule.gapPx;
+    // A flag rule carries no tone (MapStyle.h), so a matched way loses the one
+    // its class had. Stated rather than inherited: a shaded ribbon whose width
+    // was just replaced has no interior anyone reasoned about.
+    stroke.tone = MapAreaTone::None;
+    // Same reasoning for the mark: a flag rule replaces the stroke, so it does
+    // not inherit a rhythm the class chose. A flag rule that wants a marked line
+    // says so itself.
+    stroke.mark = MapLineMark::None;
+    stroke.markPx = 0;
+    return stroke;
+  }
+  return stroke;
 }
 
 // One landuse class, drawn as tone then hatch then outline. Called once per
@@ -114,8 +410,274 @@ void drawLanduseClass(IMapCanvas& canvas, IMapSource& source, const MapStyle& st
     MapAreaFill::toneRing(canvas, ring.xs, ring.ys, ring.pointCount, style.landuseTone[index]);
     MapAreaFill::hatchRing(canvas, ring.xs, ring.ys, ring.pointCount, style.landuseHatch[index],
                            style.landuseHatchSpacingPx[index], MapInk::Black);
-    MapAreaFill::outlineRing(canvas, ring.xs, ring.ys, ring.pointCount, style.landuseOutlinePx[index], MapInk::Black);
+    MapAreaFill::outlineRingDashed(canvas, ring.xs, ring.ys, ring.pointCount, style.landuseOutlinePx[index],
+                                   style.landuseOutlineDashPx[index], style.landuseOutlineGapPx[index], MapInk::Black);
   }
+}
+
+// A height number waiting to be drawn, picked while the contour it belongs to
+// streams past. Collected during the draw pass rather than in a second walk of
+// the layer: the elevation and the geometry are both in the record, and a third
+// read of a 39 KB layer to find them again buys nothing.
+struct ContourLabelSlot {
+  int32_t x = 0;
+  int32_t y = 0;
+  // int16_t, not int32_t: the value comes from the record's `flags` word read as
+  // an i16 and nothing widens it. Declared wide, it made `snprintf` into a `char
+  // text[8]` a -Wformat-truncation warning on every host build -- the only new
+  // warning this branch produced, in a repo that reports clean builds.
+  int16_t elevation = 0;
+  // The uphill direction at that vertex, in screen pixels. Derived from the
+  // order the contour's points are stored in, which the tile builder guarantees:
+  // find_contours runs with positive_orientation="low", so higher ground is at
+  // (-dy, dx) from the direction of travel (mapbuilder/tilegen/contour.py,
+  // contour_lines). It costs no bytes in the tile and it is what lets the number
+  // be turned so its top points up the slope.
+  int32_t upX = 0;
+  int32_t upY = 0;
+  // |cross product| of the two segments meeting at the chosen vertex, scaled.
+  // Lower is straighter, and straighter is where a number sits without looking
+  // like it fell off the line.
+  int64_t bend = 0;
+  bool used = false;
+};
+
+// The straightest on-screen vertex of one contour, or none.
+//
+// Straightness is the cheap proxy for what a cartographer does by eye. A number
+// placed on a hairpin reads as belonging to whichever arm the eye follows first,
+// and on a 1-bit panel there is no second cue to fix that.
+bool bestLabelVertex(const MapWayRef& line, int rectX, int rectY, int rectW, int rectH, int margin, int32_t& outX,
+                     int32_t& outY, int64_t& outBend, int32_t& outUpX, int32_t& outUpY) {
+  bool found = false;
+  int64_t bestBend = 0;
+  for (uint16_t i = 1; i + 1 < line.pointCount; ++i) {
+    const int32_t x = line.xs[i];
+    const int32_t y = line.ys[i];
+    // Against the canvas's own drawable rect, not against 0..w/0..h: on the
+    // device the header band is off limits and rectY is not zero
+    // (IMapCanvas::drawableRect).
+    if (x < rectX + margin || y < rectY + margin || x > rectX + rectW - margin || y > rectY + rectH - margin) {
+      continue;
+    }
+    const int32_t ax = x - line.xs[i - 1];
+    const int32_t ay = y - line.ys[i - 1];
+    const int32_t bx = line.xs[i + 1] - x;
+    const int32_t by = line.ys[i + 1] - y;
+    // **int64, because the neighbours are not clamped.** Only the *chosen* vertex is
+    // required to be on screen; `line.xs[i-1]` and `line.xs[i+1]` are raw int16
+    // tile-local values, so each product reaches about 1.13e9 and the difference
+    // 2.26e9 -- past INT32_MAX, and signed overflow is undefined. Rare, needing two
+    // neighbours at opposite ends of the int16 range, and exactly the assumption
+    // that produced the isqrt hang in mapTextBasisFromUp.
+    int64_t bend = static_cast<int64_t>(ax) * by - static_cast<int64_t>(ay) * bx;
+    if (bend < 0) bend = -bend;
+    if (!found || bend < bestBend) {
+      found = true;
+      bestBend = bend;
+      outX = x;
+      outY = y;
+      // Direction of travel across this vertex, then a quarter turn clockwise on
+      // a screen whose y grows downward -- which is uphill, per contour.py.
+      const int32_t tx = line.xs[i + 1] - line.xs[i - 1];
+      const int32_t ty = line.ys[i + 1] - line.ys[i - 1];
+      outUpX = -ty;
+      outUpY = tx;
+    }
+  }
+  outBend = bestBend;
+  return found;
+}
+
+// One contour class, stroked. Called once per class for the same reason as
+// landuse: minor and index share a single tile layer and sit at different
+// depths, so the heavy line has to land on the fine one and not the other way
+// round. A width of 0 is the style hiding this class at this rung, and it
+// returns before walking the layer rather than reading records to drop them.
+//
+// `slots`, when given, collects height-number candidates from this class. Only
+// the index pass passes it: a number on a minor contour would be a number every
+// 20 m, which is the opposite of the two-or-three rule.
+void drawContourClass(IMapCanvas& canvas, IMapSource& source, const MapStyle& style, const MapReliefClass wanted,
+                      ContourLabelSlot* slots = nullptr, int slotCount = 0, uint32_t* drawn = nullptr) {
+  const uint8_t index = static_cast<uint8_t>(wanted);
+  if (index >= kReliefClassSlots || style.contourWidthPx[index] == 0) return;
+  if (!source.beginContours()) return;
+  int canvasX = 0, canvasY = 0, canvasW = 0, canvasH = 0;
+  canvas.drawableRect(canvasX, canvasY, canvasW, canvasH);
+  const int minGap = static_cast<int>(style.contourLabelMinGapPx);
+  MapWayRef line;
+  const int lineWidth = style.contourWidthPx[index];
+  const MapLinePattern pattern = style.contourPattern[index];
+  while (source.nextContour(line)) {
+    if (line.classId != index) continue;
+    // **The per-class pattern, which this loop used to ignore.** MapStyle grew
+    // contourPattern/TickPx/GapPx/Mark/MarkPx and gen_mapstyle.py learned to parse
+    // and emit them, and `strokeWayHachured` was wired into the roads pass only --
+    // so a style could say `"pattern": "hachured"` on the cliff class, be
+    // validated, and draw a plain line. Which is the exact shape of defect this
+    // file keeps producing: a field the generator accepts and nothing reads.
+    //
+    // It mattered here more than most. The obvious first thing to do with the
+    // cliff class is give it a comb, and at 2 px solid a cliff is the same mark as
+    // an index contour -- one says "a hundred metres of height", the other says
+    // "you fall here". A panel pass would have been judging a render the style did
+    // not perform.
+    // A cliff over this build's own generated rock strip (T-2052,
+    // kCliffFlagFillGenerated) skips the comb: that fill IS this very line,
+    // buffered, so a hachure on top of it repeats the same shape rather than
+    // adding a second signal. Over a surveyed rock polygon (bit unset) the
+    // fill is independent data and the comb still earns its ink -- the same
+    // reasoning the mapbuilder side's `_cliff_fill_flags` comment carries.
+    const bool suppressHachure = wanted == MapReliefClass::Cliff && (line.flags & kCliffFlagFillGenerated) != 0;
+    switch (pattern) {
+      case MapLinePattern::Hachured:
+        if (suppressHachure) {
+          strokeWay(canvas, line, lineWidth, MapInk::Black);
+        } else {
+          strokeWayHachured(canvas, line, lineWidth, style.contourTickPx[index], style.contourGapPx[index],
+                            MapInk::Black, style.contourTickSide[index], style.contourTickWidthPx[index]);
+        }
+        break;
+      case MapLinePattern::DashMark:
+        strokeWayDashMark(canvas, line, lineWidth, style.contourDashPx[index], style.contourGapPx[index],
+                          style.contourMark[index], style.contourMarkPx[index], MapInk::Black);
+        break;
+      case MapLinePattern::None:
+        break;
+      default:
+        strokeWay(canvas, line, lineWidth, MapInk::Black);
+        break;
+    }
+    if (drawn != nullptr) ++*drawn;
+    if (slots == nullptr || style.contourLabelPx == 0) continue;
+    int32_t vx = 0, vy = 0, upX = 0, upY = 0;
+    int64_t bend = 0;
+    // The margin has to cover half the *box*, not half the text height: a
+    // four-digit height is about three label heights wide, and a margin of one
+    // put "1000" half off the left edge. Three is that half-width with room,
+    // and it needs no text measured before a vertex is chosen.
+    if (!bestLabelVertex(line, canvasX, canvasY, canvasW, canvasH, static_cast<int>(style.contourLabelPx) * 3, vx, vy,
+                         bend, upX, upY)) {
+      continue;
+    }
+    const int16_t elevation = static_cast<int16_t>(line.flags);
+    int target = -1;
+    bool duplicate = false;
+    for (int i = 0; i < slotCount; ++i) {
+      // Three numbers reading 900, 900, 900 say less than 900, 1000, 1200: the
+      // second set gives the direction of the slope for free. A level already
+      // claimed elsewhere on the frame does not get a second number.
+      if (slots[i].used && slots[i].elevation == elevation) duplicate = true;
+    }
+    if (duplicate) continue;
+    for (int i = 0; i < slotCount; ++i) {
+      if (!slots[i].used) {
+        if (target < 0) target = i;
+        continue;
+      }
+      const int32_t dx = slots[i].x - vx;
+      const int32_t dy = slots[i].y - vy;
+      if (dx * dx + dy * dy < static_cast<int32_t>(minGap) * minGap) {
+        // Too close to a number already claimed. Keep the straighter of the
+        // two rather than whichever the stream offered first.
+        if (bend < slots[i].bend) {
+          slots[i] = ContourLabelSlot{vx, vy, elevation, upX, upY, bend, true};
+        }
+        target = -1;
+        break;
+      }
+    }
+    if (target >= 0) {
+      slots[target] = ContourLabelSlot{vx, vy, elevation, upX, upY, bend, true};
+    }
+  }
+}
+
+// The numbers, drawn after the place names so a settlement's name wins the
+// space.
+//
+// A 1 px white outline around the digits, not a white box behind them. The box
+// was the first attempt and it reads as a hole punched in the map: it wipes the
+// contour, the forest tone and anything else under a rectangle far bigger than
+// the strokes need. The outline knocks out only what the digits themselves
+// occupy, so the line still runs visibly behind the number
+// (maintainer's call, 2026-08-26). It is drawn by the canvas from the same
+// rotated mask, so it follows the number's angle -- eight extra draws at offsets
+// would not.
+void drawContourLabels(IMapCanvas& canvas, const MapStyle& style, MapLabelScratch* labels,
+                       const ContourLabelSlot* slots, int slotCount, uint32_t* placedOut = nullptr) {
+  if (style.contourLabelPx == 0) return;
+  const int sizePx = static_cast<int>(style.contourLabelPx);
+  const bool bold = style.contourLabelBold;
+  int placed = 0;
+  for (int i = 0; i < slotCount && placed < static_cast<int>(style.contourLabelMax); ++i) {
+    if (!slots[i].used) continue;
+    // 7 is the worst case an int16 can need ("-32768" plus NUL); 8 leaves one
+    // spare and the format now matches the type, so the compiler can see it fits.
+    char text[8];
+    snprintf(text, sizeof(text), "%d", static_cast<int>(slots[i].elevation));
+    int textW = 0, textH = 0;
+    if (!canvas.measureText(text, sizePx, bold, textW, textH)) continue;
+    // **The number sits along the contour, at the line's own bearing at that
+    // spot, with the digits' top toward the higher ground.** Not quantised: a
+    // contour running south-east given a number turned due south is exactly the
+    // mismatch a map reader notices first, because the point of the label is that
+    // it and the piece of line under it read as one thing.
+    //
+    // One vector decides all of it. Uphill is (-dy, dx) from the order the tile
+    // builder stores contour points in (mapbuilder/tilegen/contour.py), and
+    // mapTextBasisFromUp turns that into the basis -- which is where this used to
+    // go wrong: giving it the tangent and the uphill normal separately let the two
+    // disagree, and that pair is a reflection, so every number came out mirrored.
+    // From `up` alone the determinant is positive by construction.
+    const int32_t ux = slots[i].upX;
+    const int32_t uy = slots[i].upY;
+    int rightX = 1024, rightY = 0, downX = 0, downY = 1024;
+    mapTextBasisFromUp(ux, uy, rightX, rightY, downX, downY);
+
+    // The claimed box is the rotated extent, so two numbers at different bearings
+    // cannot be judged as if both were horizontal.
+    const int32_t absR = rightX < 0 ? -rightX : rightX;
+    const int32_t absRY = rightY < 0 ? -rightY : rightY;
+    const int spanW = static_cast<int>((textW * absR + textH * absRY) >> 10) + 2;
+    const int spanH = static_cast<int>((textW * absRY + textH * absR) >> 10) + 2;
+
+    // **On the line, not beside it.** The number is centred on the vertex, so the
+    // contour runs through it and the 1 px white outline breaks the line only
+    // where the digits actually are. Sitting the label off to one side put its
+    // baseline above the contour and read as a caption for it rather than as part
+    // of it (maintainer's call, 2026-08-26).
+    //
+    // An earlier version stepped off to the uphill side deliberately, because the
+    // turn was quantised then and the offset was the only thing carrying the slope
+    // direction. The rotation carries it now, so the offset is redundant as well
+    // as wrong.
+    const int centreX = static_cast<int>(slots[i].x);
+    const int centreY = static_cast<int>(slots[i].y);
+    const int boxX = centreX - spanW / 2;
+    const int boxY = centreY - spanH / 2;
+    const int boxW = spanW;
+    const int boxH = spanH;
+    // Yield to a place name that already claimed this ground. A height is
+    // countable from the next one along; a settlement's name is not.
+    if (labels != nullptr && labels->taken.anySet(boxX, boxY, boxW, boxH)) continue;
+
+    // One call: the canvas draws the 1 px white outline from the same mask, so the
+    // outline follows the rotation instead of being eight more draws at the wrong
+    // angle.
+    if (!canvas.drawTextRotated(centreX, centreY, text, sizePx, bold, MapInk::Black,
+                                static_cast<int>(style.contourLabelHaloPx), static_cast<int>(rightX),
+                                static_cast<int>(rightY), static_cast<int>(downX), static_cast<int>(downY))) {
+      // Nothing was inked, so nothing may be claimed: marking the rect here let a
+      // label that does not exist block a place name, and counting it spent one of
+      // contourLabelMax on empty ground. The canvas logs why.
+      continue;
+    }
+    if (labels != nullptr) labels->taken.markRect(boxX, boxY, boxW, boxH);
+    ++placed;
+  }
+  if (placedOut != nullptr) *placedOut = static_cast<uint32_t>(placed);
 }
 
 // The route: one thick black polyline, with a filled arrowhead at the far end
@@ -130,6 +692,46 @@ void drawLanduseClass(IMapCanvas& canvas, IMapSource& source, const MapStyle& st
 // The label placer needs to know where the route is and there is no second
 // cheap way to find out: the route lives in a file, and walking it again is a
 // second pass over SD (IMapRouteSource.h). So the pass that draws it records it.
+// Dither the inside of a cased road, one segment at a time.
+//
+// A stroke is not a ring, so it cannot go through toneRing() whole -- but each
+// segment's interior *is* a quad, and a quad is a ring with four corners. That
+// is the whole trick: no new canvas primitive, no new fill code, and the tone
+// stays the same screen-anchored dither an area uses, so a road and a built-up
+// area under it cannot drift out of phase.
+//
+// The offset here is the true perpendicular, unlike MapStroke's stacking. The
+// reason MapStroke avoids it does not apply: it stripes when you stack 1 px
+// *lines* 1.41 px apart on a diagonal, and this is a filled quad with no gaps
+// to stripe.
+//
+// Joints are left as overlapping quads rather than mitred. Two consequences,
+// both checked by looking: the overlap costs nothing because the tone is a
+// position test and painting a pixel twice is the same pixel, and the outside
+// of a bend keeps a small unfilled wedge. On a texture that is at most every
+// other pixel, that wedge is far less visible than it would be in a solid fill.
+void toneWayInterior(IMapCanvas& canvas, const MapWayRef& way, const int innerWidth, const MapAreaTone tone) {
+  // Below 2 px there is no interior to texture: a period-2 tone needs two
+  // pixels to say anything and the period-3 stipple needs three.
+  if (tone == MapAreaTone::None || innerWidth < 2 || way.pointCount < 2) return;
+  const double half = innerWidth * 0.5;
+  for (uint16_t i = 1; i < way.pointCount; ++i) {
+    const double x0 = way.xs[i - 1], y0 = way.ys[i - 1];
+    const double x1 = way.xs[i], y1 = way.ys[i];
+    const double dx = x1 - x0, dy = y1 - y0;
+    const double len = std::sqrt(dx * dx + dy * dy);
+    if (len < 0.5) continue;  // a zero-length segment has no perpendicular
+    const double nx = -dy / len * half, ny = dx / len * half;
+    const int16_t rx[5] = {static_cast<int16_t>(std::lround(x0 + nx)), static_cast<int16_t>(std::lround(x1 + nx)),
+                           static_cast<int16_t>(std::lround(x1 - nx)), static_cast<int16_t>(std::lround(x0 - nx)),
+                           static_cast<int16_t>(std::lround(x0 + nx))};
+    const int16_t ry[5] = {static_cast<int16_t>(std::lround(y0 + ny)), static_cast<int16_t>(std::lround(y1 + ny)),
+                           static_cast<int16_t>(std::lround(y1 - ny)), static_cast<int16_t>(std::lround(y0 - ny)),
+                           static_cast<int16_t>(std::lround(y0 + ny))};
+    MapAreaFill::toneRing(canvas, rx, ry, 5, tone);
+  }
+}
+
 void drawRoute(IMapCanvas& canvas, IMapRouteSource& route, const MapStyle& style, MapOccupancyGrid* occupancy) {
   if (style.routeWidthPx == 0) return;
   if (!route.beginRoute()) return;
@@ -195,7 +797,7 @@ void drawRoute(IMapCanvas& canvas, IMapRouteSource& route, const MapStyle& style
 
 void MapRenderer::render(IMapCanvas& canvas, IMapSource& source, const MapViewState& state, const MapStyle& style,
                          IMapRouteSource* route, MapRenderTiming* timing, MapNearestPlaces* nearestOut,
-                         MapLabelScratch* labels) {
+                         MapLabelScratch* labels, IMapPointSource* points) {
   if (labels != nullptr) labels->reset();
   // Instrumentation only. `mark` holds the last stamp; each layer's field gets
   // the delta since it. With no timing, or no clock in it, both of these are a
@@ -209,8 +811,8 @@ void MapRenderer::render(IMapCanvas& canvas, IMapSource& source, const MapViewSt
   uint32_t mark = stamp();
 
   // Draw order is fixed and not arbitrary (docs/map-data-spec.md, "A tile is a
-  // storage unit, not a render unit"): built-up area, green area, water,
-  // buildings, road casings, road fills, then places. Landuse tones are
+  // storage unit, not a render unit"): built-up area, green area, rock area,
+  // water, buildings, road casings, road fills, then places. Landuse tones are
   // background; everything above has to stay readable over them, which is why a
   // tone is a sparse pattern and not a grey block.
   //
@@ -218,21 +820,75 @@ void MapRenderer::render(IMapCanvas& canvas, IMapSource& source, const MapViewSt
   // alone were 277 KB of the 364 KB a four-tile viewport read
   // (docs/map-data-spec.md, "RAM budget").
   if (style.landuseEnabled) {
-    // Two walks over one layer, built-up first: a park inside a housing estate
-    // has to land on top of it, and a single walk would draw them in whatever
-    // order the tile happens to store.
-    // Built-up is per rung (MapViewState::drawBuiltUp); forest is drawn at every
-    // rung, because no building shows where a wood is.
-    if (state.drawBuiltUp) drawLanduseClass(canvas, source, style, MapLanduseClass::BuiltUp);
+    // Four walks over one layer, built-up first: a park inside a housing
+    // estate has to land on top of it, and a single walk would draw them in
+    // whatever order the tile happens to store.
+    // Built-up is per rung, via the style (its landuse rule is hidden at rung 0,
+    // where the buildings themselves carry the settlement). drawLanduseClass
+    // already returns without a card walk when a class draws nothing, so there
+    // is no flag to test here. Forest and rock are drawn at every rung, because
+    // no building shows where a wood or a cliff massif is.
+    //
+    // RockSynth before Rock: tilegen never lets the two overlap (the
+    // generated fill is the real polygon's area subtracted out,
+    // _synth_rock_from_cliffs), but drawing the surveyed polygon last means a
+    // seam between them resolves in favour of the real data if a future
+    // tilegen change ever lets them touch.
+    drawLanduseClass(canvas, source, style, MapLanduseClass::BuiltUp);
     drawLanduseClass(canvas, source, style, MapLanduseClass::Forest);
+    drawLanduseClass(canvas, source, style, MapLanduseClass::RockSynth);
+    drawLanduseClass(canvas, source, style, MapLanduseClass::Rock);
   }
   if (timing) lap(timing->landuseMs, mark);
+
+  // Contours sit over the landuse wash and under everything else. Over, because
+  // a contour hidden under forest hatch is not a contour; under, because a
+  // contour crossing a road or a river must not break it -- black over black is
+  // nothing (docs/map-render-spec.md, "1-bit rules") and the wider feature has
+  // to win.
+  //
+  // **Three walks of the relief layer, one per class**, and the order is the
+  // reason: minor first so an index line lands on top where they touch, cliff last
+  // so a rock face is never broken by either. Each walk is its own
+  // `beginContours()`, so the layer's bytes are read three times per frame -- and
+  // `MapTileSource` skips the crc32 after the first pass (MapTileSource.cpp:212-214,
+  // `alreadyValidated` -> `beginLayer(layer_, true)`), so the repeat cost is the
+  // read and the parse, never the checksum.
+  //
+  // Measured 2026-08-28 over the 763 z13 tiles in the local mirror that carry a
+  // relief layer: median 4.5 kB, mean 6.7 kB, max 52.7 kB. The Prosiecka reference
+  // tile is 35.0 kB and 305 records, the **4th largest of the 763** -- it was picked
+  // for cliff density, so it is the worst case and not the norm. An earlier version
+  // of this comment quoted it as "about 32 kB at z13", which reads as typical and is
+  // roughly 8x the median. So the extra reading is about 9 kB per tile typically and
+  // up to 70 kB on the densest, times the tiles on screen, at rungs 0 to 2 where the
+  // class is drawn at all. A single walk collecting per class would need the whole
+  // layer in RAM, which is the thing the streaming reader exists to avoid.
+  //
+  // `contoursMs` is one number for all three, so a run cannot say which class spent
+  // it. Open, and the fix is three fields rather than one -- not done here because
+  // nothing has yet needed to attribute it.
+  // Room for a couple more candidates than may be drawn, so the min-gap filter
+  // has something to choose between rather than taking the first that fits.
+  ContourLabelSlot contourLabels[6] = {};
+  if (style.contoursEnabled) {
+    uint32_t* const lineCount = timing != nullptr ? &timing->contourLines : nullptr;
+    drawContourClass(canvas, source, style, MapReliefClass::ContourMinor, nullptr, 0, lineCount);
+    drawContourClass(canvas, source, style, MapReliefClass::ContourIndex, contourLabels,
+                     static_cast<int>(sizeof(contourLabels) / sizeof(contourLabels[0])), lineCount);
+    // Cliffs last, so the one line that means "you cannot go this way" lands on
+    // top of the height lines it crosses. No label slots: `flags` on a cliff
+    // record is 0 rather than an elevation (tilegen relief_class.py), so a
+    // number hung on one would read "0 m".
+    drawContourClass(canvas, source, style, MapReliefClass::Cliff, nullptr, 0, lineCount);
+  }
+  if (timing) lap(timing->contoursMs, mark);
 
   // Both gates read: the style says whether buildings are drawn at all, the view
   // says whether this rung draws them. Either one false and the layer is not
   // opened -- and not opening it is what saves the card read, not just the
-  // drawing (MapStyle::buildingsEnabled, MapViewState::drawBuildings).
-  if (style.buildingsEnabled && state.drawBuildings && source.beginBuildings()) {
+  // drawing (MapStyle::buildingsEnabled, which is per rung since 2026-08-25).
+  if (style.buildingsEnabled && source.beginBuildings()) {
     MapWayRef ring;
     while (source.nextBuilding(ring)) {
       // Tone or hatch, whichever the style chose, then the outline on top so a
@@ -256,19 +912,62 @@ void MapRenderer::render(IMapCanvas& canvas, IMapSource& source, const MapViewSt
       // record.
       const uint8_t waterClass = way.classId < kWaterClassSlots ? way.classId : 0;
       const int lineWidth = style.waterLinePx[waterClass];
+      const MapAreaTone tone = style.waterTone[waterClass];
       if (mapWayIsClosedRing(way)) {
-        MapAreaFill::toneRing(canvas, way.xs, way.ys, way.pointCount, style.waterTone);
+        MapAreaFill::toneRing(canvas, way.xs, way.ys, way.pointCount, tone);
         // Tone first, then the pattern knocked out of it in white -- the order
         // is what makes waves on water rather than waves under it.
         MapAreaFill::hatchRing(canvas, way.xs, way.ys, way.pointCount, style.waterHatch, style.waterHatchSpacingPx,
                                style.waterHatchWhite ? MapInk::White : MapInk::Black);
-        MapAreaFill::outlineRing(canvas, way.xs, way.ys, way.pointCount, lineWidth, MapInk::Black);
+        // The ring's own border width, not the class's line width. A lake edge
+        // and a river's stroke are different decisions and used to share one
+        // number (MapStyle::waterOutlinePx).
+        MapAreaFill::outlineRing(canvas, way.xs, way.ys, way.pointCount, style.waterOutlinePx[waterClass],
+                                 MapInk::Black);
+      } else if (tone != MapAreaTone::None) {
+        // **A watercourse that carries a surface.** `mapWayIsClosedRing` is the
+        // only thing separating a lake or an area-mapped river from a stream, and
+        // a stream is always an open way -- so before 2026-08-27 `fill: tone` on a
+        // stream rule drew nothing at all, because toneRing is reached only above.
+        // A walker crossing a stream cares as much as a rider crossing the
+        // Danube, and width alone could not say it.
+        //
+        // `casing_px` decides whether the ribbon has edges, and 0 is a real answer
+        // rather than a missing one (maintainer's call 2026-08-27: "I want the
+        // interior to eat the edge too, I do not want a border").
+        const int casing = style.waterCasingPx[waterClass];
+        if (casing > 0) {
+          // Edged: the same three steps a cased road takes, deliberately the same
+          // ones rather than a second way of saying it. Black at the full width,
+          // white at the interior, then the tone laid into the cleared middle. The
+          // generator guarantees 2 * casing < width, so the interior is >= 1.
+          const int inner = lineWidth - 2 * casing;
+          strokeWay(canvas, way, lineWidth, MapInk::Black);
+          strokeWay(canvas, way, inner, MapInk::White);
+          toneWayInterior(canvas, way, inner, tone);
+        } else {
+          // Edgeless: the tone is the whole stroke, full width, no black rim. What
+          // this buys is that the mark reads as a *surface* and not as a channel
+          // with banks -- a 7 px ribbon with 2 px of black on each side is mostly
+          // rim, and at that point the tone is a detail inside a border rather
+          // than the thing itself.
+          toneWayInterior(canvas, way, lineWidth, tone);
+        }
+        // The dash still applies, over the finished surface rather than instead of
+        // it: a dashed watercourse is a broken ribbon, which is what an
+        // intermittent stream should look like.
+        if (style.waterPattern[waterClass] == MapLinePattern::Dashed) {
+          strokeWayDashed(canvas, way, lineWidth, style.waterDashPx[waterClass], style.waterGapPx[waterClass],
+                          MapInk::Black);
+        }
       } else if (style.waterPattern[waterClass] == MapLinePattern::Dashed) {
         strokeWayDashed(canvas, way, lineWidth, style.waterDashPx[waterClass], style.waterGapPx[waterClass],
                         MapInk::Black);
-      } else {
+      } else if (style.waterPattern[waterClass] != MapLinePattern::None) {
         MapAreaFill::outlineRing(canvas, way.xs, way.ys, way.pointCount, lineWidth, MapInk::Black);
       }
+      // `None` with no tone draws nothing, which is a style saying so rather than
+      // a mistake -- `hidden: true` is the way to also stop reading the class.
     }
   }
   if (timing) lap(timing->waterMs, mark);
@@ -289,13 +988,29 @@ void MapRenderer::render(IMapCanvas& canvas, IMapSource& source, const MapViewSt
       // Width 0 is the style hiding this class outright (mapstyle.json's
       // `hidden`). Distinct from the mode mask, which drops the way earlier,
       // in the source, and per travel mode rather than for every mode.
-      const MapLinePattern pattern =
-          way.classId < kClassEnumSlots ? style.roadPattern[way.classId] : MapLinePattern::Solid;
-      if (pattern == MapLinePattern::Dashed) {
-        strokeWayDashed(canvas, way, roadWidthFor(style, way), style.roadDashPx[way.classId],
-                        style.roadGapPx[way.classId], MapInk::Black);
-      } else {
-        strokeWay(canvas, way, roadWidthFor(style, way), MapInk::Black);
+      const RoadStroke stroke = roadStrokeFor(style, way);
+      if (stroke.pattern == MapLinePattern::Dashed) {
+        strokeWayDashed(canvas, way, stroke.width, stroke.dash, stroke.gap, MapInk::Black);
+      } else if (stroke.pattern == MapLinePattern::DashMark) {
+        strokeWayDashMark(canvas, way, stroke.width, stroke.dash, stroke.gap, stroke.mark, stroke.markPx,
+                          MapInk::Black);
+      } else if (stroke.pattern == MapLinePattern::Hachured) {
+        // Wired here too, not only on the relief layer: a road class can want it
+        // (an embankment, a cutting), and without this branch it fell through to a
+        // plain stroke -- the pattern silently doing nothing, which is the failure
+        // mode this file keeps having to be saved from. `dash` is the comb reach on
+        // a road, since a hachured line has no dash of its own.
+        strokeWayHachured(canvas, way, stroke.width, stroke.dash, stroke.gap, MapInk::Black, stroke.tickSide,
+                          stroke.tickWidth);
+      } else if (stroke.pattern == MapLinePattern::Ladder) {
+        // Rungs across the line: the quiet railway (MapStyle.h, MapLinePattern::Ladder).
+        // `dash` carries the reach here for the same reason it does for Hachured on a
+        // road -- the road stroke has no per-class tick slot of its own, and the
+        // generator spells the style-facing name `tick_px` either way.
+        strokeWayHachured(canvas, way, stroke.width, stroke.dash, stroke.gap, MapInk::Black, MapTickSide::Downhill,
+                          stroke.tickWidth, /*bothSides=*/true);
+      } else if (stroke.pattern != MapLinePattern::None) {
+        strokeWay(canvas, way, stroke.width, MapInk::Black);
       }
     }
   }
@@ -306,12 +1021,18 @@ void MapRenderer::render(IMapCanvas& canvas, IMapSource& source, const MapViewSt
   if (source.beginWays()) {
     MapWayRef way;
     while (source.nextWay(way)) {
-      const int lineWidth = roadWidthFor(style, way);
+      const RoadStroke stroke = roadStrokeFor(style, way);
+      const int lineWidth = stroke.width;
       if (lineWidth == 0) continue;
-      const int casing = style.roadCasingPx[way.classId];
+      const int casing = stroke.casing;
       if (casing > 0) {
         // The generator guarantees 2 * casing < width, so this is at least 1.
-        strokeWay(canvas, way, lineWidth - 2 * casing, MapInk::White);
+        const int inner = lineWidth - 2 * casing;
+        strokeWay(canvas, way, inner, MapInk::White);
+        // The tone goes on after that white, never instead of it: the white is
+        // what clears the first pass's black, and the tone is a texture laid
+        // into the cleared middle.
+        toneWayInterior(canvas, way, inner, stroke.tone);
       }
       // Sleepers, drawn in this pass rather than a third one. They have to
       // land after their own way's white fill or that fill erases them, and
@@ -322,9 +1043,8 @@ void MapRenderer::render(IMapCanvas& canvas, IMapSource& source, const MapViewSt
       // The residue: a *later* cased road crossing this one paints its white
       // fill over these ticks. That is a level crossing, where the road is
       // meant to read as on top anyway, so it looks right rather than broken.
-      if (style.roadPattern[way.classId] == MapLinePattern::Ticked) {
-        strokeWayDashed(canvas, way, lineWidth, style.roadDashPx[way.classId], style.roadGapPx[way.classId],
-                        MapInk::Black);
+      if (stroke.pattern == MapLinePattern::Ticked) {
+        strokeWayDashed(canvas, way, lineWidth, stroke.dash, stroke.gap, MapInk::Black);
       }
     }
   }
@@ -337,6 +1057,14 @@ void MapRenderer::render(IMapCanvas& canvas, IMapSource& source, const MapViewSt
   // the route is exactly what item 4 of the render spec draws.
   if (route != nullptr) drawRoute(canvas, *route, style, labels != nullptr ? &labels->route : nullptr);
   if (timing) lap(timing->routeMs, mark);
+
+  // The panel, handed to the label scratch once per frame so offer() can refuse
+  // a place that could never be named (MapLabels.h, MapLabelScratch::setClip).
+  if (labels != nullptr) {
+    int clipX = 0, clipY = 0, clipW = 0, clipH = 0;
+    canvas.drawableRect(clipX, clipY, clipW, clipH);
+    labels->setClip(clipX, clipY, clipW, clipH);
+  }
 
   const int dotDiameter = style.placeDotDiameterPx;
   if (nearestOut) *nearestOut = MapNearestPlaces{};
@@ -382,10 +1110,49 @@ void MapRenderer::render(IMapCanvas& canvas, IMapSource& source, const MapViewSt
   }
   if (timing) lap(timing->placesMs, mark);
 
+  // The POI marks: over the place dots, under the names. A square says "this
+  // exists in the data" and a dot says "this is a settlement"
+  // (docs/map-render-spec.md, "Point mark vocabulary"), so the bigger mark goes
+  // on top -- a square half hidden by a place dot reads as neither.
+  //
+  // The source decides which SAFETY categories are in the walk
+  // (MapPointSource::Config::safetyCategoryMask): `Nearby -> Show on map` is a
+  // temporary view, so it filters the walk and never the style. Landmarks have
+  // their own mask and are not gated by it: they are on the map because this
+  // mode's style draws them.
+  //
+  // Landmark names are offered here, during the walk, because this is the only
+  // place a point's name is in hand -- the placer runs below, once every layer
+  // has been walked.
+  if (points != nullptr && style.pointSquarePx > 0 && points->beginMapPoints()) {
+    MapPointMarks::drawAll(canvas, *points, style, labels, style.markerXPx, style.markerYPx);
+  }
+  if (timing) lap(timing->pointsMs, mark);
+
   // Names last, over everything the map drew and under the marker the caller
   // draws next. A label is the only thing here that is placed rather than
   // simply drawn, so it has to see the finished picture (MapLabels.h).
-  if (labels != nullptr) MapLabels::draw(canvas, *labels, style, state.maxLabels);
+  if (labels != nullptr) MapLabels::draw(canvas, *labels, style);
+  // Street names between the settlement names and the contour heights, and the
+  // order is the whole declutter rule: a place name beats a street, a street
+  // beats a height. Each pass claims its ground in `labels->taken` and the next
+  // one yields to it.
+  //
+  // The layer is opened only when the style draws names -- the same gate the
+  // relief layer has -- so a mode or a rung that shows none pays no card read.
+  if (labels != nullptr && style.roadLabelPx > 0 && style.roadLabelMax > 0 && source.beginRoadLabels()) {
+    MapRoadLabelRef roadLabel;
+    while (source.nextRoadLabel(roadLabel)) {
+      MapLabels::offerRoadLabel(*labels, roadLabel);
+    }
+    MapLabels::drawRoadLabels(canvas, *labels, style);
+  }
+  if (timing) lap(timing->roadLabels, mark);
+  if (style.contoursEnabled) {
+    drawContourLabels(canvas, style, labels, contourLabels,
+                      static_cast<int>(sizeof(contourLabels) / sizeof(contourLabels[0])),
+                      timing != nullptr ? &timing->contourLabels : nullptr);
+  }
   if (timing) lap(timing->labelsMs, mark);
 
   // No marker draw here -- MapActivity draws its own mode-specific one (ring +

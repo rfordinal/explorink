@@ -6,9 +6,13 @@
 
 #include "HeldTilesStore.h"
 #include "MapCommandParser.h"
+#include "MapPointShards.h"
 #include "PinRecord.h"
 #include "PinStore.h"
 #include "StaleTilesList.h"
+#if defined(ENABLE_GROUP_CMD) && ENABLE_GROUP_CMD
+#include "GroupSource.h"
+#endif
 
 // The channel-free half of the map command console: line assembly, the
 // state the grammar drives, and the replies. Pure -- no Arduino, no serial,
@@ -108,6 +112,24 @@ class IMapStaleObserver {
   // an implementation that treats it as such buries the bug this feature exists
   // to find.
   virtual void onCheckFinished(bool known, uint16_t staleCount) = 0;
+};
+
+// Told when the phone announces a batch with `push <n>`, so the screen that is
+// up can start a run for files it never asked for.
+//
+// Synchronous, same contract as IMapSkipObserver and IMapStaleObserver: the
+// call runs on the activity task that is draining the console, inside the
+// dispatch of `push` and **before** its terminating `OK`. So an implementation
+// must not repaint or start a confirm wait here -- it flags the work and does
+// it after poll() returns (TileSyncActivity's freshnessRedrawPending_ has the
+// full reasoning).
+class IMapPushObserver {
+ public:
+  virtual ~IMapPushObserver() = default;
+  // [count] is files, not tiles: the phone counts what it is about to send, and
+  // a non-tile push (a route, a style) costs the same wire time. Never zero --
+  // the parser rejects `push 0`.
+  virtual void onPushAnnounced(uint16_t count) = 0;
 };
 
 // One entry of the persisted missing-tile list, as the `missing` command
@@ -213,6 +235,32 @@ class IMapSkipObserver {
   virtual void onTileSkipped(uint8_t z, uint32_t col, uint32_t row) = 0;
 };
 
+// Told when the phone gives up on a point shard via the reused `skip` word
+// (`skipZ == MapPointShards::kShardZoom`). Deliberately **not** routed
+// through IMapSkipObserver::onTileSkipped, even though the wire command is
+// the same one: `TileSyncActivity`/`MapActivity`'s tile-skip handlers never
+// check `z` at all, so a z10 skip landing there is counted into
+// `MissingTilesStore`/`autoSyncPending_` as though a z10 *tile* had been
+// skipped -- found in code review, 2026-09-13, before this ever reached a
+// device. There is no such thing as a z10 tile today, but nothing enforces
+// that, and `MapViewport.h` already discusses z10 as a future LOD candidate.
+class IMapPointSkipObserver {
+ public:
+  virtual ~IMapPointSkipObserver() = default;
+  virtual void onPointShardSkipped(uint32_t col, uint32_t row, const char* reason) = 0;
+};
+
+// Told when the phone reports a point shard the CDN no longer has
+// (`gone <col> <row>`), so the device can delete its own copy
+// (../../docs/point-layer-lifecycle.md, decision 3). Synchronous, same
+// contract as IMapSkipObserver: the call runs on the activity task draining
+// this console and cannot miss one.
+class IMapGoneObserver {
+ public:
+  virtual ~IMapGoneObserver() = default;
+  virtual void onPointShardGone(uint32_t col, uint32_t row) = 0;
+};
+
 // Where the `pin` commands land. Implemented by MapActivity over a PinStore and
 // PinLog; the native tests implement it over a PinStore and an in-memory log.
 //
@@ -244,6 +292,22 @@ class IMapPinsSource {
   virtual uint32_t pinLogPage(uint32_t offset, uint32_t maxCount, IPinLogVisitor& visitor) = 0;
 };
 
+// Told which z10 point shards the device holds, for the `points` sync
+// exchange (../../docs/point-layer-lifecycle.md, decision 2). Implemented by
+// MapActivity over the card; the native tests implement it over a fixed set.
+//
+// **Existence only.** Whether a shard has changed since it was last fetched is
+// decision 1's `.pidx` question, which this exchange does not ask -- a device
+// that has a shard reports `have` whether or not it is current, same as
+// `tiles` reporting `ok` for a tile that opens fine but might be stale
+// (StaleTilesList is the freshness answer for that layer, and points get no
+// content-id list yet).
+class IMapPointShardsSource {
+ public:
+  virtual ~IMapPointShardsSource() = default;
+  virtual bool hasPointShard(uint32_t col, uint32_t row) const = 0;
+};
+
 // What the commands actually do, and the only thing that knows it. Holds no
 // channel and no hardware, so P3's serial console and P5's BLE
 // characteristic run the same lines through the same object and get the
@@ -267,12 +331,46 @@ class MapConsoleState {
   bool hasPosition() const { return hasPosition_; }
   int32_t latE7() const { return latE7_; }
   int32_t lonE7() const { return lonE7_; }
+
+  // Seeds the position from a persisted fix rather than a live `pos` line --
+  // for a screen that has no viewport and may never see one this session
+  // (TileSyncActivity asking about points at home, same reasoning
+  // MapMissingAnchor.h's missingTileAnchorFromLastFix() already applies to the
+  // missing-tile sort). A live screen never needs this: MapActivity's own
+  // fixes already reach hasPosition_ through execute()'s Pos case.
+  //
+  // Marks the position as not for `info` to reveal (see
+  // positionIsFromPersistedFix_): the sync screen exists for a rider
+  // preparing at home, and printing their exact persisted fix over an
+  // unauthenticated channel there is a home-address leak this call
+  // introduced with nothing to gate it (code review, 2026-09-13) -- the
+  // range this feeds `points`/NEED_POINTS is still exposed, same coarse
+  // 39 km granularity `have`/`tiles` already accept, but the raw coordinate
+  // is not.
+  void setLastKnownPosition(int32_t latE7, int32_t lonE7) {
+    hasPosition_ = true;
+    latE7_ = latE7;
+    lonE7_ = lonE7;
+    positionIsFromPersistedFix_ = true;
+  }
+
+  // The z10 shard range `points` would list right now -- what NEED_POINTS's
+  // <count> should quote, computed the same way writePoints() does, so the
+  // two can never disagree. False (range left untouched) with no position.
+  bool pointShardRange(MapPointShards::Range& outRange) const;
   uint8_t heading() const { return heading_; }  // 0-15, see MapHeading.h
   uint16_t speedKmh() const { return speedKmh_; }
-  // Metres above sea level, valid only if hasAltitude() -- not yet consumed
-  // by anything drawn, wired ahead of hike mode.
+  // Metres above sea level, valid only if hasAltitude() -- feeds Hike mode's
+  // header line (MapActivity::drawHikeElevationLine()).
   bool hasAltitude() const { return hasAltitude_; }
   int16_t altitudeM() const { return altitudeM_; }
+  // The two fix-quality claims a `pos` may carry (MapFixTrust.h). Sticky like
+  // heading is: a later `pos` with no `acc` keeps the last one, so a bench run
+  // can set a state once and then walk a track through it.
+  bool hasAccuracy() const { return hasAccuracy_; }
+  uint16_t accuracyM() const { return accuracyM_; }
+  bool hasDirQuality() const { return hasDirQuality_; }
+  uint8_t dirQuality() const { return dirQuality_; }
 
   // Ladder steps and travel mode, as last set by a command or pushed back by
   // MapActivity. MapActivity reads these after a command lands and applies
@@ -356,6 +454,28 @@ class MapConsoleState {
   // Non-const because a listing stamps what it listed (beginListing()).
   void setHeldTilesStore(HeldTilesStore* store) { heldTiles_ = store; }
 
+  // Which screen is up, as one short lowercase word for `info`'s `screen=` line
+  // -- "map" or "sync". A string literal owned by the caller, installed by
+  // whichever activity built this state; nothing here copies it.
+  //
+  // **A setter and not a global**, because there is no such thing as "the
+  // current screen" on this side: each screen builds its own MapConsoleState
+  // (TileSyncActivity.h, "It deliberately does not share MapActivity's console
+  // state"), so the state that answers a command is by construction the state
+  // of the screen that is up.
+  //
+  // Left unset the line is omitted, exactly like `tile_fmt`. A phone therefore
+  // reads a missing `screen=` as "this firmware cannot say", which is what an
+  // older build genuinely is, and must not read it as either screen.
+  void setScreenName(const char* name) { screenName_ = name; }
+
+  // Where `push` goes. Not owned; must outlive this state. Left unset (the
+  // default, and the case on every screen that cannot show a batch) `push`
+  // answers `INFO push=unavailable` rather than a bare OK -- the phone is about
+  // to spend tens of minutes of radio on this, and "nothing here is counting
+  // it" is worth one line.
+  void setPushObserver(IMapPushObserver* observer) { pushObserver_ = observer; }
+
   // Where `fake` goes. Not owned; must outlive this state. Left unset (the
   // default, and the case on every screen but the map) `fake` answers
   // `INFO fake=unavailable` rather than silently doing nothing.
@@ -394,16 +514,48 @@ class MapConsoleState {
   // outlive this state. Left unset, only the tally above is kept.
   void setSkipObserver(IMapSkipObserver* observer) { skipObserver_ = observer; }
 
+  // Where a point-shard `skip` (skipZ == MapPointShards::kShardZoom) goes.
+  // Not owned; must outlive this state. Left unset, a point-shard skip is
+  // simply not reported anywhere -- it never touches skips_ or
+  // skipObserver_, which are the tile tally.
+  void setPointSkipObserver(IMapPointSkipObserver* observer) { pointSkipObserver_ = observer; }
+
   // Where the `pin` commands go. Not owned; must outlive this state. Left unset
   // (the default, and the case on every screen but the map) every `pin` command
   // answers `INFO pins=unavailable` rather than silently doing nothing.
   void setPinsSource(IMapPinsSource* source) { pins_ = source; }
+
+#if defined(ENABLE_GROUP_CMD) && ENABLE_GROUP_CMD
+  // Where `group` goes. Not owned; must outlive this state. Left unset (the
+  // default) every `group` command answers `INFO group=unavailable`, matching
+  // `pins=unavailable`: a build that never wired this must not read as a rider
+  // whose group is empty.
+  void setGroupSource(IMapGroupSource* source) { group_ = source; }
+#endif
+
+  // Where `points` asks whether a z10 shard is on the card. Not owned; must
+  // outlive this state. Left unset (the default) `points` answers
+  // `INFO points=unavailable`, matching `missing=unavailable`'s reasoning: a
+  // build that never wired this must not read as a device with zero shards.
+  void setPointShardsSource(IMapPointShardsSource* source) { pointShards_ = source; }
+
+  // Where `gone` goes. Not owned; must outlive this state. Left unset (the
+  // default) `gone` answers `INFO gone=unavailable` rather than silently
+  // doing nothing, same reasoning as every other observer seam here.
+  void setGoneObserver(IMapGoneObserver* observer) { goneObserver_ = observer; }
 
   // Records one `pin log` command will print. Smaller than the missing page for
   // the same reason it is bounded at all -- every line is one BLE indication and
   // each waits for the peer's ATT confirm -- and a history line is longer than a
   // tile line.
   static constexpr uint16_t kPinLogPageSize = 8;
+
+#if defined(ENABLE_GROUP_CMD) && ENABLE_GROUP_CMD
+  // Rows one `group log` command will print. Same bound and same reason as the
+  // pin log's: every reply line is one BLE indication waiting for the peer's ATT
+  // confirm, and a black box row is a long line.
+  static constexpr uint16_t kGroupLogPageSize = 8;
+#endif
 
   // Entries one `missing` command will print. Bounded because every reply
   // line is one BLE indication and each one waits for the peer's ATT confirm
@@ -423,6 +575,12 @@ class MapConsoleState {
   void writeHave(IMapReplyWriter& out);
   void writeMissing(uint16_t offset, IMapReplyWriter& out) const;
   void writePinList(IMapReplyWriter& out) const;
+#if defined(ENABLE_GROUP_CMD) && ENABLE_GROUP_CMD
+  bool executeGroup(const MapCommand& cmd, IMapReplyWriter& out);
+  void writeGroupList(IMapReplyWriter& out) const;
+  void writeGroupLog(uint16_t offset, IMapReplyWriter& out);
+#endif
+  void writePoints(IMapReplyWriter& out) const;
   // Non-const: paging the log is what streams the card, and the source is not
   // ours to be const about (same shape as writeHave()).
   void writePinLog(uint16_t offset, IMapReplyWriter& out);
@@ -431,10 +589,19 @@ class MapConsoleState {
   bool hasPosition_ = false;
   int32_t latE7_ = 0;
   int32_t lonE7_ = 0;
+  // True while latE7_/lonE7_ came from setLastKnownPosition() rather than a
+  // live `pos` line. writeInfo() withholds lat/lon while this is set --
+  // see setLastKnownPosition()'s doc for why. Cleared by execute()'s Pos
+  // case, the same place a live fix would overwrite it anyway.
+  bool positionIsFromPersistedFix_ = false;
   uint8_t heading_ = 0;
   uint16_t speedKmh_ = 0;
   bool hasAltitude_ = false;
   int16_t altitudeM_ = 0;
+  bool hasAccuracy_ = false;
+  uint16_t accuracyM_ = 0;
+  bool hasDirQuality_ = false;
+  uint8_t dirQuality_ = 0;
   uint32_t seq_ = 0;
   uint32_t (*freeHeapProvider_)() = nullptr;
   uint16_t (*linkMtuProvider_)() = nullptr;
@@ -456,10 +623,18 @@ class MapConsoleState {
   const StaleTilesList* staleTiles_ = nullptr;
   IMapStaleObserver* staleObserver_ = nullptr;
   IMapFakeSink* fakeSink_ = nullptr;
+  IMapPushObserver* pushObserver_ = nullptr;
+  const char* screenName_ = nullptr;
   IMissingTilesSource* missingTiles_ = nullptr;
   IMapPinsSource* pins_ = nullptr;
+#if defined(ENABLE_GROUP_CMD) && ENABLE_GROUP_CMD
+  IMapGroupSource* group_ = nullptr;
+#endif
+  IMapPointShardsSource* pointShards_ = nullptr;
+  IMapGoneObserver* goneObserver_ = nullptr;
   MapSkipTally skips_;
   IMapSkipObserver* skipObserver_ = nullptr;
+  IMapPointSkipObserver* pointSkipObserver_ = nullptr;
   // 0 until MapActivity pushes the real one -- `info` then omits the line
   // rather than claiming version 0, which is not a version that ever existed.
   uint16_t tileFormatVersion_ = 0;

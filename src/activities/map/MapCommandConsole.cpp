@@ -1,7 +1,14 @@
 #include "MapCommandConsole.h"
 
+// Header-only and dependency-free (atomic/cstddef/cstdint, no NimBLE), which is
+// why a host-tested translation unit may include it: the chunk-payload formula
+// has to be the same one the radio reports.
 #include <cstdio>
 #include <cstring>
+
+#include "BlePositionServer.h"
+#include "MapPointShards.h"
+#include "MapProjection.h"
 
 namespace {
 
@@ -79,8 +86,19 @@ bool MapConsoleState::execute(const MapCommand& cmd, IMapReplyWriter& out) {
       hasPosition_ = true;
       latE7_ = cmd.latE7;
       lonE7_ = cmd.lonE7;
+      // A real fix off the wire, not a persisted stand-in -- `info` may
+      // reveal it again (see positionIsFromPersistedFix_'s doc).
+      positionIsFromPersistedFix_ = false;
       if (cmd.hasHeading) heading_ = cmd.heading;
       if (cmd.hasSpeed) speedKmh_ = cmd.speedKmh;
+      if (cmd.hasAccuracy) {
+        accuracyM_ = cmd.accuracyM;
+        hasAccuracy_ = true;
+      }
+      if (cmd.hasDirQuality) {
+        dirQuality_ = cmd.dirQuality;
+        hasDirQuality_ = true;
+      }
       if (cmd.hasAltitude) {
         altitudeM_ = cmd.altitudeM;
         hasAltitude_ = true;
@@ -121,6 +139,33 @@ bool MapConsoleState::execute(const MapCommand& cmd, IMapReplyWriter& out) {
       return false;
 
     case MapCommandType::Skip: {
+      // A point shard, not a tile: same wire word reused at z10
+      // (MapPointShards::kShardZoom), routed away from the tile tally and
+      // skipObserver_ entirely. Those exist to count *tiles* -- neither
+      // TileSyncActivity's nor MapActivity's tile-skip handler checks `z`,
+      // so a z10 skip landing there would be recorded into
+      // MissingTilesStore/autoSyncPending_ as a skipped z10 tile (code
+      // review, 2026-09-13; there is no z10 tile today, but nothing enforces
+      // that).
+      if (cmd.skipZ == MapPointShards::kShardZoom) {
+        if (pointSkipObserver_ != nullptr) {
+          pointSkipObserver_->onPointShardSkipped(cmd.skipCol, cmd.skipRow, cmd.skipReason);
+        }
+        out.reply("OK");
+        return false;
+      }
+      // A tile the device already holds and had asked about: the replacement
+      // the phone promised did not arrive, so the entry goes back to pending
+      // rather than staying settled on a copy known to be out of date
+      // (HeldTilesStore::rearm). Does nothing for a tile that was merely
+      // missing -- those are not in this store at all.
+      //
+      // Reason-blind on purpose. Every reason word means the same thing here:
+      // no new bytes landed. Keying on the word would make this half depend on
+      // the phone's vocabulary, which the device cannot verify and which grows
+      // (`nosource`, `refused`, `fmt<N>`, `offline`, `oldcopy`).
+      if (heldTiles_ != nullptr) heldTiles_->rearm(cmd.skipZ, cmd.skipCol, cmd.skipRow);
+
       // Counted, not acted on: the tile is still missing, so it stays on the
       // store's list. This only stops the fetch screen waiting for it.
       ++skips_.count;
@@ -173,6 +218,28 @@ bool MapConsoleState::execute(const MapCommand& cmd, IMapReplyWriter& out) {
       out.reply("OK");
       return false;
 
+    case MapCommandType::Push: {
+      if (pushObserver_ == nullptr) {
+        // Same distinction `fake=unavailable` and `pins=unavailable` make: a
+        // screen that cannot count a batch must not answer like one that
+        // counted it. The map screen is exactly this case, and it is the one
+        // the phone must not push a long batch over at all -- `info`'s
+        // `screen=` line is how it finds that out first.
+        out.reply("INFO push=unavailable");
+        out.reply("OK");
+        return false;
+      }
+      // Before the reply, so the screen has the batch on its books by the time
+      // the phone hears `OK` and starts sending. The observer only flags work;
+      // it must not paint here (IMapPushObserver).
+      pushObserver_->onPushAnnounced(cmd.pushCount);
+      out.reply("OK");
+      // No redraw flag: this returns to whichever channel is draining the
+      // console, and the redraw belongs to the screen that took the
+      // announcement, on its own loop().
+      return false;
+    }
+
     case MapCommandType::Fake: {
       if (fakeSink_ == nullptr) {
         // Distinct from seeding zero, and for the same reason
@@ -198,8 +265,32 @@ bool MapConsoleState::execute(const MapCommand& cmd, IMapReplyWriter& out) {
       return false;
     }
 
+    case MapCommandType::Points:
+      writePoints(out);
+      out.reply("OK");
+      return false;
+
+    case MapCommandType::Gone:
+      if (goneObserver_ == nullptr) {
+        out.reply("INFO gone=unavailable");
+        out.reply("OK");
+        return false;
+      }
+      // Before the reply, same rule pushObserver_/skipObserver_ follow: the
+      // phone must not hear OK before the delete is at least underway.
+      goneObserver_->onPointShardGone(cmd.skipCol, cmd.skipRow);
+      // Write-only, same shape as `push`: it reveals no position, route or
+      // stored data, so it answers nothing but OK.
+      out.reply("OK");
+      return false;
+
     case MapCommandType::Pin:
       return executePin(cmd, out);
+
+#if defined(ENABLE_GROUP_CMD) && ENABLE_GROUP_CMD
+    case MapCommandType::Group:
+      return executeGroup(cmd, out);
+#endif
 
     case MapCommandType::Zoom:
       // The parser already rejected anything outside 0-4, so the ladder is
@@ -372,13 +463,21 @@ void MapConsoleState::writeInfo(IMapReplyWriter& out) const {
   snprintf(line, sizeof(line), "INFO pos=%d", hasPosition_ ? 1 : 0);
   out.reply(line);
 
-  formatE7(latE7_, number, sizeof(number));
-  snprintf(line, sizeof(line), "INFO lat=%s", number);
-  out.reply(line);
+  // Withheld for a persisted-fix seed (TileSyncActivity's askAboutPoints()):
+  // that position is the rider's home, not something on their screen right
+  // now, and this channel is unauthenticated (positionIsFromPersistedFix_'s
+  // doc). `pos=` above still says a position is set, which is what
+  // pointShardRange() needs to be believed; the coordinate itself is not
+  // this reply's to give out.
+  if (!positionIsFromPersistedFix_) {
+    formatE7(latE7_, number, sizeof(number));
+    snprintf(line, sizeof(line), "INFO lat=%s", number);
+    out.reply(line);
 
-  formatE7(lonE7_, number, sizeof(number));
-  snprintf(line, sizeof(line), "INFO lon=%s", number);
-  out.reply(line);
+    formatE7(lonE7_, number, sizeof(number));
+    snprintf(line, sizeof(line), "INFO lon=%s", number);
+    out.reply(line);
+  }
 
   snprintf(line, sizeof(line), "INFO heading=%u", static_cast<unsigned>(heading_));
   out.reply(line);
@@ -386,6 +485,14 @@ void MapConsoleState::writeInfo(IMapReplyWriter& out) const {
   snprintf(line, sizeof(line), "INFO speed_kmh=%u", static_cast<unsigned>(speedKmh_));
   out.reply(line);
 
+  if (hasAccuracy_) {
+    snprintf(line, sizeof(line), "INFO acc_m=%u", static_cast<unsigned>(accuracyM_));
+    out.reply(line);
+  }
+  if (hasDirQuality_) {
+    snprintf(line, sizeof(line), "INFO dirq=%u", static_cast<unsigned>(dirQuality_));
+    out.reply(line);
+  }
   if (hasAltitude_) {
     snprintf(line, sizeof(line), "INFO alt_m=%d", static_cast<int>(altitudeM_));
   } else {
@@ -437,6 +544,16 @@ void MapConsoleState::writeInfo(IMapReplyWriter& out) const {
   snprintf(line, sizeof(line), "INFO bytes=%lu", static_cast<unsigned long>(bytesRead_));
   out.reply(line);
 
+  // Which screen is up. The phone needs it before a long batch: both screens
+  // run the same BLE server and the same console, and a batch over the map
+  // screen dies -- its post-arrival redraw fires on a settle timer with no
+  // check on whether bytes are moving, and the link does not recover
+  // (../../../docs/ble-map-transfer-protocol.md, "The hard half").
+  if (screenName_ != nullptr) {
+    snprintf(line, sizeof(line), "INFO screen=%s", screenName_);
+    out.reply(line);
+  }
+
   // Which .tib version this build reads. A supplier of tiles needs it before it
   // pushes anything -- a tile built to another version passes CRC and is then
   // refused on open (MapTileReader::kFormatVersion).
@@ -452,7 +569,9 @@ void MapConsoleState::writeInfo(IMapReplyWriter& out) const {
     if (mtu != 0) {
       snprintf(line, sizeof(line), "INFO mtu=%u", static_cast<unsigned>(mtu));
       out.reply(line);
-      snprintf(line, sizeof(line), "INFO chunk_payload=%u", static_cast<unsigned>(mtu > 8 ? mtu - 8 : 0));
+      // freeink::bleMaxChunkPayload, not `mtu - 8`: a pre-trip sender reads
+      // `info` as its whole briefing, so this number is acted on (BUG-103).
+      snprintf(line, sizeof(line), "INFO chunk_payload=%u", static_cast<unsigned>(freeink::bleMaxChunkPayload(mtu)));
       out.reply(line);
     }
   }
@@ -576,6 +695,70 @@ void MapConsoleState::writeTiles(IMapReplyWriter& out) const {
   }
 }
 
+bool MapConsoleState::pointShardRange(MapPointShards::Range& outRange) const {
+  if (!hasPosition_) return false;
+  double mercX = 0.0;
+  double mercY = 0.0;
+  MapProjection::lonLatToMerc(latE7_ / 1e7, lonE7_ / 1e7, mercX, mercY);
+  outRange = MapPointShards::rangeForRadius(mercX, mercY, MapPointShards::kSearchRadiusM);
+  return true;
+}
+
+void MapConsoleState::writePoints(IMapReplyWriter& out) const {
+  if (pointShards_ == nullptr) {
+    // Not wired -- same distinction `missing=unavailable` makes: a build that
+    // never connected a source must not read as a device with zero shards.
+    out.reply("INFO points=unavailable");
+    return;
+  }
+  MapPointShards::Range range;
+  if (!pointShardRange(range)) {
+    // The shard range is centred on the rider; with no fix there is nothing
+    // to centre it on, the same refusal the Nearby menu gives
+    // (nearby-menu.md, "With no clever reordering"). Named as its own state
+    // rather than folded into a `point_total=0` reply on principle, the same
+    // way `tiles=none` is kept apart from an empty viewport -- though for
+    // this range specifically, `rangeForRadius()`'s bbox always spans at
+    // least one shard, so `point_total=0` cannot actually happen today
+    // (verified in code review, 2026-09-13).
+    out.reply("INFO points=no_position");
+    return;
+  }
+
+  // Every other listing in this file caps its output (writeTiles() at 32,
+  // writeMissing()/writeHave()/writePinList() by their stores' own page
+  // sizes) -- this one did not. The ≤9 shape is arithmetic
+  // (MapPointShards.h: a 50 km search bbox against a 39.135 km z10 shard
+  // spans at most 3x3), asserted in exactly one test for one coordinate, and
+  // MapPointShards.h itself warns that changing kSearchRadiusM or
+  // kShardZoom independently breaks it "quietly". Clamped here so that kind
+  // of change fails loud on this screen instead: an unbounded reply is one
+  // BLE indication per shard, each blocking on the peer's ATT confirm on
+  // this activity task -- the same button freeze HeldTilesStore::
+  // kMaxPerListing exists to prevent (code review, 2026-09-13).
+  static constexpr uint32_t kMaxPointShardsPerListing = 9;
+  const uint32_t total = range.count();
+  const uint32_t capped = total < kMaxPointShardsPerListing ? total : kMaxPointShardsPerListing;
+
+  char line[kReplyBuf];
+  snprintf(line, sizeof(line), "INFO point_total=%lu", static_cast<unsigned long>(capped));
+  out.reply(line);
+
+  // Same col-outer, row-inner order MapPointQuery::walk() opens shards in --
+  // no protocol reason to match it, but a log line from either side then reads
+  // in the same sequence.
+  uint32_t sent = 0;
+  for (uint32_t col = range.col0; col <= range.col1 && sent < kMaxPointShardsPerListing; ++col) {
+    for (uint32_t row = range.row0; row <= range.row1 && sent < kMaxPointShardsPerListing; ++row) {
+      const bool have = pointShards_->hasPointShard(col, row);
+      snprintf(line, sizeof(line), "INFO point_%lu_%lu=%s", static_cast<unsigned long>(col),
+               static_cast<unsigned long>(row), have ? "have" : "absent");
+      out.reply(line);
+      ++sent;
+    }
+  }
+}
+
 void MapConsoleState::writeHave(IMapReplyWriter& out) {
   if (heldTiles_ == nullptr || !heldTiles_->valid()) {
     // No viewport yet -- no fix and no pos command since the device started.
@@ -688,3 +871,220 @@ bool MapCommandConsole::feed(char c, IMapReplyWriter& out) {
 
   return false;
 }
+
+#if defined(ENABLE_GROUP_CMD) && ENABLE_GROUP_CMD
+
+namespace {
+
+// The handle a `group` command addressed its member by. The grammar fills exactly
+// one of the two fields, and both verbs that take a member accept either
+// (MapCommandParser.h).
+std::string_view groupHandle(const MapCommand& cmd) {
+  return cmd.groupAcr[0] != '\0' ? std::string_view(cmd.groupAcr) : std::string_view(cmd.groupId);
+}
+
+const char* groupEditError(IMapGroupSource::Edit result) {
+  switch (result) {
+    case IMapGroupSource::Edit::UnknownMember:
+      return "ERR unknown_member";
+    case IMapGroupSource::Edit::Full:
+      return "ERR group_full";
+    case IMapGroupSource::Edit::Invalid:
+      return "ERR bad_member";
+    case IMapGroupSource::Edit::WriteFailed:
+      return "ERR group_write";
+    case IMapGroupSource::Edit::Ok:
+      break;
+  }
+  return "OK";
+}
+
+// Formats each row of a `group log` page as it streams off the card, so a page
+// costs one record on the stack rather than an array of them.
+class GroupLogReplyVisitor : public IGroupLogVisitor {
+ public:
+  explicit GroupLogReplyVisitor(IMapReplyWriter& out) : out_(out) {}
+
+  void onGroupLogRecord(const GroupRecord& rec) override {
+    char csv[kGroupLineMax + 1];
+    if (encodeGroupRecord(rec, csv, sizeof(csv)) == 0) return;
+    // The card's own line, verbatim: a recovery listing that reformats its
+    // source is a second format to keep in step with the first.
+    char line[kGroupLineMax + 16];
+    snprintf(line, sizeof(line), "INFO group_log=%s", csv);
+    out_.reply(line);
+  }
+
+ private:
+  IMapReplyWriter& out_;
+};
+
+}  // namespace
+
+bool MapConsoleState::executeGroup(const MapCommand& cmd, IMapReplyWriter& out) {
+  if (group_ == nullptr) {
+    // Distinct from "no members", exactly like `pins=unavailable`: a host must
+    // not read "this rider has no group" out of a screen that cannot answer.
+    out.reply("INFO group=unavailable");
+    out.reply("OK");
+    return false;
+  }
+
+  char line[kReplyBuf];
+  switch (cmd.groupVerb) {
+    case MapGroupVerb::Pos: {
+      GroupFix fix;
+      fix.latE7 = cmd.latE7;
+      fix.lonE7 = cmd.lonE7;
+      fix.utc = cmd.groupUtc;
+      fix.heading = cmd.heading;
+      fix.hasHeading = cmd.hasHeading;
+      fix.speedKmh = cmd.speedKmh;
+      fix.hasSpeed = cmd.hasSpeed;
+      fix.source = cmd.groupSource;
+      const IMapGroupSource::Ingest result = group_->groupPosition(groupHandle(cmd), fix);
+      switch (result) {
+        case IMapGroupSource::Ingest::UnknownMember:
+          // Said out loud rather than swallowed: on a radio this is the case
+          // that matters -- somebody outside the group is talking and the device
+          // is refusing them (../../../docs/group-markers.md).
+          out.reply("ERR unknown_member");
+          return false;
+        case IMapGroupSource::Ingest::Muted:
+          out.reply("ERR group_muted");
+          return false;
+        case IMapGroupSource::Ingest::WriteFailed:
+          // The row is written before the marker moves, so a refused card leaves
+          // the panel exactly as it was.
+          out.reply("ERR group_write");
+          return false;
+        case IMapGroupSource::Ingest::Accepted:
+          break;
+      }
+      snprintf(line, sizeof(line), "INFO group_pos=%s", groupHandle(cmd).data());
+      out.reply(line);
+      out.reply("OK");
+      // The member has to be drawn, so this is a redraw and not merely a report
+      // -- same as `pin set`.
+      ++seq_;
+      return true;
+    }
+
+    case MapGroupVerb::Add: {
+      const IMapGroupSource::Edit result = group_->groupAdd(cmd.groupAcr, cmd.groupId, cmd.groupName);
+      if (result != IMapGroupSource::Edit::Ok) {
+        out.reply(groupEditError(result));
+        return false;
+      }
+      snprintf(line, sizeof(line), "INFO group_add=%s", cmd.groupAcr);
+      out.reply(line);
+      out.reply("OK");
+      return false;
+    }
+
+    case MapGroupVerb::Del: {
+      const IMapGroupSource::Edit result = group_->groupRemove(groupHandle(cmd));
+      if (result != IMapGroupSource::Edit::Ok) {
+        out.reply(groupEditError(result));
+        return false;
+      }
+      snprintf(line, sizeof(line), "INFO group_del=%s", groupHandle(cmd).data());
+      out.reply(line);
+      out.reply("OK");
+      // A member that is gone must stop being drawn in the same frame.
+      ++seq_;
+      return true;
+    }
+
+    case MapGroupVerb::Reload: {
+      size_t skipped = 0;
+      if (!group_->groupReload(skipped)) {
+        out.reply("ERR group_read");
+        return false;
+      }
+      snprintf(line, sizeof(line), "INFO group_total=%lu", static_cast<unsigned long>(group_->groupCount()));
+      out.reply(line);
+      // Never silent: a skipped row is a member whose marker will never appear,
+      // and the count is the only sign the file needs fixing.
+      snprintf(line, sizeof(line), "INFO group_skipped=%lu", static_cast<unsigned long>(skipped));
+      out.reply(line);
+      out.reply("OK");
+      ++seq_;
+      return true;
+    }
+
+    case MapGroupVerb::List:
+      writeGroupList(out);
+      out.reply("OK");
+      return false;
+
+    case MapGroupVerb::Log:
+      writeGroupLog(cmd.groupLogOffset, out);
+      out.reply("OK");
+      return false;
+  }
+  return false;
+}
+
+void MapConsoleState::writeGroupList(IMapReplyWriter& out) const {
+  // Wider than kReplyBuf, same reason as writePinList's: an acronym, an id, two
+  // signed coordinates and a timestamp at their widest do not fit 64 characters,
+  // and a truncated coordinate points at the wrong place.
+  char line[128];
+  char lat[24];
+  char lon[24];
+
+  const size_t total = group_->groupCount();
+  snprintf(line, sizeof(line), "INFO group_total=%lu", static_cast<unsigned long>(total));
+  out.reply(line);
+
+  // Bounded by the roster (kGroupMaxMembers), so no paging: twelve lines is
+  // inside what `info` already sends in one command.
+  for (size_t i = 0; i < total; ++i) {
+    const GroupMember member = group_->groupMemberAt(i);
+    const GroupFix fix = group_->groupFixAt(i);
+    if (!fix.present) {
+      // **Empty is not zero.** A member who has not been heard from has empty
+      // coordinate fields; 0,0 is a place in the Atlantic and a reader must
+      // never be able to confuse the two (parent docs/lora.md, "has not told us
+      // versus is at 0,0").
+      snprintf(line, sizeof(line), "INFO group_%s=%s,%s,,,,", member.acr, member.idCount > 0 ? member.ids[0] : "",
+               member.enabled ? "on" : "off");
+      out.reply(line);
+      continue;
+    }
+    formatE7(fix.latE7, lat, sizeof(lat));
+    formatE7(fix.lonE7, lon, sizeof(lon));
+    snprintf(line, sizeof(line), "INFO group_%s=%s,%s,%s,%s,%lu,%s", member.acr,
+             member.idCount > 0 ? member.ids[0] : "", member.enabled ? "on" : "off", lat, lon,
+             static_cast<unsigned long>(fix.utc), groupSourceText(fix.source));
+    out.reply(line);
+  }
+}
+
+void MapConsoleState::writeGroupLog(uint16_t offset, IMapReplyWriter& out) {
+  char line[kReplyBuf];
+  GroupLogReplyVisitor visitor(out);
+
+  // Totals before entries, the same order `pin log` and `missing` answer in --
+  // asking for zero records is how the total is fetched without them.
+  const uint32_t total = group_->groupLogPage(offset, 0, visitor);
+  snprintf(line, sizeof(line), "INFO grouplog_total=%lu", static_cast<unsigned long>(total));
+  out.reply(line);
+  snprintf(line, sizeof(line), "INFO grouplog_offset=%u", static_cast<unsigned>(offset));
+  out.reply(line);
+
+  // Newest first, so offset 0 is where everybody was last seen -- which is what
+  // somebody looking for a rider needs on the first screen.
+  group_->groupLogPage(offset, kGroupLogPageSize, visitor);
+
+  const uint32_t next = static_cast<uint32_t>(offset) + kGroupLogPageSize;
+  if (next < total) {
+    snprintf(line, sizeof(line), "INFO grouplog_next=%lu", static_cast<unsigned long>(next));
+  } else {
+    snprintf(line, sizeof(line), "INFO grouplog_next=done");
+  }
+  out.reply(line);
+}
+
+#endif  // ENABLE_GROUP_CMD

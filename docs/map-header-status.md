@@ -1,9 +1,18 @@
 # The map screen's header status row
 
-Top-right of the map, above the compass: a clock, a globe, a Bluetooth logo,
-four signal bars and the battery block. Drawn by
+Top-right of the map, above the compass: a clock, a transfer icon, a Bluetooth
+logo, four signal bars and the battery block. Drawn by
 `MapActivity::drawHeaderStatus()` and `drawHeaderStatusStrip()`
 (`src/activities/map/MapActivity.cpp`).
+
+The transfer icon was a hand-drawn globe (circle, equator, meridian) until
+2026-08-31, when it was replaced with a baked Lucide glyph (two opposite
+arrows, `arrow-left-right`) -- `scripts/gen_map_header_icons.py`,
+`src/components/icons/map_header_icons.h`. The meaning did not change: it is
+still `autoSyncPending_ > 0`, still about the phone spending mobile data on the
+rider's behalf. Drawn with `GfxRenderer::drawMono1bpp()`, not `drawIcon()` --
+`drawIcon()` bakes in a quarter turn for the forced-Portrait UI themes, and
+this row renders in whatever orientation the device is held in.
 
 No other screen has one. Battery goes through `GUI.drawHeader()`, the same call
 every other activity makes, so its position matches the info-list screens
@@ -15,29 +24,312 @@ has a wireless link worth showing.
 | Part | Source | Meaning |
 |---|---|---|
 | Battery | `GUI.drawHeader()` | same as every other screen |
-| Signal bars | `resolveBleBars(ble.rssi())` | link quality to the phone |
-| X over the bar slot | `connIntervalMs() == 0` | no central connected |
-| Bluetooth logo | always | what the bars are about |
-| Globe | `autoSyncPending_ > 0` | tiles are being fetched over the phone's data |
-| Clock | `BlePositionServer::localTimeNow()` | local time, from the phone; blank until it has sent one |
+| Signal bars | `resolveBleBars(ble.rssi())` | link quality to the phone. BLE sessions only |
+| X over the bar slot | `connIntervalMs() == 0` | no central connected. BLE sessions only |
+| Bluetooth logo | whenever the session uses BLE | what the bars are about |
+| Transfer icon | `autoSyncPending_ > 0` | tiles are being fetched over the phone's data. BLE sessions only |
+| Clock | the phone, or the receiver's own UTC | local time. See "The clock has two sources" |
+| GNSS glyph | `gnssHeaderState()` | the on-device receiver: off, looking, or fixed. GNSS sessions only, on a build that has one |
 
-The globe is not an internet indicator in the literal sense -- this device has
-no radio that reaches the internet. It is about the thing the rider cares about:
-the phone is spending mobile data on their behalf right now. See
+## One radio per session, so one set of icons (2026-09-03)
+
+**The map runs the phone link or the receiver, never both.** `mapGnssPosition`
+decides it once in `MapActivity::onEnter()`, which records the answer in
+`bleInUse_` and skips `BlePositionServer::begin()` entirely when the receiver is
+the source. Maintainer's call: a rider who turned the receiver on asked for a map
+that needs no phone, so the map does not run a radio for one.
+
+**The row follows that exactly.** BLE icons appear if and only if the session
+uses BLE; the GNSS glyph appears if and only if it uses the receiver. There is
+never one of each.
+
+Reason, and it is the same one twice: **an icon for a radio that was never
+started is worse than no icon.** A Bluetooth logo with an X through it says "your
+phone is not connected", which invites the rider to go fix the phone. On a GNSS
+session nothing is wrong and nothing can be fixed, because no link was ever
+attempted.
+
+Positions are a right-to-left chain of links (`drawHeaderStatusStrip()`), so a
+slot that is not drawn leaves no hole -- everything left of it moves right.
+`headerStatusRect()` deliberately does **not** follow the chain: it re-derives
+the widest layout unconditionally, so the opaque backing clears whatever slots a
+narrower row leaves empty. **The rect must stay a superset of what is drawn,
+never a match for it.**
+
+What a GNSS session gives up while the map is open: no autosync of missing tiles,
+no freshness check, no BLE command channel. That is not a side effect to be
+fixed later -- it is the trade, written down in `bleInUse_`'s own comment. The
+tile sync screen still uses BLE normally.
+
+**What it buys, measured on the T5 S3 Pro, 2026-09-03**: free heap before tile
+load was **175,308 B** on a GNSS session against **120,764 B** on a BLE one, on
+the same build, same map position, one map entry apart. `BlePositionServer`'s own
+log put the cost of `begin()` at 57,112 B on that run. So not starting the radio
+returns about 54 kB to a screen whose memory ceiling is documented as tight
+([`map-memory.md`](map-memory.md)).
+
+**Verified on hardware the same day, both directions.** `mapGnssPosition=1` then
+`CMD:GOTO_MAP` logged `ble: not started, position comes from the receiver` with
+no `BLEPOS begin` line at all; `mapGnssPosition=0` then a second entry logged
+`gnss: stopped` and a normal `begin()`. The header matched on both, and the row
+closed up rather than leaving the empty slots as holes.
+
+## The clock has two sources
+
+BLE session: `BlePositionServer::localTimeNow()`, which is the phone's own local
+time -- the phone sends a UTC anchor and its zone offset together.
+
+GNSS session: `gnss.fix().utc` plus `SETTINGS.clockUtcOffsetQ`. Every receiver
+carries UTC (from RMC or ZDA, `Gnss.h`), so the row keeps a clock with no phone.
+Not gated on a position fix: RMC brings the date well before four satellites do,
+and a clock is useful before a dot is.
+
+**A receiver cannot know the timezone**, and this is the one thing that reads
+worse than the BLE path. NMEA carries no zone, the device is offline by design,
+and `clockUtcOffsetQ` defaults to 48, which is UTC+0.
+
+**Measured on the T5 S3 Pro, 2026-09-03**: with the setting untouched the row
+read `19:53` at 21:55 CEST, which is UTC exactly. So a rider who has never
+opened Settings > Clock offset gets a clock two hours slow in summer here, and
+it is the setting that fixes it rather than anything in this code. Deriving a
+zone from longitude was rejected: it is wrong at every land border, and a
+confidently wrong clock is worse than a plainly offset one.
+
+### So the clock says "UTC" while it is UTC
+
+`20:46 UTC  <glyph>  100%`. Added 2026-09-03, on the maintainer's ask, and
+**only while `clockUtcOffsetQ` is still its default of 48**. Once the rider sets
+an offset the clock is their local time, exactly like the BLE path, and the
+suffix would be false -- showing it on every GNSS session was considered and
+rejected on that.
+
+**The track log has a row too, since 2026-09-04**: Settings > Map > **Record
+GNSS track** (`mapGnssLog`), same build gate. It was `CMD:SETTING`-only until
+then, so the only person who could record a walk was whoever had the device on a
+desk -- which is how a walk on 2026-09-04 produced no `gnss.csv` to examine. The
+default stays 0 and the label says "track" rather than "log", because switching
+it on writes where the rider went (`src/CrossPointSettings.h`, the field's
+comment).
+
+**It is a suffix on the clock's own string, not a label of its own.** One
+`drawText`, right-aligned like the bare clock always was. `headerStatusRect()`
+reserves its width unconditionally, on every state including the BLE sessions
+that never draw it, for the same reason the transfer icon's slot is reserved.
+
+Verified on hardware, positive case. **The negative case -- offset set, suffix
+gone -- is read off the code only**, because `clockUtcOffsetQ` is not in
+`CMD:SETTING`'s allow-list and the only way to change it is Settings > Clock
+offset on the device.
+
+#### It took three tries, and the first two were the same mistake
+
+Worth keeping, because the mistake is the kind that looks like a layout problem
+and is not. "UTC" is 32 px at `SMALL_FONT_ID`, measured on the panel.
+
+1. **Squatting in the transfer icon's empty slot.** The constants said 23 px.
+   `header: UTC label needs 32 px, slot has 23 -- not drawn`.
+2. **Its own link in the chain.** Room appeared, but the clock moved past the
+   refresh window. `header: UTC label would push the clock 4 px outside the
+   refresh window -- not drawn`. Reserving the link in `headerStatusRect()` is
+   what fixed that half: **a link the chain can take that the rect has not
+   reserved is a link that can never be taken.**
+3. It drew -- and on the panel it sat almost equidistant between the clock and
+   the GNSS glyph, so it read as labelling the glyph. Which is what both earlier
+   attempts had been building towards without anyone noticing, because **the
+   question was never how wide the gaps should be.** A separate element next to
+   two things has to be nearer one of them, and a gap ratio is an argument about
+   how much nearer. Making it part of the clock's string removes the argument:
+   the suffix cannot be nearer to anything than to the time it is inside.
+
+Two things carried the first two failures out of guesswork. The fit check
+**refused to draw** rather than overlapping the glyph or writing outside the
+refresh window, and it **logged why** -- so neither failure put a wrong pixel on
+the panel and neither was silent (`CLAUDE.md`, "Comments Answer WHY, Not WHAT":
+a comment telling the reader to avoid something needs a way for them to know
+they failed). The check survives on the suffix path too, since the reserve
+measures `" UTC"` alone while the draw measures one combined string and kerning
+is the difference.
+
+The third failure had no such check, and could not have: "reads as belonging to
+the wrong thing" is not a quantity. **That one needed the panel and a person
+looking at it** -- which is the standing rule about pixel decisions, arriving
+here as a worked example rather than as advice.
+
+The transfer icon is not an internet indicator in the literal sense -- this
+device has no radio that reaches the internet. It is about the thing the rider
+cares about: the phone is spending mobile data on their behalf right now. See
 `missing-tiles.md`, "Autosync".
+
+## The GNSS glyph, three states (2026-09-01)
+
+**Only on a build with `ENABLE_GNSS_CMD`** -- the LilyGo T5 S3 Pro today. The X4
+and the X4 Pro have no receiver, so the slot is not compiled in at all rather
+than drawn empty: an always-present icon that always says the same thing would
+eat a place name's width to report nothing.
+
+Three Lucide glyphs from one family, so the rider reads the *difference* between
+them rather than each one from scratch (`scripts/gen_map_header_icons.py`):
+
+| glyph | lucide | when |
+|---|---|---|
+| `icon_gnssOff` | `locate-off` | `mapGnssPosition == 0`, or the receiver is not running |
+| `icon_gnssSearching` | `locate` | running, no current solution |
+| `icon_gnssFixed` | `locate-fixed` | running, `quality` says the solution is current |
+
+**Drawn whenever the receiver is the session's source, and not otherwise**
+(corrected 2026-09-03 -- see "One radio per session" above). It used to be drawn
+always, with "off" as one of three states, so that a rider could tell "no
+receiver running" from "no icon yet". **That reasoning expired** when the map
+stopped running both radios: a BLE session now draws Bluetooth icons and no GNSS
+glyph, so there is no "no icon yet" case left to confuse it with.
+
+Off still has a glyph, and it now carries the one meaning worth telling: the
+rider asked for the receiver and it is not running -- `gnssStart()` failed, or
+`gnss.running()` went false.
+
+**The state comes from `quality`, never from `GnssFix::valid`.** `valid` latches
+true on the first solution and stays true (`Gnss.h`), so a receiver that has lost
+the sky would go on claiming a fix -- the one lie a *where am I* device must not
+tell. `quality == 6` is dead reckoning with no satellites behind it and counts as
+seeking here, the same way `MapActivity::pollGnssFix()` refuses to draw a
+position from it.
+
+**Repainted as structural, not rate-capped.** The state moves a handful of times
+a ride (start, first fix, sky lost) and each move is exactly the moment worth
+telling. That is the opposite of the bar count beside it, which flips on an RSSI
+threshold and is capped for that reason.
+
+Layout is one more link in the row's right-to-left chain, between the Bluetooth
+logo and the transfer icon, so the clock and the place name shift left by
+themselves rather than by a hardcoded x.
+
+**Verified on hardware 2026-09-01**: the receiver starts on map entry and stops
+on exit (`gnss: started` / `gnss: stopped` / `gnss: started` across two entries).
+**Not verified**: nobody has looked at the panel yet, and `locate-fixed` has
+never been shown, because no fix has landed indoors.
+
+## The GNSS bars, and the calibration that made them useless first
+
+**Same build gate as the glyph, drawn next to it.** Four slots, the BLE block's
+width and pitch reused so the two never disagree about geometry. **How many** are
+filled says how many satellites the antenna hears; **how tall** they all are says
+how strong the best of them is. Two questions, because a rider needs both:
+sixteen satellites all at 20 dB-Hz and two at 45 dB-Hz are both "no fix", and
+they need opposite things done about them.
+
+An empty block is a result, not a missing one. On 2026-09-04 the receiver saw
+nothing at all for fifteen minutes outdoors and the panel said only "searching",
+which is also what it says two seconds before a fix. Four baseline ticks say "it
+hears nothing", and that needs no cable to read.
+
+**The first calibration was worthless, and it is worth remembering why.** Until
+2026-09-10 the count was `min(tracked, 4)` -- `tracked` being every satellite
+reporting a non-zero C/N0 -- and the height stepped at a best C/N0 of 24 and 31
+dB-Hz. Both ladders started so low that both saturated: four junk satellites
+under a ceiling filled the block, and **one** satellite at 31 dB-Hz made every
+bar full height. Reported by the maintainer with the whole block full and no
+position at all. Nothing was broken. The block was doing exactly what it said,
+and it could not distinguish a car park from a cellar.
+
+`MapGnssBars` (`src/activities/map/MapGnssBars.h`) owns both ladders now, host
+tested in `test/map_gnss_bars/`, out of `MapActivity` for the same reason
+`MapGnssHeading` and `MapFixTrust` are: it is arithmetic, and a second client has
+to be able to reproduce it (`CLAUDE.md` in the parent repo, "The phone app must
+stay portable to iOS").
+
+### The numbers, and where they come from
+
+Maintainer's calibration, 2026-09-10. The count is not one bar per satellite:
+
+| bars | satellites tracked | what it claims |
+|---|---|---|
+| 0 | 0-3 | hears a ceiling, not a sky |
+| 1 | 4-7 | a solution is possible, and coarse |
+| 2 | 8-11 | it should normally have a position |
+| 3 | 12-15 | good |
+| 4 | 16+ | very precise |
+
+| height | best C/N0 | |
+|---|---|---|
+| 1 px tick | 0-25 dB-Hz | nothing worth drawing |
+| 4 px | 26-30 | |
+| 7 px | 31-35 | from 31 the receiver reads the ephemeris off the air itself (`Gnss::injectAidIni()`) |
+| 11 px | 36-39 | |
+| 14 px | 40+ | open sky |
+
+The readings behind them, every one off this L76K:
+
+| situation | tracked | best C/N0 | fix | draws |
+|---|---|---|---|---|
+| bench, indoors | 1 | 29 | no | no bars, 4 px if there were one |
+| indoors, no sky | 4 | 19 | no | one slot, no height -- ticks only |
+| desk, through a ceiling | 9 | 32 | yes, 8 used, HDOP 2.0 | 2 bars, half height |
+| on a ride | 11 | 38 | yes | 2 bars, three quarters |
+| open sky, 2026-09-09 | 16 | -- | -- | 4 bars |
+
+Plus the shape of a real ride: 2,269 logged fixes on 2026-09-08 carried
+`sats_used` 3 to 10, mean 7.5, median 8 -- so two bars is where a working ride
+sits, which is what the maintainer asked for. The log stays outside git
+([`../../docs/device-log-forensics.md`](../../docs/device-log-forensics.md) in
+the parent repo).
+
+`tracked` and not `satsUsed`: `satsUsed` comes off GGA and is 0 without a fix, so
+it says nothing in the one situation the block exists for -- a rider standing
+still with no position, deciding whether to wait or walk into the open. And not
+`satsInView`, which is the almanac's opinion and reads 19 from indoors.
+
+**Height rounds up.** Four steps on a 14 px row rounded down are 3, 7, 10, 14,
+and a 3 px bar reads as a thick baseline tick at arm's length. Rounded up they
+are 4, 7, 11, 14.
+
+### The hysteresis is about refresh cost, not about noise
+
+A satellite drops in and out every few seconds and C/N0 wanders a decibel or two
+on a parked device. Every change to the block is a windowed refresh -- ~1,081 ms
+on a T5 S3 Pro ([`refresh-modes.md`](refresh-modes.md), measured 2026-09-05). So
+a lit rung holds while the reading is at most 2 below the threshold that lit it,
+and goes out one further down. Rungs are 4 satellites apart, so a bar can never
+hold on into the territory of the bar below it.
+
+`resolve()` **does not write its state.** Two call sites need the answer -- the
+repaint decision asks whether it changed, the draw uses it and commits it -- and
+a resolve that mutated would apply the slack twice in one frame. `drawnGnssBlock_`
+is both what the panel shows and the hysteresis' memory, and it starts at -1
+rather than 0: "never drawn" must not compare equal to "empty", or the first
+header pass on a deaf receiver would decide it was already correct.
+
+The block is rate-capped with the BLE bars (30 s floor), not treated as
+structural like the glyph beside it.
+
+**The satellite wait screen reads the same two ladders**, at a bigger size and
+with no hysteresis: it is where a rider first meets this instrument, with
+minutes to study it, so scoring the same sky differently there would teach them
+to read this block wrongly ([`gnss-acquire.md`](gnss-acquire.md), "The signal
+ladder is the header's"). Its per-satellite marks use the C/N0 rungs too. So
+**moving a rung here moves it on two screens** -- `test/gnss_sky_view` asserts
+the agreement against these constants and fails if the two drift apart.
+
+**Not verified on hardware.** The numbers are calibrated against the five
+readings above and 2,269 logged fixes; nobody has looked at the panel with this
+code on it. What a hardware pass has to check: an indoor bench draws no bars and
+no height, a ride draws two, and the block does not flutter while the device sits
+still. And what is genuinely open: **no distribution of best C/N0 exists** --
+`gnss.csv` has no such column, so the height rungs rest on four point samples.
+Logging `tracked` and `bestsnr` into `gnss.csv` would settle them.
 
 ## Two rects, one source
 
-`headerStatusRect()` gives the strip: the clock slot, the globe slot, the logo,
-the bars, plus the opaque backing's padding. Deliberately **excludes** the
-battery block, which `GUI.drawHeader()` clears and draws itself.
+`headerStatusRect()` gives the strip: the clock slot, the transfer icon slot,
+the logo, the bars, plus the opaque backing's padding. Deliberately
+**excludes** the battery block, which `GUI.drawHeader()` clears and draws
+itself.
 
 Everything drawn must be inside it, because it is also what the windowed
 repaint refreshes. Three consequences worth stating:
 
-- **The globe's and the clock's slots are in the rect whether or not either is
-  drawn.** A rect that shrank when one went away would leave its pixels on the
-  panel with nothing to erase them.
+- **The transfer icon's and the clock's slots are in the rect whether or not
+  either is drawn.** A rect that shrank when one went away would leave its
+  pixels on the panel with nothing to erase them.
 - **`updateHeaderStatus()` calls `drawHeaderStatusStrip()`, never
   `drawHeaderStatus()`.** The latter also redraws the battery, which is outside
   the window -- that would put a battery in the framebuffer the panel will not
@@ -50,32 +342,41 @@ repaint refreshes. Three consequences worth stating:
 The row needs an opaque white backing for the same reason the compass halo and
 the busy badge do: it lands on live map lines, not on blank margin.
 
-## The debug readout sits below this row, not inside it
+## The debug window sits below the whole header bar, not inside it
 
 `MapActivity::drawHeaderStatus()` calls `GUI.drawHeader(renderer, Rect{0,
 kHeaderMarginTop, screenWidth, kHeaderRowHeight}, ...)` -- a **full-width**
 clear, not just the right-hand icon strip `headerStatusRect()` covers above.
 `kHeaderRowHeight` (`MapActivity.cpp`, `BaseMetrics::values.batteryHeight +
-10` = 22) is that rect's height, named so the debug readout's own top offset
-(`kTextTopY = kHeaderMarginTop + kHeaderRowHeight + kTextGapBelowHeader`) can
-be derived from it instead of guessed.
+10` = 22) is that rect's height.
+
+**The debug window's top is no longer derived from that row at all.**
+`MapActivity::layoutDebugOverlay()` computes it as `mapContentTop() +
+kDebugGapBelowHeader`, and `mapContentTop()` is mode-aware -- see
+`docs/map-debug-window.md`. The old compile-time `kTextTopY` was 42 in every
+mode, which is 19px *inside* Hike's second header row; that is the bug the
+"Open" note at the end of this file used to describe, and it is fixed.
 
 Two bugs this fixed, both found on hardware 2026-08-08, in the same session
 the readout got a toggle and a white backing:
 
 - **Backing box wider than the text erased the header icons.** The first cut
-  sized the readout's backing to nearly the full screen width. `drawHeaderStatus()`
-  runs before the readout, so a wide white box painted straight over the
-  battery/BLE icons it had just drawn, on the same frame. Fixed by sizing each
-  line's own backing to that line's own `getTextWidth()`, in `drawDebugLine()` --
-  never wider than the glyphs it is behind.
+  sized the readout's backing to nearly the full screen width.
+  `drawHeaderStatus()` runs before the readout, so a wide white box painted
+  straight over the battery/BLE icons it had just drawn, on the same frame.
+  Fixed at the time by sizing each line's own backing to that line's own
+  `getTextWidth()`. **The window is a single fixed-width box again today**
+  (`MapDebugOverlay::paint()`), and that is safe only because the box now
+  starts below `mapContentTop()` and stops at the compass halo -- it has no
+  header pixels left to erase. Do not widen it past `rightLimit` without
+  re-reading that.
 - **A fixed 18px line gap was shorter than the font's own line height,** so
   each line's backing (drawn after the line above it) erased the bottom few
   pixels of that line's text. `ubuntu_10_regular`/`bold`'s `EpdFontData`:
   `advanceY` 24, `ascender` 20, `descender` -4 (`lib/EpdFont/builtinFonts/
-  ubuntu_10_regular.h`) -- so line spacing is now `renderer.getLineHeight(
-  UI_10_FONT_ID) + 2*kDebugPad` (30px), derived from the font instead of a
-  guessed constant.
+  ubuntu_10_regular.h`) -- so row pitch is `renderer.getLineHeight(
+  UI_10_FONT_ID) + kPad` (`MapDebugOverlay::rowStride()`), derived from the
+  font instead of a guessed constant.
 
 Before either fix, `kTextTopY` was a guessed `16` with no relation to this
 row at all -- close enough to its own `[6, 28)` band that the readout read as
@@ -193,9 +494,100 @@ Four rate limits, each for its own reason:
   and it is 30x slower than the bars' floor. It is the only condition that
   fires while nothing else on the device is happening.
 
-Nothing repaints before `viewportDrawn_`: the waiting banner draws no header row
-at all, and painting one onto it would leave a floating status row over a screen
-with no map.
+**The chain's cursor carries two conventions, and that is a bug waiting for a
+new link.** `drawHeaderStatusStrip()` walks right to left through a
+`chainRight` cursor, and the two branches that can run first disagree about
+what they leave in it: the Bluetooth branch leaves the logo's **left edge**
+with no gap taken, the GNSS branch leaves its icon's left edge with the left
+gap **already** subtracted. Every block downstream happens to match the one
+predecessor that can precede it, so for a long time nothing could see the
+disagreement.
+
+The LoRa glyph of 2026-10-23 is the first link both of them feed, and it
+landed **flush against the Bluetooth logo** on a phone session -- it took no
+gap, and neither had the branch above it. It is fixed by branching on
+`bleInUse_` in that one block, which is correct and is also a second copy of
+the ambiguity rather than a cure. T-2045 is the cure: one rule for every link
+(take the gap on your own right, leave your own left edge), which moves the
+clock on a GNSS session and so wants a panel shot of both session kinds.
+
+**A header slot is three separate things: a reserved rect, a draw, and a reason
+to repaint.** Getting two of them right looks exactly like getting all three
+right until somebody photographs the panel. The LoRa glyph of 2026-10-22 got it
+wrong twice in a row: first it was drawn inside `if (showTransferIcon)`, so it
+appeared almost never, and then it drew correctly but was not in the structural
+signature, so a radio that switched on while nobody pressed a button showed the
+old glyph for as long as the row stood. A new slot joins the `drawn*State_`
+members in the same commit that draws it.
+
+Nothing repaints before `headerRowDrawn_` (see "The waiting banner draws a
+header row too" below) -- that flag, not `viewportDrawn_`, is what gates this
+polling loop.
+
+## The coarse clock in Observe, and the masked digit that says so (2026-08-22)
+
+**Built 2026-08-22, untested on hardware.** `MapActivity::clockIsCoarse()` and
+`clockTick()`, with `kClockCoarseMinutes` = 10 and `kClockFineAfterInputMs` = 30 s.
+Follows this file's own principle.
+
+The minute tick is the only thing that repaints the header while nothing else is
+happening -- `minuteMoved` has no rate cap because "a minute *is* the cap"
+(`MapActivity.cpp:1268-1279`). Run 5 measured what that costs in Observe with the
+radio off: **376 windowed refreshes in 6.25 h, exactly 60 an hour, 9.4 s/h of
+panel time** (`power-plan.md`, run 5) **[measured]**. Dropping to a 10-minute
+cadence makes that 6 an hour and 0.94 s/h. **What those 54 fewer refreshes an hour
+are worth in current is [open]** -- the panel's draw during a windowed refresh has
+never been measured, and it is not a CPU cost: `full_clock_ms` moved 0.11 % across
+the whole run, so these repaints never lift the clock.
+
+**The display, and why it is not just a saving.** At a 10-minute cadence the units
+digit is wrong for nine minutes out of ten, so printing it claims a precision the
+device does not have. This file already refuses that trade once -- *"a clock that
+is confidently wrong, which is worse than no clock"* -- and a masked digit is the
+same rule one step further: show the tens, withhold the units.
+
+Three candidates, all from the maintainer:
+
+| Form | Reads as | Verdict |
+|---|---|---|
+| `12:5_` | this digit is withheld | **rejected on the panel** -- see below |
+| `12:5?` | this digit is unknown | rejected on paper: reads as an error |
+| `12:5*` | a mark holding the digit's place | **shipped** |
+
+**`_` was tried first and failed on the device, 2026-08-22.** At
+`SMALL_FONT_ID` an underscore sits on the baseline and simply does not read: the
+panel showed `8:0_` and it looked like **`8:0`**, which the maintainer described
+as a football score rather than a clock. That was the risk written down before the
+flash, and it turned out to be the real one.
+
+**`*` shipped instead.** It occupies the digit's slot and is roughly round, so the
+`hh:mm` shape survives being one glyph short. Note what to watch when judging it:
+an asterisk sits high in the em box in most fonts, closer to a superscript, so it
+can read as a stray dot above the baseline rather than as a character in the slot.
+
+**If `*` reads badly too, the next thing to try is not another mark** but
+`~8:00` -- a normal-looking time with an explicit "approximately". It costs the
+principle a little (it does name a minute) while staying honest about the
+precision, and it cannot be mistaken for a missing glyph.
+
+**What a hardware pass has to check:** that `12:5_` is legible and does not read
+as a broken glyph, that the string fits its right-aligned slot (it is narrower
+than the `00:00` the slot is sized for, so it should hang off the right edge like
+any short time), that a button press turns it into the exact minute and that it
+returns to coarse 30 s later, and that Follow mode is untouched.
+
+**Exact on input, and it is in.** A rider pressing a button is
+looking at the screen, so any input repaints the header with the full time. The
+coarse form is for the hours nobody is watching, which is when the saving exists
+anyway -- and it makes the mask self-explaining, because the first press turns
+`12:5_` into `12:57`.
+
+**Two open questions before this ships.** Whether the drift of the extrapolated
+clock matters over the hours a radio-off Observe session runs without a single
+re-anchor (`millis()` is crystal-derived, so likely seconds a day, but nobody has
+measured it), and whether the battery indicator -- which rides the same tick -- is
+content with a ten-minute cadence. This file already says charge moves slowly
+enough that it never earned a repaint of its own, so probably yes.
 
 ## The clock (2026-08-15)
 
@@ -259,7 +651,12 @@ stale position now looks current. Nothing else on the header carries fix age
 either, so today the rider has no on-screen signal that the dot is old. If that
 turns out to bite on a real ride, the fix is additive rather than a rewrite --
 the anchor already knows when the last packet landed, so a staleness marker
-beside the clock is a small change. Nobody has ridden with this yet.
+beside the clock is a small change.
+
+**Ridden 2026-09-02, and it bit.** The logged ride had gaps between accepted
+fixes of up to 21 s -- about 500 m at 85 km/h -- with nothing on the panel saying
+the dot was old ([`gnss.md`](gnss.md), "Fixes stop while the map renders"). The
+staleness marker is no longer a hypothetical cost.
 
 ### What is drawn
 
@@ -268,8 +665,8 @@ beside the clock is a small change. Nobody has ridden with this yet.
 hidden on a device with no RTC, so reading it here would obey a setting the
 rider cannot reach.
 
-The slot is reserved whether or not a time is known -- same rule as the globe's
-slot, same reason. The text is right-aligned inside it, so the colon does not
+The slot is reserved whether or not a time is known -- same rule as the
+transfer icon's slot, same reason. The text is right-aligned inside it, so the colon does not
 walk sideways between `9:05` and `10:05`.
 
 Its width comes from `headerClockSlotWidth()`, which measures the **widest
@@ -425,7 +822,7 @@ kMaxTiles`, 3x3 worst case) -- there is no wider, dedicated query for the
 coarse tier, so a rider zoomed in tight in open country between towns will
 often see the fine name alone, or nothing.
 
-Truncated to fit with the same loop `drawDebugLine()` uses, against
+Truncated to fit with the same loop `MapDebugOverlay::paint()` uses, against
 `headerStatusRect()`'s own left edge minus a small gap -- so it stops before
 the icon cluster rather than running under it.
 
@@ -459,12 +856,13 @@ same offset still reads right.
   screenshot showed the strip repainting "with the map frame underneath
   untouched". One image cannot show that nothing else was repainted. The claim
   that survives is the one above -- no render ran in the window.
-- **Verified on hardware, 2026-08-07**: the globe draws at 14 px, clear of the
-  Bluetooth logo and not clipped by the strip rect. Honest note on the glyph: a
-  circle with a straight equator and a straight meridian reads as a
-  crosshair-in-a-circle about as much as a globe. It is unambiguous against
-  everything else in that row, but curving the meridian would make it a globe
-  rather than a target.
+- **Verified on hardware, 2026-08-07, about the retired globe glyph**: it drew
+  at 14 px, clear of the Bluetooth logo and not clipped by the strip rect.
+  Honest note on that glyph, kept for the record: a circle with a straight
+  equator and a straight meridian read as a crosshair-in-a-circle about as much
+  as a globe. Superseded 2026-08-31 by the baked Lucide arrow glyph (see the top
+  of this doc); not yet separately verified on hardware -- open, needs a
+  hardware pass.
 - **Not verified**: the 30 s bar-repaint floor doing its job on a link whose RSSI
   actually sits on a threshold. Every run here was at close range with a steady
   signal. What would settle it: walk the phone to the edge of range with the map
@@ -566,10 +964,11 @@ next to the existing `viewportDrawn_` assignment there:
   overview stayed up, on the same mechanism as the bug above. Not separately
   reported by the maintainer -- found by tracing every `viewportDrawn_` reader
   while building this fix, not by a second hardware session.
-- `renderWaiting()` and `onEnter()`'s state reset -- `false`. Neither draws a
-  header row (`renderWaiting()` draws only the waiting text; `onEnter()` runs
-  before any frame exists), so the row must stay ungated-off here exactly as
-  before.
+- `renderWaiting()` -- `false` at the time this fix was written (it drew only
+  the waiting text), later changed to `true` -- see "The waiting banner draws a
+  header row too" below.
+- `onEnter()`'s state reset -- `false`. It runs before any frame exists, so the
+  row must stay ungated-off here regardless of what any render function does.
 
 Every other `viewportDrawn_` reader was checked and left alone:
 `panBy()` (`MapActivity.cpp`, guards on `source_` instead, by its own comment,
@@ -605,3 +1004,268 @@ persisted-fix frame plausibly should not be followable -- but its written reason
 cites something that is gone. **Open:** find the real reason and rewrite the
 comment, or find that the flag no longer needs to exclude persisted fixes at
 all. Do not delete the comment without settling which.
+
+## The waiting banner draws a header row too (2026-08-26)
+
+**Built 2026-08-26, untested on hardware.** Found while chasing a report that
+tile-freshness sync "does not work" on the Android simulator: the real cause
+there was no persisted fix (`docs/tile-freshness.md` -- no fix means no tile is
+ever rendered, so `HeldTilesStore` stays empty and there is nothing to check),
+but tracing it surfaced this row's own gap.
+
+Before this change, `renderWaiting()` (`MapActivity.cpp`) drew only the
+`STR_MAP_WAITING_BLE` / `STR_MAP_BLE_START_FAILED` text and left
+`headerRowDrawn_ = false`. That is exactly the state described above as "the
+case where a rider most wants to know whether the phone is still there" --
+except here there has never been a fix at all, not even a stale persisted one,
+so the rider has no signal whatsoever: a phone that never paired and one that
+paired instantly and is just waiting for a GPS lock looked identical, both
+just the waiting sentence.
+
+`renderWaiting()` now calls `drawHeaderStatus()` unconditionally, the same
+call `renderViewport()` and `renderRouteOverview()` already make, and sets
+`headerRowDrawn_ = true` instead of `false` so `updateHeaderStatus()`'s
+windowed repaint keeps the BLE bars, battery and clock live while the rider
+waits. The waiting text moved from a hardcoded `y=8` to `mapContentTop() + 8`
+so it starts below the header instead of under it.
+
+`drawHeaderPlaceName()` and `drawHeaderStatusStrip()` were checked for a
+dependency on a fix or a loaded tile before making this change:
+`drawHeaderPlaceName()` reads `nearestPlaces_`, which is a freshly-constructed
+`MapNearestPlaces` with `hasFine`/`hasCoarse` both false at this point, so it
+returns early and draws nothing (`MapActivity.cpp` -- `drawHeaderPlaceName()`,
+the `else` branch). `drawHeaderStatusStrip()` reads BLE connection state,
+battery and the clock, none of which need a fix or a tile. Both are safe to
+call from a screen with no map loaded.
+
+**Verified on the Android simulator (S8, `org.explorink.simulator`)
+2026-08-27, not yet on real X4 hardware.** All three things listed above to
+check, checked:
+
+- The header row appears immediately on entering the waiting screen, before
+  any BLE central has connected -- `X` (no link), battery, no place name.
+- Connecting a central (`tools/blefakephone.py`) flips the `X` to signal bars
+  *while still on the waiting screen*, caught mid-connection in a screenshot
+  before the first fix landed and moved the screen to the viewport. Confirms
+  `updateHeaderStatus()`'s poll keeps running once `headerRowDrawn_ = true`,
+  same as it already did for the persisted-fix and overview screens.
+- The waiting text sits cleanly below the separator, no collision, at every
+  screen state observed.
+
+**One thing seen and not chased down:** the place-name slot showed
+`0°00'00"N 0°00'00"E` instead of blank, both before and during the BLE
+connection. `drawHeaderPlaceName()`'s analysis above says this slot should be
+empty with `nearestPlaces_` freshly constructed -- so either `destHeaderText()`
+(checked first, not traced here) returns a formatted string for an unset
+destination's default `0,0`, or something else sets a coordinate destination
+before onEnter finishes. Cosmetic, not a crash or a layout break, and outside
+this fix's scope. **Open** -- read `destHeaderText()` before touching this
+slot again.
+
+## Hike mode's second line
+
+**Verified on the desktop simulator, 2026-08-26; not yet on hardware.** Hike mode gets a second
+header line: elevation, when a fix has ever carried one, and the fix's own
+lat/lon, e.g. `812 m   48.14253, 17.10967`. Ride and Cycle are unchanged --
+single-row header, same as always. `MapActivity::mode_ == MapRideMode::Hike`
+is the only gate, checked inside `drawHikeElevationLine()` and
+`updateHikeElevationLine()` rather than at each call site, so a call site
+never needs to know which mode is active.
+
+**Why a second line and not a wider place name.** The place name
+(`drawHeaderPlaceName()`, the row above) answers "which town/suburb is near
+the marker" from `MapNearestPlaces`, which is a road/place-name-tagged tile
+layer walk -- it has nothing to say off the road network, which is most of a
+trail. Elevation and the raw coordinate answer "where am I" regardless of
+what tiles nearby happen to name, which is the more useful question at hiking
+pace and the one the maintainer asked for directly.
+
+### The header is a mode-aware height, not a constant, now
+
+`kHeaderBarHeight` (`MapActivity.cpp`) is still the single-row bar's height
+(36px) and is what row one's own layout reads -- the place name's vertical
+centring, the icon strip, `GUI.drawHeader()`'s rect. It never changes with
+mode.
+
+Everything that used to read that constant (or the `kHeaderSeparatorY`/
+`kMapContentTop` constants derived from it) for "where does the whole header
+bar end" now reads three `MapActivity` member functions instead, all three
+mode-aware:
+
+- `headerBarHeight()` -- `kHeaderBarHeight` in Ride/Cycle, plus one more
+  `kHeaderRowHeight` (not a new magic number -- that row already proved it
+  holds a small-font text line plus its own backing pad) in Hike. 58px in
+  Hike against 36px in Ride/Cycle.
+- `headerSeparatorY()` -- same value as `headerBarHeight()`, the 1px black
+  line's y. Kept as its own call so a read site says which one it means.
+- `mapContentTop()` -- `headerBarHeight() + 1`, the first row `GfxRendererCanvas`
+  clips the map to.
+
+Four call sites moved from the constants to the mode-aware calls:
+`updateHeaderStatus()`'s minute-tick window height (so the windowed refresh
+actually reaches the separator's new position, not just the framebuffer),
+`drawHeaderStatus()`'s separator draw, `drawViewedNearbyPoint()`'s
+off-panel-check bound, and the two `GfxRendererCanvas` constructions
+(`renderViewport()`, `renderRouteOverview()`) that clip the map's own drawing.
+
+A mode switch (`switchMode()`) always forces a full `renderCurrent()`, which
+`clearScreen()`s first -- so growing or shrinking the bar on a mode change
+never leaves stale pixels from the other height; there is no windowed-only
+path across a mode switch to get wrong.
+
+### Draw and repaint, same shape as the row above
+
+`drawHikeElevationLine()` draws the line (own white backing first, same
+reasoning as the icon strip's and the place name's -- this rect can land over
+last frame's separator or a longer/shorter string, not blank margin) and
+records what it drew into `drawnHikeLineText_`. Both full-frame render paths
+that draw the row above (`renderViewport()`, `renderRouteOverview()`) call it
+right after `drawHeaderStatus()`, unconditionally -- it is a no-op outside
+Hike mode.
+
+**`SMALL_FONT_ID`, not `UI_10_FONT_ID`.** The place name above is the primary
+label and stays at `UI_10_FONT_ID`; this line is secondary information, the
+same weight as the clock and battery percentage in row one, and was judged
+too large on the panel at `UI_10_FONT_ID` when first built -- confirmed on the
+desktop simulator, 2026-08-26 (see "Verified on the desktop simulator" below).
+
+**No `+3` vertical correction, unlike `drawHeaderPlaceName()`'s.** That
+offset (`kHeaderPlaceNameLeftX`'s own comment, 2026-08-11) was tuned on
+hardware for `UI_10_FONT_ID` centred in row one and does not carry over to a
+different font in a different row -- judged 2-3px too low on the panel at
+`+3`, 2026-08-26. `drawHikeElevationLine()`'s `y` is the plain centred value.
+
+**Degrees-minutes-seconds, not decimal degrees.** Maintainer's choice,
+2026-08-26, over decimal degrees (`48.60000, 17.30000`) and degrees-decimal-
+minutes. `formatDms()` rounds to the nearest whole second through integer
+arithmetic on total seconds (`std::lround(fabs(deg) * 3600.0)`, then
+`/3600`, `%3600/60`, `%60`) rather than rounding degrees, minutes and seconds
+separately -- the separate-rounding way can carry a `60` into either field
+(47.999999...° rounding to `47°59'60"` instead of `48°00'00"`) and integer
+division on one rounded total cannot. The degree sign is written as its
+literal UTF-8 bytes (`"\xC2\xB0"`), not a `°` escape, so it does not
+depend on this source file's own encoding or the toolchain's handling of
+`\u` in a narrow string literal.
+
+**Coordinates first, then a mountain icon, then altitude.** Maintainer's
+order and choice of symbol, 2026-08-26, over altitude-first and over no
+symbol at all -- coordinates, a 16px Lucide mountain glyph, then e.g.
+`340 m` with no gap between the icon and the number. `HikeIcons.h`
+(`src/activities/map/`) is one icon, `mountain.svg` rasterised to 16px by
+`freeink-sdk/libs/assets/Icons/tools/gen_icons.py` -- see that header's own
+comment for why this session's rasteriser was `cairosvg`, not the script's
+usual `rsvg-convert`. Drawn with `GfxRenderer::drawMono1bpp()`, not
+`drawIcon()`: the latter's quarter-turn compensation is for forced-Portrait
+UI themes and turned the map's own pin glyphs rot270 when tried here before
+(`GfxRenderer.h`, `drawMono1bpp()`'s own comment, measured 2026-08-17).
+
+The icon and altitude are **dropped together, not truncated**, when the row
+is already full of coordinates -- `neededWidth > maxContentWidth` skips both
+rather than drawing half an icon or a bare unit with no number. Coordinates
+themselves still truncate character-by-character if they alone overflow,
+same shape as `drawHeaderPlaceName()`'s loop.
+
+**`riderLatE7()`/`riderLonE7()`, not `lastLatE7_`/`lastLonE7_` directly.**
+Caught live on the simulator, 2026-08-26: switching to Observe mode and
+panning around visibly changed the coordinates this line showed, because
+`panBy()` repoints `lastLatE7_`/`lastLonE7_` at the pan target while Observe
+is up (`riderLatE7()`'s own comment) -- exactly the distinction eight other
+call sites in this file already existed to make (`pinSaveRefusal()`,
+`savePinAtRider()`, the nearby-point sector/distance calculations, the route
+save's `fixLatE7`/`fixLonE7`). This line asks "where is the rider", which a
+pan does not change, so it needed the same accessor those already use, not
+the pan-following fields the map's own drawing reads.
+
+**Stays clear of the compass's own halo, horizontally, not by shrinking the
+row's height.** The compass (`drawCompass()`) is drawn every frame at
+`centreY = kCompassCenterTop` (87), radius `kCompassGlyphRadius` (36) plus a
+`kCompassHaloMargin` (3) white halo -- so its halo's top edge sits at
+`87 - 36 - 3 = 48`, inside Hike's second line's band (`[36, 58)`) by design:
+the compass has always overlapped that y-range in every mode, because in
+Ride/Cycle nothing else is drawn there. `drawHikeElevationLine()`'s first cut
+gave its backing rect the full screen width, which erased the compass's halo
+and glyph every time it ran, because it draws *after* `drawCompass()` in the
+frame. Shrinking the line's height to clear 48px was not a real option --
+`SMALL_FONT_ID`'s own `advanceY` (23) does not fit in the 12px available
+between `kHeaderBarHeight` (36) and the halo's top (48).
+
+Fixed the same way `drawHeaderPlaceName()` already stays clear of the icon
+cluster: bound the row's right edge, not its height. Both the backing
+`fillRect` and the text's truncate-until-fits loop stop at
+`compassHaloLeft = (screenWidth - kCompassCenterMarginRight) - (kCompassGlyphRadius + kCompassHaloMargin)`
+-- the compass's halo's left edge -- rather than `screenWidth`. The line and
+the compass now occupy disjoint rectangles every frame, so the vertical
+overlap in `[36, 58)` no longer matters: neither one is ever drawn where the
+other one is.
+
+`drawnHikeLineText_` is written from the *untruncated* candidate, before the
+truncation loop runs on a local copy for drawing -- `updateHikeElevationLine()`
+compares its own untruncated candidate against this each poll, and a
+truncated cache would never match it again once truncation ever fired, which
+would keep repainting every poll forever.
+
+`updateHikeElevationLine()` is the between-frames keeper, called from
+`loop()` next to `updateHeaderStatus()`: polled every `kHeaderPollMs` (2s,
+shared with the row above), and only actually redraws when the candidate text
+differs from `drawnHikeLineText_` **and** `kHikeLineRepaintMs` (10s) has
+elapsed since the last repaint. The 10s floor exists because unlike the BLE
+bars above (which sit still most of the time), lat/lon can change on nearly
+every fix at hiking pace -- without a floor, every poll would cost a
+windowed refresh.
+
+The text comparison is a single `strcmp()` against the last-drawn string,
+not a separate quantisation of altitude and two coordinates: one function,
+`formatHikeLineText()`, builds the candidate for both the draw and the
+change check, so they can never format the same values differently.
+
+### Where altitude comes from
+
+`freeink::PositionUpdate::altitudeM`/`hasAltitude` (BLE fix) and
+`MapConsoleState::altitudeM()`/`hasAltitude()` (serial or BLE command
+console, `pos ... alt <m>`) both feed the same two members,
+`lastAltitudeM_`/`hasAltitudeReading_`, captured in `MapActivity::loop()`
+right where each channel's fix already lands. The console path captures it
+**unconditionally**, not only on the `moved` branch -- an altitude-only
+update (same lat/lon, new altitude) has no follow decision of its own to
+gate it on, unlike position.
+
+**Not reset when a fix without altitude arrives.** A phone that stops
+sending altitude mid-ride does not blank a number the rider was just
+reading; the line falls back to lat/lon only (no altitude ever received this
+session) rather than to "no reading right now" (had one, lost it) -- there is
+no code path that distinguishes those two today, and no report yet of
+whether that matters in practice.
+
+**Closed 2026-09-05.** The debug readout used to start at a compile-time
+`kTextTopY` unrelated to `headerBarHeight()`, so in Hike mode its lines landed
+inside this second row. It is now a managed window whose top is
+`mapContentTop() + kDebugGapBelowHeader` -- `docs/map-debug-window.md`. Read
+off the code, not yet looked at on the panel with `mapDebugInfo` on and Hike
+mode active.
+
+### Verified on the desktop simulator, 2026-08-26
+
+Run against `firmware/explorink-simulator` (`docs/simulator.md`), a BLE fix
+sent with `tools/blepos.py 48.60 17.30 --alt 340 --sim 127.0.0.1:8765` and the
+mode switched with `tools/mapcmd.py --sim 127.0.0.1:8765 mode hike`. Confirmed
+on the resulting screenshot:
+
+- The second line draws (`48°36'00"N 17°18'00"E`, mountain icon, `340 m`), at
+  `SMALL_FONT_ID`, below the place name row.
+- The compass is intact -- no erased halo, no missing glyph -- which is what
+  the full-width-backing bug (fixed above, before this run) would have broken.
+- `mode ride` afterward reverts to the single-row header with no second line,
+  confirming Ride/Cycle are unaffected.
+- Toggling Observe mode and panning three times (`tools/mapcmd.py`'s console
+  grammar cannot drive this -- done with a scripted `RIGHT` key sequence) pans
+  the map to a different place name (`Cerová, Senica`) while the line's own
+  coordinates stayed at the rider's real fix, unchanged -- confirming the
+  `riderLatE7()`/`riderLonE7()` fix above.
+
+**What this does not check, per "What it is and is not" in `docs/simulator.md`**:
+no e-ink refresh timing, no ghosting, no grayscale pass, no `ESP.getFreeHeap()`
+under real RAM pressure (the simulator's heap reads a flat 1 MiB), and no
+`headerRowDrawn_`/windowed-repaint timing against a real waveform pass -- only
+that `updateHikeElevationLine()`'s windowed-refresh *call* runs without
+crashing, not that its timing is right on the panel. All of that still needs
+the device.

@@ -42,6 +42,20 @@ bool MapRouteStore::buildPath(const char* fileName, char* out, uint32_t outCapac
   return true;
 }
 
+bool MapRouteStore::remove(const char* fileName) {
+  char path[kMaxFileNameBytes + 32];
+  if (!buildPath(fileName, path, sizeof(path))) {
+    LOG_ERR(kLogTag, "route path did not fit: %s", fileName != nullptr ? fileName : "(null)");
+    return false;
+  }
+  if (!Storage.remove(path)) {
+    LOG_ERR(kLogTag, "could not delete %s", path);
+    return false;
+  }
+  LOG_INF(kLogTag, "deleted %s", path);
+  return true;
+}
+
 bool MapRouteStore::anyRoutes() {
   auto dir = Storage.open(kTripsDir);
   if (!dir || !dir.isDirectory()) {

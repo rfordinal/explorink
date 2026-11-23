@@ -230,3 +230,46 @@ void MapAreaFill::outlineRing(IMapCanvas& canvas, const int16_t* xs, const int16
     canvas.drawLine(xs[i - 1], ys[i - 1], xs[i], ys[i], lineWidth, ink);
   }
 }
+
+void MapAreaFill::outlineRingDashed(IMapCanvas& canvas, const int16_t* xs, const int16_t* ys,
+                                    const uint16_t pointCount, const int lineWidth, const int dashPx,
+                                    const int gapPx, const MapInk ink) {
+  if (lineWidth <= 0 || pointCount < 2) return;
+  if (dashPx <= 0 || gapPx <= 0) {
+    outlineRing(canvas, xs, ys, pointCount, lineWidth, ink);
+    return;
+  }
+  const int cycle = dashPx + gapPx;
+  // Distance travelled along the ring so far, so the pattern is continuous
+  // across vertices. Integer: a ring is a few hundred pixels of perimeter and
+  // the phase only has to be consistent, not exact.
+  int travelled = 0;
+  for (uint16_t i = 1; i < pointCount; ++i) {
+    const int x0 = xs[i - 1];
+    const int y0 = ys[i - 1];
+    const int dx = xs[i] - x0;
+    const int dy = ys[i] - y0;
+    // Chebyshev length: the number of steps a Bresenham line takes, which is
+    // what the dash rhythm should be measured in on a pixel grid.
+    const int adx = dx < 0 ? -dx : dx;
+    const int ady = dy < 0 ? -dy : dy;
+    const int steps = adx > ady ? adx : ady;
+    if (steps == 0) continue;
+    int from = 0;
+    while (from < steps) {
+      const int phase = (travelled + from) % cycle;
+      if (phase < dashPx) {
+        // Inside a dash: draw up to the end of it or the end of this segment.
+        const int run = dashPx - phase;
+        int to = from + run;
+        if (to > steps) to = steps;
+        canvas.drawLine(x0 + dx * from / steps, y0 + dy * from / steps, x0 + dx * to / steps, y0 + dy * to / steps,
+                        lineWidth, ink);
+        from = to;
+      } else {
+        from += cycle - phase;  // skip the rest of the gap
+      }
+    }
+    travelled += steps;
+  }
+}

@@ -45,6 +45,11 @@ class HalGPIO {
 
   bool lastUsbConnected = false;
   bool usbStateChanged = false;
+  // Which input frame the last update() produced. The frame tick is gpio.update()
+  // called straight from loop() (main.cpp), not through any wrapper, so a layer
+  // above that has to derive per-frame work from something rather than from being
+  // called. Wraps harmlessly: only equality against the last seen value is read.
+  uint32_t updateSeq = 0;
 
  public:
   enum class DeviceType : uint8_t { X4, X3 };
@@ -65,6 +70,8 @@ class HalGPIO {
 
   // Button input methods
   void update();
+  // Increments once per update(). See updateSeq.
+  uint32_t updateSequence() const { return updateSeq; }
   bool isPressed(uint8_t buttonIndex) const;
   bool wasPressed(uint8_t buttonIndex) const;
   bool wasAnyPressed() const;
@@ -80,6 +87,11 @@ class HalGPIO {
   unsigned long lastTouchHeldMs() const;
   bool wasSwipe(float& nxStart, float& nyStart, float& nxEnd, float& nyEnd) const;
   bool wasTouchActivity() const;
+  // GT911 capacitive home key (status 0x10), inert on boards without one —
+  // see freeink-sdk InputManager.h:122-132.
+  bool wasHomeKeyPressed() const;
+  bool wasHomeKeyTapped() const;
+  bool wasHomeKeyLongPressed() const;
   void setSharedConfirmPowerShortPressEmitsPower(bool enabled);
 
   // Verify power button was held long enough after wakeup.
@@ -89,6 +101,14 @@ class HalGPIO {
 
   // Check if USB is connected
   bool isUsbConnected() const;
+
+  // Digital USB-presence only -- never the isCharging() fallback. Used by
+  // getWakeupReason(), which needs "is USB physically present", not "is
+  // actively charging"; the two differ once a charger tops off (see
+  // isUsbConnected()'s comment), and getWakeupReason() answering "charging"
+  // for a device that is merely plugged in and full would misroute a
+  // power-button boot into startDeepSleep() via WakeupReason::AfterUSBPower.
+  bool usbDetectPinHigh() const;
 
   // Returns true once per edge (plug or unplug) since the last update()
   bool wasUsbStateChanged() const;

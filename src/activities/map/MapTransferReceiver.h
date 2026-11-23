@@ -141,6 +141,20 @@ class MapTransferReceiver {
     // learns what a transfer is. A route or style push leaves this false.
     bool activeTileValid = false;
     MapTileCoord activeTile;
+    // True from the moment the last chunk is written until the file is renamed
+    // into place: the close, the CRC read-back and the rename. `received`
+    // equals `total` for the whole of it and not one byte moves, so without
+    // this a screen showing byte progress simply stops, and a stop is what a
+    // dead link looks like. On a megabyte tile the read-back is seconds of it
+    // (see "Write to .part, rename at the end" -- the CRC is computed by
+    // reading the card back, not accumulated from the chunks).
+    //
+    // Published on its own rather than derived from `received == total`: the
+    // publish that would carry that equality is the one at the end of the
+    // completing frame, which does not happen until the whole pass is over. So
+    // the activity task's last view during the pause is the *previous* chunk's,
+    // one payload short of the total, and there is nothing in it to read.
+    bool verifying = false;
     // Bumped once per landed tile. The activity task keeps its own copy and
     // acts when the two differ; that is what makes the handoff a signal
     // rather than a repeated instruction.
@@ -194,7 +208,7 @@ class MapTransferReceiver {
 
   // True if `path` is a safe relative path under the root: no leading slash,
   // no `..` component, no empty component, printable ASCII only. This is what
-  // stops a sender writing outside /trailink.
+  // stops a sender writing outside /explorink.
   static bool relPathIsSafe(const char* path, size_t len);
 
   // Reads the finished .part file back and returns its CRC32, or false if it
@@ -215,7 +229,7 @@ class MapTransferReceiver {
   uint32_t declaredCrc_ = 0;
   uint32_t received_ = 0;
   uint32_t lastFrameMs_ = 0;
-  // "/trailink/base/13/4482/2789.tib" and the same with ".part" on the end.
+  // "/explorink/base/13/4482/2789.tib" and the same with ".part" on the end.
   // Fixed buffers, not std::string: this is a member of the map activity and
   // the path length is bounded by the protocol.
   char finalPath_[kMaxRelPathBytes + 48] = {};
@@ -240,6 +254,9 @@ class MapTransferReceiver {
   // as a tile, cleared whenever the transfer ends, either way.
   bool activeTileValid_ = false;
   MapTileCoord activeTile_;
+  // Host task's side of Status::verifying. Cleared wherever a transfer ends,
+  // both ways.
+  bool verifying_ = false;
 
   // The one thing both tasks touch. Written by publish(), read by status().
   Status snapshot_;

@@ -32,6 +32,299 @@ are in "What the ride measured" below; anything still unmeasured says so.
 > table below describes **free-ride** behaviour; read `route-navigation.md` before
 > touching this ladder.
 
+## Nothing validates a position packet (2026-08-23)
+
+**Measured in the desktop simulator, against the real `BlePositionServer` and
+the real `MapActivity` on a fake radio. Nothing here ran on hardware -- there is
+no device.** This path had never been driven by a hostile packet before, because
+until the simulator grew a BLE shim (`simulator.md`, "BLE") there was no way to
+put an arbitrary 21 bytes on the characteristic without a phone.
+
+`BlePositionServer::onWriteIngest` checks the packet's **length** and nothing
+else. `if (!data || len != kPositionPacketBytes) return;`
+(`lib/BlePositionServer/src/BlePositionServer.cpp:444`), then every field is
+copied straight in (`:450-460`) with no domain check on any of them. The length
+guard is solid -- 20, 22, 19, 12 and 1 byte writes all produced no fix at all,
+and the channel survived every one of them. Everything past the length is
+trusted.
+
+Four consequences, in descending order of how much they matter.
+
+### `lat = +/-90` sends the renderer into a 16.7-million-tile scan and the map screen never comes back
+
+The worst of the four, and it is reachable by anyone in radio range.
+
+Three things line up:
+
+1. `MapViewport::mppMercFor` is
+   `kZoomLadder[step].mpp / std::cos(anchorLat * kDegToRad)`
+   (`src/activities/map/MapViewport.cpp:14-17`, the cosine at `:16`).
+   `anchorLat` is clamped nowhere, and `cos(90 deg)` is 6e-17, so
+   metres-per-pixel becomes astronomical and the projected screen rectangle
+   covers the planet.
+2. `MapViewport::tileRangeFor` (`src/activities/map/MapViewport.cpp:19-54`)
+   converts that rectangle faithfully into `col 0..4095 x row 0..4095`.
+3. `MapActivity` **detects** the impossible range and renders it anyway.
+   `if (range.count() > MapViewport::kMaxTiles)` with `kMaxTiles = 16`
+   (`src/activities/map/MapViewport.h:153`) logs
+   `tile range 0..4095 x 0..4095 = 16777216 tiles, over the 3x3 worst case`
+   and then falls through to `drawMapLayers(range, ...)` with that same range
+   (`src/activities/map/MapActivity.cpp:5202-5206`). The comment above it reads
+   "A count above 3x3 is a bug in the range arithmetic, not a state", so the
+   author expected it to be unreachable. It is reachable from the wire. The
+   route-overview path has the same log-and-continue shape at
+   `src/activities/map/MapActivity.cpp:4929-4932`.
+
+Measured, one 21-byte write with `lat = 90.0`:
+
+```
+[2997] [DBG] [MAP] ble fix: seq 70, heading 0, speed 10 km/h, ...
+[2997] [DBG] [MAP] renderViewport start: lat=900000000 lon=192950000 heading=0 seq=70
+[2997] [ERR] [MAP] tile range 0..4095 x 0..4095 = 16777216 tiles, over the 3x3 worst case
+```
+
+and then nothing. 1,726,090 failed tile opens in the following 6.2 s, no
+`reset z12 ...` line, no `render N ms`, **no screenshot at either of the two
+scheduled times**, and the scripted `QUIT` at t=10000 never ran. The process had
+to be killed. The absence of the two later screenshots is the evidence: the
+activity loop never came out of `drawMapLayers`.
+
+One line did still appear during the freeze -- `transfer status unsubscribed`,
+a BLE callback on the shim's own thread -- so **the link stays up and the device
+still looks connected to the phone while the map is dead.**
+
+A full pass over 16,777,216 tiles took roughly 60 s on this machine's NVMe with
+a warm directory cache. **The device figure is unmeasured and will be far
+worse:** that is an SD card, and each miss costs six opens, not one (see below).
+Either way the map screen is gone for the duration and the rider's only recourse
+is a reset.
+
+The latitude sweep either side of the pole, one short run per value:
+
+| `lat` sent | tile range the firmware computed | tiles | outcome |
+|---|---|---|---|
+| 49.16 | `col 2267..2267 row 1403..1404` | 2 | normal, 12 ms |
+| 89.0 | `col 2257..2278 row 0..0` | 22 | over `kMaxTiles`: logged, rendered anyway, survivable |
+| 89.99 | `col 1234..3370 row 0..0` | 2137 | logged, rendered anyway, 76 ms and 2137 card lookups |
+| **90.0** | **`col 0..4095 row 0..4095`** | **16,777,216** | **never finished; the run had to be killed** |
+| 91.0 | `col 2260..2273 row 0..0` | 14 | **under** `kMaxTiles`, so nothing is logged at all -- empty frame, silent |
+| -91.0 | `col 2260..2273 row 0..0` | 14 | same |
+
+**Security, in the terms the standing rule uses.** This channel has no pairing
+and no bonding (`ble-advertising.md`, "Connection mode"), so the writer does not
+have to be the rider's phone -- anyone in radio range can write this
+characteristic. What it leaks: nothing. What it lets someone do to the rider:
+kill the map screen, and with it the whole main loop, from outside the device,
+with one 21-byte write and no trace but a single log line. Treat it as a
+remotely reachable denial of service on the navigation screen, not as a
+robustness nicety.
+
+**Two independent fixes, and both are worth having.** Clamping `lat` at ingest
+to about +/-85 closes this and the NaN case below together, at the cost of one
+line. Making the `kMaxTiles` guard **return** instead of only logging is the
+second line of defence, and it is the one that also covers a future arithmetic
+bug that does not come from the wire -- which is what the guard was written for.
+
+**Open -- needs hardware:** the SD-card cost of one such scan, and whether the
+watchdog fires before a rider gives up and resets. What would settle it: the
+same packet written to a device with a serial log attached.
+
+### `|lat| > 90` is a NaN, and a NaN is a small wrong answer
+
+Cheaper to reach and much quieter. `MapProjection::lonLatToMerc`
+(`src/activities/map/MapProjection.cpp:10-13`) computes
+`log(tan(pi/4 + lat*deg2rad/2))` at `:12` with no domain guard. For `|lat| > 90`
+the tangent is negative, the logarithm of a negative double is **NaN**, and
+`MapProjection::projectMerc` (`:32-39`) then does
+`static_cast<int16_t>(anchorScreenX_ + std::lround(sxOff))` at `:37-38` on it.
+
+Measured: a packet carrying `lat 95, lon 200` -- a position on the other side of
+the planet -- was treated as a **37-pixel nudge of the marker** inside the
+existing frame. Nothing warned, nothing logged, the frame stayed where it was.
+`lat 91` and `lat -91` produced a 14-tile range that does not even trip the
+`kMaxTiles` guard, so they render an empty frame in silence.
+
+For contrast, a coordinate that is *valid* but has no data is handled cleanly:
+`lat 0, lon 0` produced a sane 2x2 range, four honest misses, an empty frame in
+2 ms, and the header's place name correctly went empty rather than staying
+stale. So the code copes with "no map here" perfectly well; it is "not a place"
+that it cannot represent.
+
+### A stale `seq` is drawn, so a recorded packet can be replayed
+
+The redraw gate is `update.seq != lastDrawnSeq_`
+(`src/activities/map/MapActivity.cpp:2245`) -- "did it change", not "is it
+newer". The header documents that as the rule
+(`lib/BlePositionServer/include/BlePositionServer.h:28`, "rolling counter; the
+device redraws when it changes"), so the code matches its own spec and the spec
+is what is wrong.
+
+Proved with two writes differing in **exactly one byte**, byte 15, at the same
+new coordinate:
+
+- `seq` **equal** to the last drawn one: no log line, no redraw, and the panel
+  came out **byte-identical** to the previous screenshot. Ignored.
+- `seq` **older** than the last drawn one (5 against 12): accepted, full
+  re-anchor, 22,192 pixels changed, the panel moved to a different village and
+  the north arrow turned to the older packet's heading.
+
+**Security.** Same unauthenticated channel as above. Record one position packet
+off the air and write it back later, and the device shows that old position as
+the rider's current fix. That is the standing rule's "inject a fake position",
+with no ownership check and no replay window.
+
+**A plain `>` is not the fix.** The `!=` is load-bearing twice over. First, the
+counter wraps: 255 -> 0 -> 1 was measured and every one of those three fixes was
+drawn, which a `>` test would break at each wrap. Second, the condition next to
+it exists because a parked rider's counter does not move at all -- the comment
+at `src/activities/map/MapActivity.cpp:2238-2244` explains that `onEnter` seeds
+`lastDrawnSeq_ = 0` for the card's last fix, so a phone whose counter happens to
+sit at 0 would have its first real packet read as already-drawn and nothing
+would ever move it. What replaces `!=` has to keep both. A signed 8-bit distance
+test -- accept when `(int8_t)(update.seq - lastDrawnSeq_) > 0` -- keeps the wrap
+and rejects the rewind. The packet's own `utc` is a second, independent
+freshness source that nothing currently reads for this purpose.
+
+**Not a delivery counter, either.** Three writes fired back to back on one link
+produced one fix: the first two were overwritten in the single-slot `latest_`
+before the activity loop looked (`BlePositionServer.cpp:467`,
+`MapActivity.cpp:2237`). That is right for a position feed -- the newest fix is
+the only one that matters -- but it means a phone cannot conclude anything was
+received because its counter advanced, and anything that needs every packet must
+not ride this characteristic.
+
+### `heading` is not masked at ingest, and one render site trusts it raw
+
+`update.heading = data[14]` (`BlePositionServer.cpp:454`) stores the byte
+unmasked while the header documents the field as 0-15 (`BlePositionServer.h:27`).
+Measured: `heading = 200` was accepted, logged as `heading 200`, and drew
+correctly.
+
+It draws correctly because every render site masks individually --
+`MapActivity.cpp:4944` and `:5222` both do `& 0x0F`, `MapProjection.cpp:27` takes
+`% 16` -- but `MapRenderer.cpp:446` indexes a **16-entry** table with the raw
+value, `kHeadingDir[static_cast<uint8_t>(heading)]`. Its safety today rests
+entirely on every caller remembering to mask. That is one missing mask away from
+an out-of-bounds read.
+
+It also escapes to the card. `riderHeading()` returns `lastHeading_` unmasked
+(`MapActivity.cpp:2942-2944`) and that value is written straight into
+`SETTINGS.mapLastHeading` (`MapActivity.cpp:4479`). Only the **load** masks
+(`src/CrossPointSettings.cpp:235`) -- and that line's own comment claimed it was
+"the same mask BlePositionServer applies to the wire value", which was simply
+untrue; corrected in the same pass as this doc.
+
+Cheap fix, one `& 0x0F` at ingest, and it makes the settings comment true.
+
+### `flags` bit0 has no consumer
+
+`BlePositionServer.h:29` states "bit0 = off-route warning" as fact. A grep for
+`flags & 0x01`, `offRoute` and `off-route` across `src/activities/map/` and
+`lib/BlePositionServer/` returns that comment line and nothing else.
+`update.flags` is read in exactly one place, for bit1
+(`BlePositionServer.cpp:460`). The header is explicit that `speed` and
+`altitude` are wired-but-unused; it does not say the same about bit0, so it
+over-promises. Either say so or wire it.
+
+Bit1, by contrast, is honoured and was proved decisively: two packets identical
+except for the flag byte and the seq produced `alt 620` and `alt unset`
+respectively, and a negative altitude survived intact (`alt -500`). A sentinel
+value would have printed `0`.
+
+### What was confirmed working on this path
+
+Recorded because a finding list reads as if nothing works:
+
+- lat/lon/heading reach the frame, and the frame rotates to the heading.
+- `utc` and `tz_offset` reach the header clock: `utc=1755950000 tz=120` put
+  **13:53** on the panel, which is 11:53:20 UTC plus 120 minutes.
+- `speed` and `accuracy` land in the struct and are logged (`speed 42 km/h,
+  accuracy 7 m`) and nothing draws them, which is what the header says is
+  intended for now.
+- One good fix after the nonsense above brings the real map straight back. The
+  bad state is not sticky.
+- Six card opens per missing tile, not one -- one per layer. Noted because it
+  multiplies whatever any tile-range bug costs:
+
+```
+$ grep -o 'base/12/[0-9]*/[0-9]*\.tib' run.log | sort | uniq -c
+      6 base/12/2047/2047.tib
+      6 base/12/2047/2048.tib
+      6 base/12/2048/2047.tib
+      6 base/12/2048/2048.tib
+```
+
+### Unexplained, once, not reproduced
+
+In one early probe run the map activity exited to Sleep at t=2440 ms with no
+input scripted until t=6000, preceded by a 1144 ms `clearScreen to
+displayBuffer`. Two deliberate attempts to reproduce it -- a bare TCP connect
+that never sends a `connect` op, and a proper `connect` op -- both left the map
+up for the full 8 s, and it never recurred across nine further runs. Recorded
+because a spurious sleep on the map screen would matter. No cause claimed.
+
+
+## An unbounded window aborts the device (2026-08-22)
+
+A marker move refreshes **one window over both boxes**, the old marker's and the
+new one's, because a windowed refresh costs the same panel time as a full one
+whatever its area (measured 2026-08-05, below). Nothing bounded that union.
+
+Two far-apart boxes make it the whole panel. And a full-panel window is not
+merely slow: `GfxRenderer::displayBufferWindow()` returns `bool` and every call
+site here falls back to a full refresh on `false`, but the driver under it
+allocates `(w/8)*h` bytes through a **throwing** `std::vector`
+(`freeink-sdk/.../driver/Ssd1677Driver.cpp`). On a `-fno-exceptions` build a
+throwing allocation is `abort()`, never `false`. So the fallback never gets a
+chance.
+
+**Measured 2026-08-22, from a coredump off the device:** `abort()` in
+`loopTask`, `operator new` -> `__cxa_throw` -> `std::terminate` ->
+`panic_abort`, with the driver asking for **48,000 bytes** for a window of the
+whole panel. The panel froze, the log stopped, and no button on the device could
+bring it back (`../../../docs/device-notes.md`).
+
+**One thing about that coredump.** It was decoded against an ELF that is not the
+build which crashed (`coredump SHA256 != app SHA256`; no matching ELF was on the
+machine). The frames are verified by exact call-site match and by a measured
+region shift of +0x4006 confirmed three independent ways -- but **frame 12, the
+`MapActivity` call site itself, never resolved.** So "the marker union" below is
+the inferred candidate, not a frame that was read; the other candidate was the
+menu-close window. Both are bounded now, so the fix holds either way, but the
+attribution is inference. What would settle it: a coredump decoded against the
+exact ELF that was running.
+
+The same failure was already measured 2026-08-17 on the menu-close path and is
+described in a comment in `restoreMenuBackdrop()`. That comment says not to
+refresh the whole panel there -- and the code three lines above it computes
+`h = screenHeight - rect.y`, which *is* the whole panel whenever a dialog
+reaches `y == 0`. Documented, and unguarded.
+
+**When the marker jumps far enough to matter:** right after a viewport
+re-anchor -- a pin's `Show`, a console `goto`, a route overview, anything that
+frames somewhere the rider is not. The next fix then moves the marker across the
+panel, and the union of the old and new boxes is most of the screen.
+
+`Nearby -> View on map` is the one that made this ordinary rather than rare: it
+re-anchors on a POI that can be kilometres away, and a rider browsing points
+crosses that transition many times in a session. The feature did not create the
+bug, it made it reachable.
+
+**Fixed** by deciding affordability before the call, against the largest block
+the heap can actually give: `MapActivity::windowRefreshAffordable()` compares
+the driver's own `(w/8)*h` arithmetic plus a 12 kB margin against
+`ESP.getMaxAllocHeap()` -- the same number the `MEM` log line prints. Both
+panel-capable call sites go through it: the marker union and the menu-close
+window. Everything else that windows here is fixed furniture (the busy badge at
+34 px, the header strip at 36 px, the pin notice, the side hints).
+
+**Still open, and the real fix:** the driver should not be able to abort at all.
+`Ssd1677Driver::displayWindow` wants a no-throw allocation and a `false` return;
+every caller in this repo already handles `false`. That is in the `freeink-sdk`
+submodule, so it is its own change in its own repo, and until it lands every new
+windowed refresh has to remember this on its own.
+
+
 ## Why
 
 A viewport reset is the most expensive thing the map screen does: tile reads off
@@ -63,6 +356,16 @@ The question is "where does this fix fall in the picture already up". Then
 | `Skip` | Nothing is drawn, the panel is not touched | zero |
 | `MoveMarker` | Restore the patch, redraw the marker, windowed refresh | one small waveform |
 | `ReAnchor` | Full `renderViewport()` | tiles + full frame + full waveform |
+
+**One exception to `Skip`, added 2026-09-05.** A fix under the move floor still
+repaints when `Request::markerStyleChanged` is set, with reason `TrustChanged`.
+The marker now says how much it knows about the fix
+(`marker-fix-trust.md`) and a rider standing still is exactly when that changes:
+their heading goes stale, or their fix degrades in a street canyon. Every other
+path here is driven by movement, so without this the marker would keep the old
+claim for as long as they stood there. The check sits **inside** the move-floor
+branch, so a fix that moves far enough keeps its own reason and a re-anchor is
+never downgraded.
 
 The checks, in order (order is load-bearing -- see below):
 
@@ -324,6 +627,64 @@ and so more geometry -- rung 4 is 4.4x rung 2 here. Reaching for zoom-out to buy
 cheaper redraws gets the sign wrong.
 
 [`route-navigation.md`](route-navigation.md) has the measurement in context.
+
+## A windowed refresh blocks the loop, and that is what the rider feels
+
+`HalDisplay::displayWindow()` is synchronous (`lib/hal/HalDisplay.cpp:118-124`): the
+call returns when the panel is done. So on the T5 S3 Pro, where a windowed
+refresh costs ~1,081 ms ([`refresh-modes.md`](refresh-modes.md)), **every marker
+move takes the main loop out of service for about a second.**
+
+**Still true after T-2024, and now the biggest remaining block.** That change
+moved the map's *compose* to the render task, so a full frame no longer stops
+`loop()` -- but a marker move is a main-task partial paint and its refresh is as
+synchronous as it ever was. The worst loop iterations measured on the tip, 656 ms
+on an X4 Pro and 756 ms on a T5 S3 Pro, are exactly these
+([`activity-manager.md`](activity-manager.md)).
+
+Measured over one 4 h 36 min walk, 2026-09-05, from the device's own
+`power.csv`:
+
+| span (uptime s) | loops/s | loop busy % | windows/s | ms per window |
+|---|---|---|---|---|
+| 67 - 667 | 14.88 | 25.7 | 0.177 | 1049 |
+| 3075 - 6083 | 14.11 | 29.5 | 0.174 | 1094 |
+| 6083 - 9085 | 16.15 | 19.3 | 0.099 | 1081 |
+| 12088 - 15092 | 13.60 | 32.0 | 0.201 | 1091 |
+| 15092 - 16596 | 12.60 | 37.0 | 0.228 | 1101 |
+
+Window rate ran between **0.099 and 0.228 per second** depending on how much the
+rider actually moved, which put the loop inside a blocking panel call for **11 %
+to 25 % of wall clock**. Buttons are not serviced during that window.
+
+**That rate is an upper bound on follow frames, not a count of them**
+`[corrected 2026-09-07]`. `ref_window` is one bucket for three call sites: the
+marker moving (`MapActivity.cpp:5270`), the debug overlay repainting on its own
+5 s timer with no reference to position (`:2142`, constants `:178-179`), and the
+map menu closing (`:3090`). A walk with the debug overlay on can have a window
+rate the rider's movement does not explain -- the 2026-09-07 walk had 785
+windows in 4 h 08 min, one per 19 s, against a phone that cannot send faster
+than one position per 30 s at walking pace. Attribution needs a counter per call
+site; T-277 in the parent repo.
+
+The maintainer reported a long press on Home for the frontlight reacting slower
+and slower over that walk `[reported, 2026-09-05]`, and the loop rate did fall,
+from 14.9 to 12.6 iterations per second. **Neither is degradation.** Per-refresh
+cost is flat across the whole run; the loop simply spends more of each second
+blocked because the refresh rate went up. Anything that looks like the device
+getting tired over hours should be checked against the per-event cost before it
+gets a name.
+
+`displayBufferAsync()` plus `waitRefreshComplete()` already exist for the
+non-blocking path (`lib/hal/HalDisplay.cpp:88`), but nothing on the map uses
+them -- the only callers are `EpubReaderActivity` and `GrayscaleFrame`. Tracked
+as T-263 in the parent repo.
+
+There is a cheaper fix than going async, and it is specific to this board: a
+whole-panel `FAST` costs **545 ms against the window's 1,030 ms** here
+([`refresh-modes.md`](refresh-modes.md), "And on this board a window is dearer
+than the whole panel"), so the follow path could halve its blocking time by not
+asking for a window at all. T-277.
 
 ## What the ride measured
 
@@ -699,6 +1060,212 @@ which is what `renderViewport()` actually leaves on screen. Worth remembering
 for the next field added here: `MapFollow::decide()`'s `(x, y)` is pre-reset
 by definition, and anything drawn after a reset needs the reset's own
 answer, not the question that caused it.
+
+### `map_window`: the ride in a window, live
+
+Both tools above render a file and then you look at the file. `map_window`
+(`test/map_window/`) is the same two halves in an SDL2 window at 480x800, played
+at the ride's own pace while you watch:
+
+```
+map_window --tiles mapbuilder/cdn (--ride docs/rides/<ride>.jsonl | --lat L --lon L)
+            [--heading 0-15] [--mode ride|hike|tourist] [--zoom 0-6] [--marker 0-4]
+            [--route <route.tir>] [--speed X] [--no-console] [--exit-at-end]
+```
+
+Three columns: the panel at 480x800, the menu, and the map module's own log.
+`--no-console` drops the third one. Prefixes and what they promise are in "The
+console in `map_window`" below.
+
+**Two sources, switched in the menu.** `ride` lets packets drive the frame
+through `decide()`. `static` holds one position and heading, which is what
+`map_preview` answers per invocation, live and with the menu attached. Three ways
+to say where: type into the lat/lon rows, click the panel, or use the pan chips.
+
+A click on the panel goes back through the firmware's own inverse --
+`MapProjection::screenToMerc()` then `mercToLonLat()` -- against the projection
+the frame on screen was actually drawn with, so it lands on what is visible even
+mid-playback. The pan chips are the same operation on a pixel half a screen away,
+along the screen's own axes rather than true north. Heading is the eight compass
+points plus a `-`/`+` pair for the odd ladder steps.
+
+In static mode the marker sits on its ladder anchor pointing up, because the
+frame is track-up. Playback keeps the held position following the ride, so
+switching to `static` lands where the rider is rather than back at the start.
+
+The sidebar is a mouse menu, not a key chart: the seven zoom rungs, the three
+ride modes, the POI layer and its ten categories, the buildings override (follow
+the rung / force on / force off), the missing-tile hatch, a route when one is
+given, the dirty-rect overlay, and Pause / Restart / speed. Space and `.` stay on
+the keyboard, which is what a mouse is bad at. `--exit-at-end` quits on the last
+packet, or in static mode renders once and quits -- which is how the held view
+gets checked headless (Malacky at 3 m/px: 4 tiles in, 801 ways, 51 points; a
+mid-ocean coordinate: 0 in, 2 missing).
+
+**Every setting change re-anchors and counts a full refresh.** That is what the
+device does -- "A viewport reset -- a ladder step, a mode switch, a Refresh"
+(`MapActivity.h`) -- so what a layer or a rung costs lands in the counter right
+next to the control that changed it. `Stepper::reAnchorOnLastFix()` is that
+reset, and it is deliberately kept out of `Result`: that structure mirrors the
+decisions the device logs and `hardware-baseline.txt` gates, and a menu action is
+not one.
+
+Each mode remembers its own rung on both ladders, as on the device
+(`MapRideMode.h`). So the window starts at the mode's own default rung, **not**
+at the baseline's: ride is step 2, 6 m/px, while the 2026-08-08 hardware runs
+were driven at step 4, 20 m/px, because that is what `tools/replay_ride.py`
+sends. Pass `--zoom 4 --marker 2` to compare against those numbers.
+
+Nothing is reimplemented. The decisions come from `ReplayEngine::Stepper`, which
+is the same state machine `replay()` loops and `--check` gates against the three
+2026-08-08 X4 rides; the picture comes from `renderMapPreview()` and
+`MapRenderer::drawMarker()`, the same calls `map_preview` and `marker_stamp`
+make.
+
+**What it shows that `--frames` and `--track` cannot.** A `MoveMarker` is a real
+partial refresh here: the held background is kept, the marker is stamped onto a
+copy of it, and the sidebar outlines the actual patch box -- `markerMetricsFor(
+kZoomLadder[step].markerScale8).box` (`MapMarkerMetrics.h`), 64 px at full
+scale, smaller at the coarse rungs. So "this stretch costs 6 partials and one
+redraw" is something you watch happen rather than count afterwards.
+
+Sidebar totals: `FULL`, `PARTIAL`, `SKIP`, the last action and its reason, tiles
+in and missing, ways drawn, and two timings kept deliberately apart:
+
+- **`panel`** -- refreshes x 500 ms. Measured, area-independent, "The refresh"
+  above.
+- **`host`** -- this laptop's own render time, labelled as the laptop's. The
+  device's render half is 400-1,750 ms by rung and ~8,300 ms in Bratislava
+  ("That 8.9 s is a city number"), so no single constant is modelled here. A
+  number claiming to be the device's render cost would be wrong nearly
+  everywhere.
+
+### The default ride rung costs more than twice what was measured
+
+Found by the window on its first run, 2026-08-22, on
+`trailink-gps-20260807-142303`:
+
+| rung | skips | moves | re-anchors | refreshes x 500 ms |
+|---|---|---|---|---|
+| step 4, 20 m/px -- what the hardware runs used | 211 | 113 | 14 | 63.5 s |
+| step 2, 6 m/px -- `kDefaultZoomStepForMode[Ride]` | 44 | 264 | 30 | 147 s |
+
+Same ride, same thresholds, same code. The rung the device actually starts ride
+mode on is **2.3x the panel cost** of the rung every number in this doc was
+measured at. It follows from the geometry -- at 6 m/px the same movement crosses
+more pixels, so fewer fixes are skipped, the marker moves more often and the
+ghosting budget trips sooner -- but nobody had put the two side by side.
+
+Confidence: the decision counts are the real `MapFollow::decide()`, gated against
+hardware at step 4. The seconds are those counts times the measured 500 ms, so
+they are **derived, not measured** -- and they leave out the render half, which at
+step 2 reads z12 tiles rather than z11 and is its own cost ("That 8.9 s is a city
+number").
+
+What would settle it: one hardware run of this ride at step 2, compared against
+the row above.
+
+### A measurement run must not touch the menu
+
+Every pan, mode switch or layer toggle calls `Stepper::reAnchorOnLastFix()`,
+which zeroes `partialMoves` and moves the anchor, so every decision after it
+differs. Measured 2026-08-23 on one ride at 6 m/px: untouched gave 264 moves and
+30 re-anchors; the same ride with three pans partway through gave 289 moves, 37
+re-anchors and 13 keep-in against 1.
+
+Both are correct -- the second is what the device would do for a rider who used
+the menu -- but only the first is comparable with anything. For a number, use
+`--exit-at-end` and leave it alone.
+
+### Verified against the older tools
+
+Verified 2026-08-22: `map_window --zoom 4 --marker 2 --exit-at-end` and
+`map_replay` on `trailink-gps-20260807-142303` at the current thresholds agree
+exactly -- 339 packets, 211 skips, 113 moves, 14 re-anchors (8 heading, 6 budget,
+0 keep-in).
+That is **not** the `hardware-baseline.txt` row for the same ride (24 redraws,
+20 heading, 4 budget): the baseline replays with `movement floor 0`, the
+pre-gate firmware it was measured against. Both numbers are right for their own
+build, and comparing across them looks like a regression and is not.
+
+SDL2 is a system package (`apt install libsdl2-dev`). Without it CMake skips
+this one target and the rest of the suite still configures.
+
+**It is x86.** It says nothing about heap, waveform timing or ghosting, and it is
+not a device -- see [`virtual-device.md`](virtual-device.md) for what only real
+hardware can answer.
+
+**Privacy: a ride log is a real GPS trace.** A window shot from one shows where
+the maintainer actually rode. Keep them local, same rule as a device screenshot.
+
+### `decide()` says why now, and the old answer could be wrong
+
+Until 2026-08-22 nothing recorded **which check** produced a `ReAnchor`. The
+device's log line printed the fix, the two headings and the move count
+(`MapActivity.cpp`'s `applyFix`) and stopped there, so every reason column in
+this doc was reconstructed afterwards by re-testing the same `Request`:
+`tools/replay_ride.py:181-187` for the hardware runs, and `ReplayEngine` for the
+host ones.
+
+**That reconstruction uses a different priority order from `decide()`.**
+`decide()` tests heading drift, then keep-in, then the budget. The classifier
+tests keep-in, then the budget, then heading. A fix that satisfies two at once
+gets a different name from the two orders, and nothing could contradict it.
+
+Fixed by having the ladder report its own branch: `MapFollow::Reason`, filled by
+`decide(request, outReason)`. The one-argument `decide()` still exists and
+delegates, so every existing caller and all 373 host tests are unchanged.
+
+**It is latent, not active.** Replayed across all twelve ride logs in
+`../../../docs/rides/`, at both the default rungs and the baseline's, the
+classifier and the branch agreed every time -- zero mismatches. `map_replay`
+prints a line when they differ, so a future ride that hits it will say so, and
+`Result::reasonMismatches` counts it. The reason columns in this doc stand.
+
+**Neither the enum nor the formatter had a test when they landed.** The
+373-test suite passing said nothing about them: they are used by `ReplayEngine`
+and were asserted by nothing, so a branch wired to the wrong `Reason`, a typo in
+`reasonName()` or wrong text out of the formatter would all have passed every
+check that existed. `Result::reasonMismatches` covers part of it -- a straight
+heading/keep-in swap shows up on the three gated rides -- and covers none of the
+rest. `MapFollowTest.cpp` now asserts every branch's reason and the exact text of
+all three lines, which is also the only gate on the move line's hand-maintained
+twin below.
+
+### One copy of the log line
+
+`MapFollow::formatDecisionLog()` formats the map module's line for a decision,
+and both sides call it: `MapActivity` hands the result to `LOG_DBG`, and
+`test/map_window`'s console pushes the same bytes. So a console line can be
+compared with a device log verbatim rather than by eye.
+
+Two things came out of moving it:
+
+- **The skip line printed the wrong number.** It quoted
+  `MapFollow::kMinMovePx`, the fallback constant, while the floor actually
+  applied is `Request::minMovePx` off the rung -- 12 px at 1 m/px, 2 px at
+  45 m/px. So at every rung except the ones where they coincide, the log said
+  8 px and the code used something else. The formatter prints the request's
+  value.
+- **The move line still exists twice.** `MapActivity::moveMarker()` logs from the
+  state *after* the move and never sees a `Request`, so it keeps its own
+  `LOG_DBG`; the formatter's move branch adds one to `partialMoves` to match it.
+  Those two texts have to be kept identical by hand. The skip and re-anchor
+  lines have no twin.
+
+### The console in `map_window`
+
+The window's third column is that log. Every line carries a prefix, and the
+difference is the whole point:
+
+- **`MAP`** -- the same wording the firmware's own `LOG_DBG` emits for this
+  event. The decision lines come from `formatDecisionLog()`; the mode, marker
+  step and pan lines mirror `MapActivity.cpp`'s own.
+- **`WIN`** -- this tool only. A host number (its own render time), or something
+  the device does not log at all.
+
+Nothing reads a device. These are the same lines built from the same state the
+device's logger would have had.
 
 ## The heading decides the frame, once
 

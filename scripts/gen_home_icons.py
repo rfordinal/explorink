@@ -47,6 +47,24 @@ LUCIDE_ICONS = [
     ("sync", "refresh-cw", ROW_SIZE),
     ("transfer", "wifi", ROW_SIZE),
     ("settings", "settings", ROW_SIZE),
+    # The group row. `users` and not `users-round`: at 32 px the round
+    # variant's two heads merge into one blob once the 110 threshold has
+    # had its say, and a group glyph that reads as one person is the one
+    # thing it must not do.
+    ("group", "users", ROW_SIZE),
+    # The LoRa badge on the Group row, at 16 px rather than the row's 32.
+    #
+    # **radio-tower, and not lucide `antenna`, which is what shipped first and
+    # did not read.** At 14 px the antenna rasterises into two bands of noisy
+    # diagonal strokes, three empty rows, and a detached 2x3 mast -- on the
+    # panel it looked like a smudge, not a transmitter. radio-tower at 16 is
+    # contiguous: two arcs, a body, a mast.
+    #
+    # It is also `icon_loraBeaconing`'s source, which in the map header means
+    # "this node is transmitting". Here it is not a state, it is a label
+    # sitting directly after the word LoRa, so there is nothing for it to be
+    # confused with.
+    ("lora_badge", "radio-tower", 16),
     ("chevron", "chevron-right", CHEVRON_SIZE),
 ]
 
@@ -120,6 +138,30 @@ def main():
         f"// Row glyphs {ROW_SIZE}px, chevron {CHEVRON_SIZE}px, drawn with"
         " GfxRenderer::drawMono1bpp().",
         "",
+        "// These ARE the Lucide icons the icon rule asks for (the parent repo's",
+        "// CLAUDE.md, \"Icons: prefer Lucide\"): every glyph below names its Lucide",
+        "// source SVG, taken from freeink-sdk/libs/assets/Icons/lucide/icons/. Nothing",
+        "// here is hand-drawn, and Home no longer uses the older hand-rolled bitmaps",
+        "// (icons/wifi.h, settings2.h, transfer.h, bookmark.h -- still used by other",
+        "// screens through the UIIcon table; the parent repo's",
+        "// docs/icon-migration-plan.md tracks those). The Home screen's own doc is",
+        "// ../../../docs/home-screen.md.",
+        "//",
+        "// Two deliberate deviations, so the next reader does not have to re-litigate",
+        "// them:",
+        "//",
+        "//   * `explore` is the **ExplorInk brand mark** (src/images/logo.svg), not a",
+        "//     Lucide glyph. The maintainer asked for the mark on that row",
+        "//     (2026-08-21). A brand mark has no Lucide equivalent, so the rule does",
+        "//     not reach it.",
+        "//   * the **rasteriser** is scripts/gen_home_icons.py, not the SDK's own",
+        "//     libs/assets/Icons/tools/gen_icons.py. Same output format (freeink::Icon,",
+        "//     1bpp MSB-first, bit 0 = ink, opticalCenterY), same threshold 110. The",
+        "//     SDK script needs rsvg-convert, which is not installed on the build",
+        "//     machine, and it is square-only -- the brand mark is 32x31. Our script",
+        "//     falls back to cairosvg, exactly as scripts/gen_pin_icons.py already",
+        "//     does. Install librsvg2-bin and the two paths agree.",
+        "",
     ]
 
     # Explore: the ExplorInk mark, scaled to the row glyph's height.
@@ -143,6 +185,13 @@ def main():
 
     with open(OUT, "w") as handle:
         handle.write("\n".join(out))
+    # clang-format owns the byte arrays' line breaks. Without this the script
+    # emits one very long line per icon, CI's format check fails it, and the next
+    # regeneration shows up as churn against the formatted file in git.
+    if shutil.which("clang-format"):
+        subprocess.run(["clang-format", "-i", OUT], check=True)
+    else:
+        print("warning: clang-format not found -- run it on the output before committing")
     print(f"wrote {OUT}: {len(LUCIDE_ICONS) + 1} icons")
 
 

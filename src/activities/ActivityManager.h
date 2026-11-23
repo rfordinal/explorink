@@ -27,15 +27,17 @@ enum class HomeMenuItem {
   TILE_SYNC,
   WALLET,
   PREVIEW,
+  // The LoRa node list, a bench row like PREVIEW above it and gated the same
+  // way (platformio.ini, ENABLE_LORA_MESH).
+  GROUP,
   SETTINGS_MENU,
-  // Home rows with no destination yet -- they draw dimmed and refuse selection
-  // (HomeActivity::kRows, ../../docs/home-screen.md).
+  // Trips is the trip list -- its row opens RouteSelectActivity
+  // (HomeActivity::onTripsOpen()). PINS has no Home row of its own: Pins lives
+  // inside the map's own popup, and the value stays here for when it gets a
+  // real entry point (../../docs/home-screen.md).
   //
-  // WALLET is **not** in this group on this branch: its activity is here, it is
-  // listed above with the other destinations, and HomeActivity enables its row.
-  // A rebase onto develop brings develop's copy of it back into this block and
-  // the enum then has two WALLET members, which is a redeclaration error rather
-  // than a silent one -- delete the duplicate here, not the one above.
+  // WALLET is listed above with the other destinations rather than here: on
+  // this branch its activity exists and HomeActivity enables its row.
   TRIPS,
   PINS
 };
@@ -111,11 +113,22 @@ class ActivityManager {
   // `routePath` is an absolute card path to a .tir route, or nullptr for none
   // (MapActivity.h). `CMD:GOTO_MAP` and every internal fallback pass nothing, so
   // the scripted path into the map is unchanged.
-  void goToMap(const char* routePath = nullptr, bool resumedFromSleep = false);
-  // The route picker, on the way into the map -- what the home menu opens.
-  // Straight to the map when the card carries no routes: a one-row list whose
-  // only row is Skip is a screen that exists to be dismissed
-  // (RouteSelectActivity.h).
+  void goToMap(const char* routePath = nullptr, bool resumedFromSleep = false, bool adoptRunningGnss = false,
+               bool forcePhonePosition = false);
+  // The map, with the satellite wait in front of it when there is something to
+  // wait for: the GNSS setting on, a build with a receiver, and no usable fix
+  // yet. Anything else goes straight to the map, so this is safe to call from
+  // every path a person takes into it (GnssAcquireActivity.h).
+  //
+  // `CMD:GOTO_MAP` and the wake-into-map path deliberately keep calling
+  // goToMap() instead -- one is host tooling that must land on the map itself,
+  // and the other is a resume, not a departure.
+  void goToGnssAcquire(const char* routePath = nullptr);
+  // The trip picker -- what the home menu's Trips row opens. Goes to
+  // RouteEmptyActivity instead of the list when the card carries no trips: a
+  // one-row list whose only row is Skip is a screen that exists to be
+  // dismissed (RouteSelectActivity.h), and going straight to the map with
+  // nothing said reads as broken rather than empty (RouteEmptyActivity.h).
   void goToRouteSelect();
   // Asks the phone for the tiles the map had to hatch. Its own screen rather
   // than a map-menu item: it is preparation done at home, not something a rider
@@ -136,6 +149,7 @@ class ActivityManager {
   // WalletActivity, never clamped (docs/wallet-viewer.md, "CMD:GOTO_WALLET").
   void goToWallet(int itemIndex = -1, int codeIndex = -1);
   void goToPreview();
+  void goToGroup();
   void goToSleep(bool fromTimeout = false);
   void goToBoot();
   void goToFullScreenMessage(std::string message, EpdFontFamily::Style style = EpdFontFamily::REGULAR);

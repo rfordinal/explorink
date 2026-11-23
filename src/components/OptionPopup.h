@@ -1,5 +1,6 @@
 #pragma once
 #include <I18n.h>
+#include <Icon.h>
 
 #include <algorithm>
 #include <functional>
@@ -28,6 +29,7 @@ class OptionPopup {
     onSelectCallback = std::move(onSelect);
     layoutValid = false;
     active = true;
+    note.clear();
     resetRowChrome();
   }
 
@@ -46,6 +48,7 @@ class OptionPopup {
     onSelectCallback = std::move(onSelect);
     layoutValid = false;
     active = true;
+    note.clear();
     resetRowChrome();
   }
 
@@ -61,6 +64,7 @@ class OptionPopup {
     onSelectCallback = std::move(onSelect);
     layoutValid = false;
     active = true;
+    note.clear();
     resetRowChrome();
   }
 
@@ -82,7 +86,94 @@ class OptionPopup {
     onSelectCallback = std::move(onSelect);
     layoutValid = false;
     active = true;
+    note.clear();
     resetRowChrome();
+  }
+
+  // Same rows, with a title that is not a translated constant -- a POI's own
+  // name, or a category label chosen at runtime. Everything else is identical to
+  // the StrId form above; the title is the only difference, so this delegates
+  // rather than repeating the field assignments.
+  void showWithValues(const char* titleStr, const std::vector<std::string>& options,
+                      const std::vector<std::string>& values, int currentIndex, std::function<void(int)> onSelect) {
+    showWithValues(StrId::STR_MAP, options, values, currentIndex, std::move(onSelect));
+    title = titleStr;
+  }
+
+  // One line of text between the title and the rows, not selectable
+  // (BaseTheme::OptionPopupSpec::note). Set after a show*() call, which clears
+  // it -- so a popup carries a note only when it asks for one. Empty string
+  // means none.
+  void setNote(const char* text) {
+    note = text != nullptr ? text : "";
+    layoutValid = false;
+  }
+
+  // Rows the rider cannot select: drawn dimmed (BaseTheme::dimDisabledRow(),
+  // the same line screen Home's menu uses) and skipped by the selection walk.
+  // `disabled` is parallel to the options; non-zero disables that row, and a
+  // short or empty vector leaves every row live.
+  //
+  // Set after a show*() call, which clears it -- same rule as setNote(), so a
+  // stale mask can never survive into the next popup. A row is dimmed rather
+  // than dropped on purpose: a row that vanished reads as a firmware that lost
+  // a feature, a dimmed one reads as a switch somebody turned off.
+  //
+  // If the selection is sitting on a disabled row when this is called, it
+  // walks forward to the first live one. All rows disabled leaves the selection
+  // where it was and nothing selectable; the caller should not build that list.
+  void setDisabledRows(std::vector<uint8_t> disabled) {
+    ownedDisabled = std::move(disabled);
+    ownedDisabled.resize(ownedStrings.size());
+    if (isRowDisabled(selectedIndex) && anyRowEnabled()) {
+      const int count = static_cast<int>(ownedStrings.size());
+      for (int step = 1; step <= count; ++step) {
+        const int candidate = (selectedIndex + step) % count;
+        if (!isRowDisabled(candidate)) {
+          selectedIndex = candidate;
+          break;
+        }
+      }
+    }
+    layoutValid = false;
+  }
+
+  // One icon per row, parallel to `options` -- the same glyph the thing a row
+  // names draws elsewhere (a pin's balloon glyph, a POI category's map mark),
+  // so a picker shows one symbol per type instead of two. A null entry draws
+  // that row with no icon but keeps the column, so a row that carries none
+  // (Nearby's `Hide all` among category rows) still lines its label up with
+  // every row that does.
+  //
+  // Set after a show*() call, which clears it -- same rule as
+  // setDisabledRows().
+  void setIcons(std::vector<const freeink::Icon*> icons) {
+    ownedIcons = std::move(icons);
+    ownedIcons.resize(ownedStrings.size());
+    layoutValid = false;
+  }
+
+  // Rows that fire onSelect without closing the popup -- for a row whose
+  // value is a small cycle (ride/hike/cycle) the rider steps through in
+  // place, one CONFIRM per step, instead of one press picking blind and
+  // reloading behind it. The caller decides when to leave: Back or a tap
+  // outside still close the popup as normal.
+  //
+  // Set after a show*() call, which clears it -- same rule as
+  // setDisabledRows().
+  void setKeepOpenRows(std::vector<uint8_t> keepOpen) {
+    ownedKeepOpen = std::move(keepOpen);
+    ownedKeepOpen.resize(ownedStrings.size());
+  }
+
+  // Updates one row's value column in place, for a keep-open row whose
+  // onSelect callback just changed what it shows -- without this the popup
+  // would keep the value it opened with until the caller show()s it again,
+  // which setKeepOpenRows() exists precisely to avoid.
+  void setRowValue(int index, std::string value) {
+    if (index < 0 || index >= static_cast<int>(ownedValues.size())) return;
+    ownedValues[index] = std::move(value);
+    layoutValid = false;
   }
 
   // Per-row actions, opt-in.
@@ -140,19 +231,26 @@ class OptionPopup {
 
   bool hasSideHints() const { return sideHintTop != nullptr || sideHintBottom != nullptr; }
 
-  // Keep this popup at least as big as the one it replaced: same width, same row
-  // count. A submenu that shrinks to its own content reads as a different kind of
-  // dialog instead of the next step of the same one, and a caller holding a
-  // backdrop of the previous dialog can reuse it only while the new one fits
-  // inside it. Cleared by every show(), like the row actions.
-  void setSizeHint(int dialogWidth, int visibleRows) {
-    minDialogWidth = dialogWidth;
-    minVisibleRows = visibleRows;
+  // Open at one of the fixed boxes instead of measuring the content. The box is
+  // per board -- a percent of whatever panel the HAL reports, not a pixel count
+  // written for one device (ThemeMetrics::optionPopupMenuWidthPercent and
+  // friends). Two classes, because a yes/no confirmation and a browsable list
+  // are different kinds of dialog and should not be the same box.
+  //
+  // The rect is the *same* rect every time, not merely no smaller than the last
+  // one -- which is what the size hint this replaced gave, and it was not enough:
+  // a popup with wider content still grew past the hint, and a taller one moved
+  // the box's top edge, because a dialog is centred. A caller that snapshots the
+  // pixels under the dialog keeps one backdrop valid across a whole menu -> list
+  // -> confirm chain (MapActivity), and every close refreshes one known window.
+  // Cleared by every show(), like the row actions.
+  void setSize(BaseTheme::OptionPopupSize size) {
+    sizeClass = size;
     layoutValid = false;
   }
 
-  // The dialog's own geometry, for a caller that wants the next popup to match it
-  // (setSizeHint above). frameRect() is the same box plus the frame thickness.
+  // The dialog's own geometry. frameRect() is the same box plus the frame
+  // thickness.
   int dialogWidth(const GfxRenderer& renderer) const { return getLayout(renderer).dialog.width; }
   int visibleRows(const GfxRenderer& renderer) const { return getLayout(renderer).visibleRows; }
 
@@ -167,7 +265,7 @@ class OptionPopup {
       for (int row = 0; row < static_cast<int>(hitLayout.rows.size()); row++) {
         if (contains(hitLayout.rows[row], tx, ty)) {
           const int i = scrollTop + row;
-          if (i < count && selectedIndex != i) {
+          if (i < count && !isRowDisabled(i) && selectedIndex != i) {
             selectedIndex = i;
             requestUpdate();
           }
@@ -182,8 +280,12 @@ class OptionPopup {
         if (!contains(hitLayout.rows[row], tx, ty)) continue;
         const int i = scrollTop + row;
         if (i >= count) break;
+        // A tap on a disabled row is swallowed: the popup stays open and the
+        // selection does not move, so the row cannot fire the callback by a
+        // route the button walk refuses.
+        if (isRowDisabled(i)) return true;
         selectedIndex = i;
-        active = false;
+        if (!isRowKeepOpen(i)) active = false;
         if (onSelectCallback) onSelectCallback(selectedIndex);
         requestUpdate();
         return true;
@@ -228,7 +330,10 @@ class OptionPopup {
       requestUpdate();
       return true;
     } else if (input.wasPressed(MappedInputManager::Button::Confirm)) {
-      active = false;
+      // Belt and braces: the walk never leaves the selection on a disabled row,
+      // but a caller can disable the row the popup opened on.
+      if (isRowDisabled(selectedIndex)) return true;
+      if (!isRowKeepOpen(selectedIndex)) active = false;
       if (onSelectCallback) onSelectCallback(selectedIndex);
       requestUpdate();
       return true;
@@ -298,12 +403,14 @@ class OptionPopup {
     s.title = title.c_str();
     s.options = &ownedStrings;
     s.values = ownedValues.empty() ? nullptr : &ownedValues;
+    s.disabled = ownedDisabled.empty() ? nullptr : &ownedDisabled;
     s.selectedIndex = selectedIndex;
     s.scrollTop = scrollTop;
     s.leftAlign = leftAligned;
     s.compact = compact;
-    s.minDialogWidth = minDialogWidth;
-    s.minVisibleRows = minVisibleRows;
+    s.size = sizeClass;
+    s.note = note.empty() ? nullptr : note.c_str();
+    s.icons = ownedIcons.empty() ? nullptr : &ownedIcons;
     return s;
   }
 
@@ -343,7 +450,18 @@ class OptionPopup {
   void moveSelection(const int delta, const GfxRenderer& renderer) {
     const int count = static_cast<int>(ownedStrings.size());
     if (count == 0) return;
-    selectedIndex = (selectedIndex + delta + count) % count;
+    // Disabled rows are stepped over, not stopped on -- same walk Home's menu
+    // does (HomeActivity::nextSelectable()). The walk visits at most `count`
+    // rows, so a list with every row disabled leaves the selection alone
+    // instead of spinning.
+    if (!anyRowEnabled()) return;
+    const int step = delta >= 0 ? 1 : -1;
+    int moved = selectedIndex;
+    for (int i = 0; i < count; ++i) {
+      moved = (moved + step + count) % count;
+      if (!isRowDisabled(moved)) break;
+    }
+    selectedIndex = moved;
     const int visible = getLayout(renderer).visibleRows;
     if (visible <= 0 || visible >= count) return;
     int top = scrollTop;
@@ -369,8 +487,26 @@ class OptionPopup {
     sideHintTop = nullptr;
     sideHintBottom = nullptr;
     sideHintFontId = SMALL_FONT_ID;
-    minDialogWidth = 0;
-    minVisibleRows = 0;
+    sizeClass = BaseTheme::OptionPopupSize::Auto;
+    ownedDisabled.clear();
+    ownedKeepOpen.clear();
+    ownedIcons.clear();
+  }
+
+  bool isRowDisabled(const int index) const {
+    return index >= 0 && index < static_cast<int>(ownedDisabled.size()) && ownedDisabled[index] != 0;
+  }
+
+  bool isRowKeepOpen(const int index) const {
+    return index >= 0 && index < static_cast<int>(ownedKeepOpen.size()) && ownedKeepOpen[index] != 0;
+  }
+
+  bool anyRowEnabled() const {
+    const int count = static_cast<int>(ownedStrings.size());
+    for (int i = 0; i < count; ++i) {
+      if (!isRowDisabled(i)) return true;
+    }
+    return false;
   }
 
   static bool contains(const Rect& rect, const int x, const int y) {
@@ -380,8 +516,14 @@ class OptionPopup {
   bool active = false;
   std::string title;
   std::vector<std::string> ownedStrings;
+  // Empty unless setDisabledRows() was called; sized to ownedStrings there.
+  std::vector<uint8_t> ownedDisabled;
+  // Empty unless setKeepOpenRows() was called; sized to ownedStrings there.
+  std::vector<uint8_t> ownedKeepOpen;
   // Empty unless showWithValues() was used; sized to ownedStrings there.
   std::vector<std::string> ownedValues;
+  // Empty unless setIcons() was called; sized to ownedStrings there.
+  std::vector<const freeink::Icon*> ownedIcons;
   bool leftAligned = false;
   bool compact = false;
   int selectedIndex = 0;
@@ -396,8 +538,8 @@ class OptionPopup {
   const char* sideHintTop = nullptr;
   const char* sideHintBottom = nullptr;
   int sideHintFontId = SMALL_FONT_ID;
-  int minDialogWidth = 0;
-  int minVisibleRows = 0;
+  BaseTheme::OptionPopupSize sizeClass = BaseTheme::OptionPopupSize::Auto;
   mutable Layout layout;
+  std::string note;
   mutable bool layoutValid = false;
 };

@@ -4,8 +4,6 @@
 #include <string>
 #include <vector>
 
-class LanguageHyphenator;
-
 class Hyphenator {
  public:
   struct BreakInfo {
@@ -28,16 +26,15 @@ class Hyphenator {
   //      A direct break at the apostrophe boundary is allowed only when the left
   //      segment has at least 3 letters and the right segment has at least 3 letters,
   //      avoiding short clitics (e.g. l', d') and contraction tails (e.g. 've, 're, 'll).
-  //   3. Language-specific Liang patterns (e.g. German de_patterns).
-  //      Example: "Quadratkilometer" -> Qua|drat|ki|lo|me|ter.
-  //   4. Fallback every-N-chars splitting (only when includeFallback is true AND no
-  //      pattern breaks were found). Used as a last resort to prevent a single oversized
-  //      word from overflowing the page width.
+  //   3. Fallback every-N-chars splitting (only when includeFallback is true).
+  //      Used as a last resort to prevent a single oversized word from
+  //      overflowing the page width.
+  //
+  // There used to be a source between 2 and 3: per-language Liang patterns, ten
+  // compiled tries that turned "Quadratkilometer" into Qua|drat|ki|lo|me|ter.
+  // They cost 343 kB of flash -- 8 % of the whole image -- for a reader this
+  // firmware no longer has a way to open a book in, so they were deleted
+  // (xteink docs/firmware-cleanup-plan.md, step 3). What is left breaks on
+  // marks that are already in the text, plus the blind fallback.
   static std::vector<BreakInfo> breakOffsets(const std::string& word, bool includeFallback);
-
-  // Provide a publication-level language hint (e.g. "en", "en-US", "ru") used to select hyphenation rules.
-  static void setPreferredLanguage(const std::string& lang);
-
- private:
-  static const LanguageHyphenator* cachedHyphenator_;
 };

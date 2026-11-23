@@ -5,6 +5,13 @@
 
 #include "MapRideMode.h"
 #include "PinCatalog.h"
+#if defined(ENABLE_GROUP_CMD) && ENABLE_GROUP_CMD
+#if !defined(ENABLE_GROUP_MARKERS) || !ENABLE_GROUP_MARKERS
+#error "ENABLE_GROUP_CMD needs ENABLE_GROUP_MARKERS: the console cannot feed a layer that is not built"
+#endif
+#include "GroupFix.h"
+#include "GroupMembers.h"
+#endif
 
 // Line-based ASCII command grammar for the map/nav console.
 //
@@ -19,9 +26,9 @@
 //
 //   pos <lat> <lon> [[heading] <0-15>] [[speed] <kmh>]
 //   heading <0-15>
-//   zoom <0-4>
+//   zoom <0-6>
 //   marker <0-4>
-//   mode ride|hike|cycle
+//   mode ride|hike|tourist
 //   redraw
 //   tiles
 //   missing [<offset>]
@@ -29,12 +36,22 @@
 //   have
 //   stale <z> <col> <row>
 //   checked <n>|unknown
+//   push <n>
+//   fake <missing> <held>
+//   points
+//   gone <col> <row>
 //   info
 //   stats
 //   pin set <key> <lat> <lon> [<utc>]
 //   pin del <key>
 //   pin list
 //   pin log [<offset>]
+//   group pos <acr|id> <lat> <lon> [utc <s>] [heading <0-15>] [speed <kmh>] [src <word>]
+//   group add <acr> <id> [<name>]
+//   group del <acr|id>
+//   group list
+//   group reload
+//   group log [<offset>]
 //
 // `tiles` reports the current viewport. `missing` reports the persisted
 // list of every tile the device has ever hatched, which is a different and
@@ -50,6 +67,23 @@
 // signal cannot tell a current tile from a stale one, and treating its silence
 // as "all current" would bury exactly the bug this exists to find.
 //
+// `push <n>` is the phone announcing a batch it is about to send. Sent once per
+// connection, before that connection's first begin frame: a dropped link takes
+// the run with it, so a phone that comes back and simply resumes pushing lands
+// its bytes on a screen that has gone back to believing there is nothing to do. Everything
+// else on this channel is reactive: the device hatched a square, wrote it down
+// and asks for it back. Ground the rider has never been on is on no list, so a
+// pre-trip push of a whole city arrives with the sync screen believing there is
+// nothing to do -- the bytes land, and every progress element stays dark
+// because the screen sized itself from an empty missing list
+// (`docs/missing-tiles.md`, "A batch the device never asked for"). The count is
+// the only thing the device needs: it does not need to know which tiles, only
+// how many files are coming, so it can draw a bar and finish the run.
+//
+// Write-only, and it answers nothing but `OK`. It reveals no position, no
+// route and no stored data, so it adds no exposure the transfer channel that
+// follows it does not already have.
+//
 // `stats` is the power meter: battery millivolts, CPU clock time, panel
 // refresh counts, loop duty cycle. Same keys as the SD card's power.csv
 // (src/PowerLog.cpp), deliberately -- one vocabulary, two ways out, so a script
@@ -64,6 +98,27 @@
 // waiting for a file that will never arrive. `<reason>` is one free-form word
 // (no spaces), for the log -- the device shows a count, not a reason.
 //
+// `points` and `gone` are the point-layer sync exchange
+// (../../docs/point-layer-lifecycle.md, decision 2 and 3): the device sends
+// `NEED_POINTS <count> fmt <version>` the same way it sends `NEED_TILES`, the
+// phone answers `points`, the device lists up to 9 z10 shards
+// (MapPointShards::rangeForRadius) as `INFO point_<col>_<row>=have|absent`,
+// then `OK`. The phone pushes what it can over the existing begin/chunk
+// frames and reports the rest.
+//
+// **A shard the phone cannot supply reuses `skip`, unchanged.** `skip <z>
+// <col> <row> [<reason>]` already carries a zoom, so the phone sends
+// `skip 10 <col> <row> <reason>` -- z10 is MapPointShards::kShardZoom and
+// never a tile zoom, so the two conversations cannot collide, and only one
+// conversation is open on the command channel at a time anyway. Adding a
+// second `skip`-shaped word for the same job would be a second thing to keep
+// in sync with the first for no new capability.
+//
+// `gone <col> <row>` is genuinely new: the CDN answered a definite 404 for
+// that shard, so the device deletes its copy. No zoom, because points have
+// exactly one shard zoom -- unlike `skip`, there is nothing here that could
+// ever mean a tile.
+//
 // `pin` is the pins feature's whole wire path (../../docs/pins-plan.md). The
 // device has no keyboard and no GPS, so `pin set` is the only way to place a pin
 // at a coordinate the rider is not standing on -- a distant pin gets tested
@@ -74,6 +129,23 @@
 //
 // `pin log` pages exactly like `missing [<offset>]`, and for the same reason: a
 // whole history does not fit in one reply.
+//
+// `group` is the group-markers layer's console (../../../docs/group-markers.md), and
+// it exists **only in a devel build** (-DENABLE_GROUP_CMD, out of every release
+// env). Two reasons, and either one is enough: `group pos` injects a position
+// under somebody else's name, which is a forged rider on the panel of whoever
+// holds the device, and `group list` prints where the whole group is to anyone in
+// BLE range, with no pairing and no ownership check (CLAUDE.md, "Security").
+//
+// `group pos` is also the shape a real transport uses: it resolves the sender
+// through the roster's allowlist exactly as a LoRa or BLE frame will, so the
+// path a stranger's position dies on is the same path the console exercises.
+// The optional tail is keyword-only -- unlike `pos`, where a bare number fills
+// heading then speed -- because a bare number after a coordinate here would be
+// as likely to be a utc as a heading.
+//
+// `group add` and `group del` edit the roster file, and `group reload` re-reads it
+// after a hand edit on the card.
 //
 // The optional tail of `pos` takes the value bare (`pos 48.4 17.0 4 30`) or
 // behind its own keyword (`pos 48.4 17.0 heading 4 speed 30`). Both spell
@@ -101,10 +173,16 @@ enum class MapCommandType : uint8_t {
   Have,
   Stale,
   Checked,
+  Push,
   Info,
   Stats,
   Fake,
+  Points,
+  Gone,
   Pin,
+#if defined(ENABLE_GROUP_CMD) && ENABLE_GROUP_CMD
+  Group,
+#endif
   Error,  // see MapCommand::error
 };
 
@@ -117,6 +195,19 @@ enum class MapPinVerb : uint8_t {
   Log,
 };
 
+#if defined(ENABLE_GROUP_CMD) && ENABLE_GROUP_CMD
+// Sub-verb of `group`, same one-type-with-a-verb shape as `pin` and for the same
+// reason: the six share the member field and every caller switches on the pair.
+enum class MapGroupVerb : uint8_t {
+  Pos,
+  Add,
+  Del,
+  List,
+  Reload,
+  Log,
+};
+#endif
+
 enum class MapCommandError : uint8_t {
   None,
   UnknownCommand,
@@ -125,6 +216,7 @@ enum class MapCommandError : uint8_t {
   OutOfRange,
   BadMode,
   UnknownPin,   // `pin set`/`pin del` with a key that is not in the catalogue
+  BadMember,    // `group` with an unstorable acronym, id or name
   LineTooLong,  // not produced by the parser; the line assembler raises it
 };
 
@@ -137,8 +229,19 @@ struct MapCommand {
   uint16_t speedKmh = 0;
   int16_t altitudeM = 0;  // Pos, optional; metres above sea level
   uint8_t heading = 0;    // 0-15, Heading and optional on Pos
-  uint8_t zoom = 0;       // 0-4
-  uint8_t marker = 0;     // 0-4
+  // Pos, optional: the two fix-quality claims the position marker draws
+  // (MapFixTrust.h). Keyword-only, like `alt` -- a bare number here would be
+  // indistinguishable from a mistyped heading or speed. `acc` is metres, and 0
+  // means unstated exactly as it does on the BLE wire; `dirq` is the same 0-3
+  // code the packet's flags bits 2-3 carry.
+  //
+  // They exist so the marker's shapes can be put on the panel and looked at
+  // without a phone that happens to have a bad fix -- the style rule is that a
+  // mark on the map is judged on the glass (CLAUDE.md).
+  uint16_t accuracyM = 0;
+  uint8_t dirQuality = 0;
+  uint8_t zoom = 0;    // 0-4
+  uint8_t marker = 0;  // 0-4
   // Missing: first entry of the page to print. uint16 because the store is
   // capped at 200 entries (MissingTilesStore::kMaxEntries); an offset past
   // the end is legal and answers an empty page rather than an error, which
@@ -146,6 +249,9 @@ struct MapCommand {
   uint16_t missingOffset = 0;
   // Skip and Stale: which tile, and (Skip only) why. Shared fields because the
   // two carry the same coordinate triple and never occur in one command.
+  // Gone reuses skipCol/skipRow for its z10 shard coordinate and leaves skipZ
+  // at 0 -- a point shard's zoom is always MapPointShards::kShardZoom, known
+  // to the handler, not carried on the wire.
   uint8_t skipZ = 0;
   uint32_t skipCol = 0;
   uint32_t skipRow = 0;
@@ -154,6 +260,9 @@ struct MapCommand {
   // and is claiming nothing, which is a different answer from `checked 0`.
   uint16_t checkedCount = 0;
   bool checkedKnown = false;
+  // Push: how many files the phone says it is about to send. uint16 because the
+  // bound below is far inside it -- see kMaxPushCount.
+  uint16_t pushCount = 0;
   // Fake: how many synthetic missing tiles and how many synthetic held tiles to
   // seed around the current viewport. A layout affordance, not a protocol one --
   // it exists so the tile sync screen's grid can be looked at on the panel
@@ -173,12 +282,32 @@ struct MapCommand {
   // coordinate came from. Copied, not viewed, for the same reason as skipReason.
   MapPinVerb pinVerb = MapPinVerb::List;
   char pinKey[kPinKeyBytes] = {};
-  uint32_t pinUtc = 0;         // `pin set`, optional; 0 = the sender had no clock
-  uint16_t pinLogOffset = 0;   // `pin log`, default 0 = the newest page
+  uint32_t pinUtc = 0;        // `pin set`, optional; 0 = the sender had no clock
+  uint16_t pinLogOffset = 0;  // `pin log`, default 0 = the newest page
+#if defined(ENABLE_GROUP_CMD) && ENABLE_GROUP_CMD
+  // Group: which sub-verb, and the member it names. latE7/lonE7 above carry
+  // `group pos`'s coordinate, the same fields `pos` and `pin set` use -- one
+  // coordinate field for this device, wherever the number came from.
+  //
+  // Copied, not viewed, for the same reason as skipReason: a MapCommand that
+  // outlives the line it was parsed from must not hold pointers into it.
+  MapGroupVerb groupVerb = MapGroupVerb::List;
+  char groupAcr[kGroupAcrBytes] = {};    // `group add`, and the handle every other verb resolves
+  char groupId[kGroupIdBytes] = {};      // `group add`, and `group pos`/`group del` when addressed by id
+  char groupName[kGroupNameBytes] = {};  // `group add`, optional, spaces kept
+  uint32_t groupUtc = 0;                 // `group pos`, keyword `utc`; 0 = the sender had no clock
+  uint16_t groupLogOffset = 0;           // `group log`, default 0 = the newest page
+  // `group pos`'s heading and speed reuse `heading`/`speedKmh` and their
+  // hasHeading/hasSpeed flags below, for the same one-field-per-thing reason the
+  // coordinate is shared.
+  GroupFixSource groupSource = GroupFixSource::Cmd;  // `group pos`, keyword `src`
+#endif
   MapRideMode mode = MapRideMode::Ride;
-  bool hasHeading = false;   // Pos carried a heading
-  bool hasSpeed = false;     // Pos carried a speed
-  bool hasAltitude = false;  // Pos carried an altitude
+  bool hasHeading = false;     // Pos carried a heading
+  bool hasAccuracy = false;    // Pos carried `acc`
+  bool hasDirQuality = false;  // Pos carried `dirq`
+  bool hasSpeed = false;       // Pos carried a speed
+  bool hasAltitude = false;    // Pos carried an altitude
 };
 
 // Parses one line. Never fails hard: a bad line comes back as

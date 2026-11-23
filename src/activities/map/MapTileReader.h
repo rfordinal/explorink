@@ -29,7 +29,21 @@ class MapTileReader {
   // this is the number that has to move first when the builder gains a layer.
   // It did on 2026-08-05 (landuse), and until this was 6 every new tile read as
   // an unavailable one -- a whole card of hatch.
-  static constexpr size_t kMaxLayers = 6;
+  // **Fifteen, and generously so on purpose.** The only gate this reader has on
+  // layer count is `layerCount_ > kMaxLayers` in open(); layers themselves are
+  // found by a linear scan on the id byte (findLayer), so an id this build does
+  // not know is already ignored rather than fatal. So a layer added in 2027 needs
+  // no version bump at all -- provided this number is large enough today, and
+  // provided contentId() stopped folding over it, which it has.
+  //
+  // The tiles written today still declare 7. This is headroom, not content.
+  static constexpr size_t kMaxLayers = 15;
+
+  // How many slots contentId() folds, fixed and deliberately NOT kMaxLayers.
+  // Mirrors mapbuilder/tilegen/tiles.py's CONTENT_ID_SLOTS. If this ever tracked
+  // the layer count again, adding a layer would change the identity of every
+  // tile whose bytes had not moved and every card would read stale.
+  static constexpr uint8_t kContentIdSlots = 15;
 
   enum class Layer : uint8_t {
     Water = 1,
@@ -38,6 +52,21 @@ class MapTileReader {
     Places = 4,
     Junctions = 5,
     Landuse = 6,
+    // Terrain lines. Contours today, and named for the vocabulary rather than
+    // for its first class so the next one -- a cliff, an arete, a ridge --
+    // lands as a class here instead of as a reason to add layer 8.
+    //
+    // `classId` is MapReliefClass and the record's `flags` field is the
+    // elevation in metres as an int16 on the contour classes -- not a bit field
+    // on this layer (docs/contours-plan.md, "The record").
+    Relief = 7,
+    // Street names, written by the detail LOD alone (T-558). A record is a
+    // point plus a DIRECTION, because the name is laid along its street the way
+    // a contour's height number is laid along its line -- not beside an anchor.
+    //
+    // Added without a format bump: see kMaxLayers above. A build that predates
+    // this layer scans past id 8 and draws no names.
+    RoadLabels = 8,
   };
 
   struct WayHeader {
@@ -51,6 +80,28 @@ class MapTileReader {
     int16_t x = 0;
     int16_t y = 0;
     uint8_t rank = 0;
+    uint8_t nameLen = 0;
+  };
+
+  // One street name. Nine bytes on the wire, then `nameLen` bytes of UTF-8
+  // (docs/map-data-spec.md, "Road label record").
+  struct RoadLabelHeader {
+    int16_t x = 0;
+    int16_t y = 0;
+    // The street's tangent at the anchor, normalised to 127, in the RECORD's
+    // frame -- y counts down from the tile's north edge, same as x/y above. The
+    // builder already flipped it out of Mercator's y-grows-north, so do not
+    // flip it again: a label drawn from a re-flipped tangent is mirrored about
+    // the horizontal and looks like a font bug.
+    int8_t dx = 0;
+    int8_t dy = 0;
+    // Straight run through the anchor in GROUND metres, saturated at 255. Not
+    // device pixels: the renderer divides by its own rung's mpp, so one record
+    // serves every rung. A name wider than this is refused -- that is what
+    // keeps a long name off a short stub of street.
+    uint8_t runQ = 0;
+    // Road class, which is also the label's rank: lower draws first.
+    uint8_t classId = 0;
     uint8_t nameLen = 0;
   };
 
@@ -76,11 +127,15 @@ class MapTileReader {
   uint32_t tileY() const { return y_; }
   int32_t originX() const { return originX_; }
   int32_t originY() const { return originY_; }
+  uint8_t coordShift() const { return coordShift_; }
   uint32_t buildEpoch() const { return buildEpoch_; }
   uint32_t osmEpoch() const { return osmEpoch_; }
 
-  // What this tile draws, as one number: crc32 over the six per-layer crc32s,
-  // little endian, in layer id order 1..6 (Water..Landuse).
+  // What this tile draws, as one number: crc32 over kContentIdSlots per-layer
+  // crc32s, little endian, in layer id order 1..15 -- a fixed slot range, not
+  // the list of layers that happen to exist. A layer id nothing writes folds its
+  // absence as crc 0, which is what makes adding layer 8 later a data change
+  // rather than a format change (docs/map-data-spec.md, "Version 4").
   //
   // This is the whole tile-freshness signal -- see docs/tile-freshness.md and
   // mapbuilder/tile_index.py. It answers "is my copy the same as the published
@@ -228,6 +283,11 @@ class MapTileReader {
   // Writes a null terminator within `bufCap`.
   bool readPlaceName(const PlaceHeader& header, char* buf, size_t bufCap);
 
+  bool readRoadLabelHeader(RoadLabelHeader& out);
+  // Same contract as readPlaceName: consumes exactly `header.nameLen` bytes
+  // whatever `bufCap` is, so the cursor always lands on the next record.
+  bool readRoadLabelName(const RoadLabelHeader& header, char* buf, size_t bufCap);
+
   bool readJunctionRecord(JunctionRecord& out);
 
   // Real bytes pulled from `file` for the tile currently open -- header,
@@ -296,7 +356,7 @@ class MapTileReader {
   // dropped from the missing list -- and is then rejected by the reader on the
   // next render and recorded as missing all over again. The transfer is not
   // wasted once; it is wasted on every fetch.
-  static constexpr uint16_t kFormatVersion = 3;
+  static constexpr uint16_t kFormatVersion = 4;
 
  private:
   struct LayerEntry {
@@ -316,6 +376,8 @@ class MapTileReader {
   bool parseHeader();
   const LayerEntry* findLayer(Layer layer) const;
   bool readRaw(void* dst, size_t len);
+  // Consumes exactly `nameLen` bytes whatever `bufCap` holds -- see the .cpp.
+  bool readNameBytes(uint8_t nameLen, char* buf, size_t bufCap);
   bool refill();
   // The one place that ever calls file_->read(). Every byte it returns is
   // real I/O, so this is also the one place bytesRead_ is incremented.
@@ -339,6 +401,9 @@ class MapTileReader {
   uint32_t y_ = 0;
   int32_t originX_ = 0;
   int32_t originY_ = 0;
+  // coord_shift from the header: a point is origin + (int16 << this). 0 on every
+  // tile that exists; version 4 added the byte so a wider tile can be written.
+  uint8_t coordShift_ = 0;
   uint32_t buildEpoch_ = 0;
   uint32_t osmEpoch_ = 0;
   uint32_t headerCrc32Stored_ = 0;

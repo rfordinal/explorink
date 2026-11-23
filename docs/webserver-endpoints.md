@@ -1,17 +1,25 @@
 # Webserver Endpoints
 
 This document describes the HTTP, WebSocket, WebDAV, and discovery endpoints
-available while TrailInk is in File Transfer or Calibre Wireless mode.
+available while ExplorInk is in File Transfer mode.
 
 - HTTP server: port 80
 - WebSocket upload server: port 81
 - UDP discovery listener: port 8134
 - WebDAV: port 80, handled by the same HTTP server
 
-Examples use `crosspoint.local`. That is the literal mDNS hostname in the code
-(`src/activities/network/CrossPointWebServerActivity.cpp:25`), not a stale
-name. If mDNS does not resolve on your network, use the IP address shown on the
-device screen.
+Examples use `explorink.local`. The real hostname is per-device --
+`explorink-x4.local`, `explorink-x4pro.local`, `explorink-t5s3pro.local` --
+built from `DeviceIdentity::activeBoardId()`
+(`lib/DeviceIdentity/DeviceIdentity.cpp`) so several ExplorInk devices on one LAN stay
+distinguishable; see `CrossPointWebServerActivity.cpp`'s `apHostname()`. If
+mDNS does not resolve on your network, use the IP address shown on the device
+screen.
+
+**Verified 2026-09-15**: flashed to an X3 (`default` env, commit `bc1d07fd`)
+and the maintainer confirmed it works. X4 Pro, T5 S3 Pro and the X4 side of the
+shared `default` binary only got a clean compile (`pio run -e x4pro`, `-e
+t5s3pro`, `-e simulator`) -- not yet flashed for this change.
 
 ## HTTP Pages
 
@@ -41,6 +49,14 @@ Endpoints removed from the fork (2026-08-05), and why:
 | `GET /js/jszip.min.js` | Only fed the in-browser EPUB converter that lived in `FilesPage.html`. |
 | `GET /settings`, `GET/POST /api/settings` | Device settings belong in the device menus. One settings surface, not two that can disagree. |
 | `GET/POST /api/wifi*` | The Wi-Fi card lived on the settings page and had no other consumer. Wi-Fi is chosen on the device (`src/activities/network/WifiSelectionActivity.cpp`) -- you need Wi-Fi before the browser is reachable anyway. |
+
+Removed 2026-09-14: the whole "Connect to Calibre" network mode
+(`CalibreConnectActivity`, `NetworkMode::CONNECT_CALIBRE`) and its menu entry.
+It ran the same web server in STA mode with Calibre-specific instructions on
+screen; ExplorInk is not an ebook reader (`docs/thesis.md`), so a Calibre
+wireless-transfer workflow was never in scope. `GET /api/status`, file
+management and WebSocket upload are unaffected -- those serve the file manager,
+not Calibre.
 
 `FilesPage.html` was also rewritten as a plain file manager (list, upload,
 download, mkdir, rename, move, delete). The EPUB-to-image conversion, cover
@@ -73,7 +89,7 @@ Likely but unverified -- a map-file diff would confirm it.
 ### `GET /api/status`
 
 ```bash
-curl http://crosspoint.local/api/status
+curl http://explorink.local/api/status
 ```
 
 Response:
@@ -100,6 +116,20 @@ Response:
 | `uptime` | number | Seconds since boot |
 | `device` | string | `"X3"` or `"X4"` hardware detection |
 
+## Every response is gzipped, so `curl` needs `--compressed`
+
+Without the flag `curl` writes the raw deflate stream to the terminal, which
+prints as binary noise and reads exactly like a broken server or a wrong port.
+It is neither. **Every example on this page assumes the flag**, and it is left
+off below only to keep the lines short:
+
+```bash
+curl -s --compressed "http://<device-ip>/api/files?path=/"
+```
+
+Cost one wasted call on 2026-09-04 pulling a power log off a T5 S3 Pro. A
+browser sends `Accept-Encoding` on its own, so this only ever bites a script.
+
 ## File Management
 
 ### `GET /api/files`
@@ -107,7 +137,7 @@ Response:
 Lists files and folders under a directory.
 
 ```bash
-curl "http://crosspoint.local/api/files?path=/Books"
+curl "http://explorink.local/api/files?path=/Books"
 ```
 
 Query parameters:
@@ -133,7 +163,7 @@ enabled. `System Volume Information` and `XTCache` are always hidden/protected.
 Downloads a file from the SD card.
 
 ```bash
-curl -OJ "http://crosspoint.local/download?path=/Books/MyBook.epub"
+curl -OJ "http://explorink.local/download?path=/Books/MyBook.epub"
 ```
 
 Query parameters:
@@ -151,7 +181,7 @@ downloaded. EPUB files are served as `application/epub+zip`; other files use
 Uploads a file with HTTP multipart form data.
 
 ```bash
-curl -X POST -F "file=@mybook.epub" "http://crosspoint.local/upload?path=/Books"
+curl -X POST -F "file=@mybook.epub" "http://explorink.local/upload?path=/Books"
 ```
 
 Query parameters:
@@ -168,7 +198,10 @@ File uploaded successfully: mybook.epub
 
 Notes:
 
-- Existing files with the same name are overwritten.
+- **An existing file is refused, not overwritten.** The reply is
+  `File already exists: <name>` and nothing is written -- measured 2026-09-17,
+  four uploads out of four onto occupied paths. To replace a file, `POST
+  /rename` it aside or `POST /delete` it first.
 - EPUB cache data for the uploaded path is cleared after a successful upload.
 - HTTP upload uses a 4 KB write buffer before flushing to the SD card.
 
@@ -177,7 +210,7 @@ Notes:
 Creates a folder.
 
 ```bash
-curl -X POST -d "name=NewFolder&path=/" http://crosspoint.local/mkdir
+curl -X POST -d "name=NewFolder&path=/" http://explorink.local/mkdir
 ```
 
 Form parameters:
@@ -192,7 +225,7 @@ Form parameters:
 Renames a file.
 
 ```bash
-curl -X POST -d "path=/Books/old.epub&name=new.epub" http://crosspoint.local/rename
+curl -X POST -d "path=/Books/old.epub&name=new.epub" http://explorink.local/rename
 ```
 
 Form parameters:
@@ -210,7 +243,7 @@ cleared before the rename.
 Moves a file into an existing folder.
 
 ```bash
-curl -X POST -d "path=/Books/mybook.epub&dest=/Read" http://crosspoint.local/move
+curl -X POST -d "path=/Books/mybook.epub&dest=/Read" http://explorink.local/move
 ```
 
 Form parameters:
@@ -228,8 +261,8 @@ cleared before the move.
 Deletes one or more files or empty folders.
 
 ```bash
-curl -X POST -d "path=/Books/mybook.epub" http://crosspoint.local/delete
-curl -X POST -d 'paths=["/Books/old.epub","/OldFolder"]' http://crosspoint.local/delete
+curl -X POST -d "path=/Books/mybook.epub" http://explorink.local/delete
+curl -X POST -d 'paths=["/Books/old.epub","/OldFolder"]' http://explorink.local/delete
 ```
 
 Form parameters:
@@ -246,13 +279,12 @@ data for deleted files is cleared.
 
 ### Port 81
 
-The WebSocket path is used for fast binary uploads from the file manager and
-Calibre plugin workflows.
+The WebSocket path is used for fast binary uploads from the file manager.
 
 Connection:
 
 ```text
-ws://crosspoint.local:81/
+ws://explorink.local:81/
 ```
 
 Protocol:
@@ -305,13 +337,61 @@ Notes:
   does not implement full WebDAV Class 2 locking semantics such as persistent
   locks or lock discovery.
 
+### `GET` sent one byte per file, and then reset the board
+
+Two separate defects, found 2026-09-05 and 2026-09-06 pulling logs off a
+LilyGo T5 S3 Pro. Both are fixed. Both were upstream's.
+
+**One byte per file.** `handleGet()` ended in `client.write(file)`. That worked
+while `Storage.open()` returned an SdFat `FsFile`, which derives from `Stream`:
+the call matched `NetworkClient::write(Stream&)` and streamed the file.
+Upstream's `6ff5fcd9` (2026-02-28, thread-safe `HalFile`) wrapped it, and
+`HalFile` derives from `Print`, not `Stream` (`lib/hal/HalStorage.h`). The
+overload stopped matching, the compiler took `HalFile::operator bool()`,
+promoted the `true` to `uint8_t` and wrote a single `0x01`. The call site never
+changed; its meaning did, and nothing warned, because every step is a legal
+conversion.
+
+The reply still carried the real `Content-Length`, so clients waited for a body
+that never came and reported a truncated transfer rather than an error. That is
+why it read as a flaky network for six months. `WebDAVHandler.cpp` now calls
+`Storage.readFileToStream(path, client)`. Verified on hardware 2026-09-06: a
+7401-byte `power.csv` returns exactly 7401 bytes.
+
+**Then a big file reset the board.** With bytes actually flowing, a 732 765-byte
+tile reset the device 16 s in, 545 kB delivered:
+
+```text
+[179485] [DBG] [DAV] GET /trailink/base/13/4485/2842.tib
+E (195459) task_wdt: Task watchdog got triggered ... - loopTask (CPU 1)
+E (195459) task_wdt: Aborting.
+```
+
+`SDCardManager::readFileToStream()` streamed in a loop that never blocked, so
+`loopTask` could not feed the watchdog. Fixed in the SDK fork, which now yields
+every 100 ms (`freeink-sdk` `55a4958`, upstream PR Free-Ink/freeink-sdk#83).
+The same file now completes in 6.7 s, and two downloads of it are byte-for-byte
+identical.
+
+**Yielding tripled throughput** rather than costing any: ~34 kB/s before the
+reset, ~109 kB/s after. Holding the core starved the networking stack.
+
+**Still open: a large `GET` blocks `loopTask` for about 7 s.** Measured
+2026-09-06, `New max loop duration: 7197 ms` for that tile. Under the watchdog
+now, but it is one reason `loop_max_ms` reads in seconds and why the task
+watchdog cannot be tightened. Moving the transfer off `loopTask` would settle
+it; nothing has measured what that would cost.
+
+The one-byte bug is still live in CrossPoint `develop`
+(`src/network/WebDAVHandler.cpp`, `client.write(file)`) and is reported there.
+
 ## UDP Discovery
 
 The server listens on UDP port `8134`. When it receives the text payload
 `hello`, it replies to the sender with:
 
 ```text
-crosspoint (on <hostname>);81
+explorink (on <hostname>);81
 ```
 
 The final field is the WebSocket upload port.
@@ -321,17 +401,13 @@ The final field is the WebSocket upload port.
 ### Station Mode (STA)
 
 - Device joins an existing 2.4 GHz Wi-Fi network.
-- `crosspoint.local` is advertised with mDNS when available.
+- The per-device hostname (`explorink-x4pro.local`, ...) is advertised with
+  mDNS when available.
 - `/api/status` returns `"mode": "STA"` and RSSI in dBm.
 
 ### Access Point Mode (AP)
 
-- Device creates an open hotspot named `CrossPoint-Reader`.
+- Device creates an open hotspot named after itself, e.g. `ExplorInk-X4Pro`.
 - The device shows a Wi-Fi QR code and URL QR code.
 - The fallback IP is typically `192.168.4.1`.
 - `/api/status` returns `"mode": "AP"` and `"rssi": 0`.
-
-### Calibre Wireless
-
-Calibre Wireless starts the same web server in STA mode and displays setup
-instructions plus WebSocket upload progress on the device screen.

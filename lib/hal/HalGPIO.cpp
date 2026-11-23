@@ -1,4 +1,5 @@
 #include <HalGPIO.h>
+#include <HalPowerManager.h>
 #include <Logging.h>
 #include <PowerManager.h>
 #include <Preferences.h>
@@ -134,15 +135,75 @@ void HalGPIO::begin() {
   }
 #else
   _deviceType = DeviceType::X4;
+#if FREEINK_DEVICE_X4PRO
+  // Same per-batch controller question as the C3 X4, and it has to be asked
+  // here too: the X4 Pro ships SSD1677, UC8179 and UC8279 across production
+  // runs, all three drivers are compiled in, and the profile's SSD1677 is only
+  // the default. XteinkDetect's probe is deliberately board-agnostic -- it
+  // bit-bangs whatever pins ACTIVE carries -- so it works on this S3 as it does
+  // on the C3 (XteinkDetect.cpp, FREEINK_XTEINK_DISPLAY_PROBE).
+  //
+  // Runs here because the probe needs the display pins as GPIOs: after
+  // holdPowerRails() has raised the GPIO1 peripheral rail (main.cpp setup()),
+  // before EpdBus::begin() hands the same pins to the SPI peripheral.
+  //
+  // Without this call the S3 drove SSD1677 commands unconditionally, and the
+  // panel silently ignored every one of them: on 2026-09-09 the first flash of
+  // this env booted fine and mounted the SD card, while the glass kept the
+  // stock firmware's last frame. The same build with this line reports
+  //   [XTDET] bus probe VER=00 0F 68 00 00 FLG=13 -> UltraChip
+  //   [XTDET] promoted SSD1677 -> UC8279 800x480 (LUT_VER=68)
+  // and draws. So OUR reference unit is a UC8279 batch, not the SSD1677 the
+  // profile defaults to -- the probe is the only thing that finds that out.
+  freeink::applyXteinkDisplayController();
+#endif
 #endif
   inputMgr.begin();
 }
 
 void HalGPIO::update() {
   inputMgr.update();
+  updateSeq++;
   const bool connected = isUsbConnected();
   usbStateChanged = (connected != lastUsbConnected);
   lastUsbConnected = connected;
+
+  // Devel-only instrumentation for identifying which inputs are actually wired
+  // on a board (e.g. T5S3's front buttons are unassigned in BoardConfig
+  // today, InputManager.h:415-424). LOG_DBG compiles to nothing outside
+  // env:default (Logging.h, gated on ENABLE_SERIAL_LOG + LOG_LEVEL>=2), so
+  // this never ships in gh_release/gh_release_rc/slim.
+  for (uint8_t i = 0; i <= InputManager::BTN_POWER; ++i) {
+    if (inputMgr.wasPressed(i)) {
+      LOG_DBG("INPUT", "button pressed: %s (%u)", InputManager::getButtonName(i), i);
+    }
+    if (inputMgr.wasReleased(i)) {
+      LOG_DBG("INPUT", "button released: %s (%u)", InputManager::getButtonName(i), i);
+    }
+  }
+  if (inputMgr.wasHomeKeyPressed()) {
+    LOG_DBG("INPUT", "home key pressed");
+  }
+  if (inputMgr.wasHomeKeyTapped()) {
+    LOG_DBG("INPUT", "home key tapped");
+  }
+  if (inputMgr.wasHomeKeyLongPressed()) {
+    LOG_DBG("INPUT", "home key long-pressed");
+  }
+  if (inputMgr.wasTouchPressed()) {
+    LOG_DBG("INPUT", "touch pressed");
+  }
+  if (inputMgr.wasTouchReleased()) {
+    LOG_DBG("INPUT", "touch released");
+  }
+  float tapX = 0, tapY = 0;
+  if (inputMgr.wasTouchTap(tapX, tapY)) {
+    LOG_DBG("INPUT", "touch tap at (%.2f, %.2f)", tapX, tapY);
+  }
+  float swipeSx = 0, swipeSy = 0, swipeEx = 0, swipeEy = 0;
+  if (inputMgr.wasSwipe(swipeSx, swipeSy, swipeEx, swipeEy)) {
+    LOG_DBG("INPUT", "swipe (%.2f, %.2f) -> (%.2f, %.2f)", swipeSx, swipeSy, swipeEx, swipeEy);
+  }
 }
 
 bool HalGPIO::wasUsbStateChanged() const { return usbStateChanged; }
@@ -180,6 +241,12 @@ bool HalGPIO::wasSwipe(float& nxStart, float& nyStart, float& nxEnd, float& nyEn
 }
 
 bool HalGPIO::wasTouchActivity() const { return inputMgr.wasTouchActivity(); }
+
+bool HalGPIO::wasHomeKeyPressed() const { return inputMgr.wasHomeKeyPressed(); }
+
+bool HalGPIO::wasHomeKeyTapped() const { return inputMgr.wasHomeKeyTapped(); }
+
+bool HalGPIO::wasHomeKeyLongPressed() const { return inputMgr.wasHomeKeyLongPressed(); }
 
 void HalGPIO::setSharedConfirmPowerShortPressEmitsPower(const bool enabled) {
   InputManager::setSharedConfirmPowerShortPressEmitsPower(enabled);
@@ -232,10 +299,13 @@ bool HalGPIO::verifyPowerButtonWakeup(uint16_t requiredDurationMs, bool shortPre
   return true;
 }
 
-bool HalGPIO::isUsbConnected() const {
+bool HalGPIO::usbDetectPinHigh() const {
   if (deviceIsX3()) {
     // X3: infer USB/charging via BQ27220 Current() register (0x0C, signed mA).
-    // Positive current means charging.
+    // Positive current means charging. Kept here (not just in
+    // isUsbConnected()) because this reading is correct for both callers --
+    // unlike the PIN_UNASSIGNED fallback below, X3 never went through a
+    // "hardcoded false" state that getWakeupReason() depended on.
     for (uint8_t attempt = 0; attempt < 2; ++attempt) {
       int16_t currentMa = 0;
       if (X3GPIO::readBQ27220CurrentMA(&currentMa)) {
@@ -245,17 +315,50 @@ bool HalGPIO::isUsbConnected() const {
     }
     return false;
   }
-  if (BoardConfig::ACTIVE.usbDetect < 0) {
-    return false;
+  if (BoardConfig::ACTIVE.usbDetect >= 0) {
+    return digitalRead(BoardConfig::ACTIVE.usbDetect) == HIGH;
   }
-  return digitalRead(BoardConfig::ACTIVE.usbDetect) == HIGH;
+  return false;
+}
+
+bool HalGPIO::isUsbConnected() const {
+  if (deviceIsX3() || BoardConfig::ACTIVE.usbDetect >= 0) {
+    return usbDetectPinHigh();
+  }
+  // No digital USB-detect line (X4 Pro, T5 S3 Pro, and others: usbDetect is
+  // PIN_UNASSIGNED). Infer external power from charging state instead.
+  // HalPowerManager::isCharging() picks the board's best source -- charger IC
+  // status, gauge current sign, or a /STAT pin (X4 Pro GPIO21) -- and reports
+  // false on boards with no battery telemetry at all.
+  //
+  // Caveat, same one CrossPoint upstream documents for this exact fallback
+  // (HalGPIO.cpp, isUsbConnected()): this answers "actively charging", not
+  // "USB present" -- the two differ whenever a charger stops charging while
+  // USB stays connected. Two real cases on our own boards: charge
+  // termination at 100% (confirmed on X4 Pro hardware 2026-09-18: at 100%
+  // SoC the icon's bolt does not show, which is expected charger behaviour,
+  // not a bug), and T5 S3 Pro's dev workflow of disabling the charger on
+  // purpose to measure battery-only current draw with USB still attached.
+  //
+  // This fallback is ONLY safe for UI/icon purposes. getWakeupReason() calls
+  // usbDetectPinHigh() instead of this function precisely because
+  // "unconditionally false" on these boards used to be load-bearing there:
+  // it kept a power-button boot from being misread as WakeupReason::
+  // AfterUSBPower (-> immediate startDeepSleep()) just because the device
+  // happened to be charging. Found in code review 2026-09-18, before it ever
+  // reached a device -- see docs/power-management.md, "The header's charging
+  // bolt".
+  return powerManager.isCharging();
 }
 
 HalGPIO::WakeupReason HalGPIO::getWakeupReason() const {
   const auto wakeupCause = esp_sleep_get_wakeup_cause();
   const auto resetReason = esp_reset_reason();
 
-  const bool usbConnected = isUsbConnected();
+  // usbDetectPinHigh(), not isUsbConnected(): this needs "is USB physically
+  // present", and isUsbConnected()'s isCharging() fallback answers a
+  // different question once a charger tops off -- see its comment.
+  const bool usbConnected = usbDetectPinHigh();
 
   if (resetReason == ESP_RST_DEEPSLEEP &&
       (wakeupCause == ESP_SLEEP_WAKEUP_GPIO || wakeupCause == ESP_SLEEP_WAKEUP_EXT1)) {

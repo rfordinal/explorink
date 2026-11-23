@@ -55,10 +55,20 @@ class MapBleConsole {
   //
   // 1 would halve that ceiling but doubles how many poll() ticks a multi-line
   // listing needs to clear, which doubles perceived listing latency on a
-  // *healthy* link -- the common case would pay for the pathological one.
-  // 2 is the compromise: worst case 6 s instead of the previous unbounded
-  // (a paged listing could chain arbitrarily many blocks in one poll()),
-  // typical listing latency roughly unchanged versus before this cap.
+  // *healthy* link -- the common case would pay for the pathological one. 2 is
+  // the compromise taken.
+  //
+  // **It does not bound the freeze.** This used to claim "worst case 6 s
+  // instead of the previous unbounded". Measured false in the desktop
+  // simulator 2026-08-23: one `info` at MTU 23 against a peer that stops
+  // confirming froze the activity task for 69.1 s, with no loop() iteration
+  // for 63 s of it (docs/tile-freshness.md, "The cap does not bound the
+  // freeze"). The cap is checked in poll()'s loop over *input* bytes, and one
+  // input byte -- the '\n' -- makes feed() run a whole command, which calls
+  // appendReply 23 times; neither appendReply nor flushReplies consults
+  // blocksSentThisPoll_. So this caps *commands* per poll(), not blocks, and
+  // the freeze is per command. A real bound has to be checked where the blocks
+  // are emitted.
   static constexpr int kMaxBlocksPerPoll = 2;
 
   // Appends one reply line (a '\n' is added), flushing first if it no longer

@@ -12,6 +12,7 @@
 #include "I18nKeys.h"
 #include "ReaderFontSizes.h"
 #include "SettingsList.h"
+#include "SettingsMigration.h"
 #include "fontIds.h"
 
 namespace {
@@ -87,6 +88,12 @@ void CrossPointSettings::toJson(JsonDocument& doc) const {
   doc["frontButtonConfirm"] = frontButtonConfirm;
   doc["frontButtonLeft"] = frontButtonLeft;
   doc["frontButtonRight"] = frontButtonRight;
+  // Not in SettingsList on purpose -- it has no Settings row, because a row that
+  // can lock the rider out of Settings must not exist. That also means the list
+  // loop above never writes it, so it is written by hand here or it is not
+  // written at all. It was not, until 2026-09-07: the panel came back unlocked
+  // from every sleep and reboot, which is exactly the case the flag exists for.
+  doc["touchLocked"] = touchLocked;
   // Map ladder state — owned by MapActivity's buttons, not by SettingsList.
   // One array element per MapRideMode, in enum order, so a mode added later
   // appends rather than renumbers.
@@ -99,6 +106,32 @@ void CrossPointSettings::toJson(JsonDocument& doc) const {
   }
   // Not in SettingsList (edited from the map's Pins list), so it is saved here.
   doc["mapPinsOffscreenMask"] = mapPinsOffscreenMask;
+#if defined(ENABLE_GROUP_MARKERS) && ENABLE_GROUP_MARKERS
+  // Not in SettingsList: three numbers a rider sets once, if ever, and three
+  // more rows in the Map category would push the ones they do use off the first
+  // screen. Edited on the card or over the console.
+  doc["mapGroupStaleMin"] = mapGroupStaleMin;
+  doc["mapGroupHideMin"] = mapGroupHideMin;
+  doc["mapGroupKeepDays"] = mapGroupKeepDays;
+#endif
+#if defined(ENABLE_LORA_MESH) && ENABLE_LORA_MESH
+  // Not in SettingsList either: the LoRa node is a bench feature gated out of
+  // every release build, and its three controls live on its own screen
+  // (Home > LoRa nodes) rather than in a rider's Settings list.
+  doc["loraMeshOn"] = loraMeshOn;
+  doc["loraBeaconSec"] = loraBeaconSec;
+  doc["loraNodeName"] = loraNodeName;
+#endif
+  // Sleep screen mode -- DynamicEnum in SettingsList, not Enum, because the menu
+  // offers only five of the seven stored modes (SettingsList.h, "Display"). The
+  // generic loop above skips a key-less valuePtr-less entry, so the full 0-6
+  // range is written here by hand, same reason as loraBeaconSec above.
+  doc["sleepScreen"] = sleepScreen;
+  doc["mapGnssPosition"] = mapGnssPosition;
+  doc["frontlightOn"] = frontlightOn;
+  doc["frontlightBrightness"] = frontlightBrightness;
+  doc["frontlightColorTemperature"] = frontlightColorTemperature;
+  doc["mapGnssLog"] = mapGnssLog;
   doc["mapHasLastFix"] = mapHasLastFix;
   doc["mapLastLatE7"] = mapLastLatE7;
   doc["mapLastLonE7"] = mapLastLonE7;
@@ -197,6 +230,11 @@ bool CrossPointSettings::fromJson(JsonVariantConst doc) {
       clamp(doc["frontButtonRight"] | (uint8_t)FRONT_HW_RIGHT, FRONT_BUTTON_HARDWARE_COUNT, FRONT_HW_RIGHT);
   validateFrontButtonMapping(s);
 
+  // Same reason as toJson(): no SettingsList entry, so no automatic load.
+  // Clamped to 0/1 rather than trusted -- this decides whether the device
+  // accepts touch at all, and a stray value must not leave it locked.
+  touchLocked = (doc["touchLocked"] | (uint8_t)0) != 0 ? 1 : 0;
+
   // Map ladder state — not in SettingsList, load manually. Everything is
   // clamped: these are three plain bytes in a file a user can open in a text
   // editor, and an out-of-range step would index off the end of a ladder
@@ -219,12 +257,145 @@ bool CrossPointSettings::fromJson(JsonVariantConst doc) {
   // Defaults to every bit set: a file written before this existed must behave the
   // way it did then, which is "the master decides for all of them".
   mapPinsOffscreenMask = doc["mapPinsOffscreenMask"] | (uint16_t)0xFFFF;
+#if defined(ENABLE_GROUP_MARKERS) && ENABLE_GROUP_MARKERS
+  mapGroupStaleMin = doc["mapGroupStaleMin"] | (uint8_t)5;
+  mapGroupHideMin = doc["mapGroupHideMin"] | (uint16_t)360;
+  // **A stored 30 is the old default, not a choice, so it is migrated.**
+  // Raising the default alone would have changed nothing on any device that
+  // has ever saved its settings -- and every one of them has, because the
+  // value is written on every save. The migration is safe precisely because
+  // this setting has no row in SettingsList and no console command: nothing
+  // a rider can touch could have produced a deliberate 30, so the only 30s
+  // in the field are the default that was replaced on 2026-10-23.
+  //
+  // Delete this once no card in use predates that date. It costs a comment
+  // and a comparison until then, and leaving it longer is cheaper than
+  // guessing which cards are old.
+  if (mapGroupHideMin == 30) mapGroupHideMin = 360;
+  mapGroupKeepDays = doc["mapGroupKeepDays"] | (uint8_t)14;
+  // **Settings written before the group layer stopped being called the team
+  // layer.** Renamed 2026-10-30 (parent CLAUDE.md, "Naming"): the code, the UI
+  // and the console all say group now, and the JSON keys went with them. A
+  // card written by any earlier build still carries the `mapTeam*` spelling,
+  // and without this every one of those riders would silently get the
+  // defaults back -- group markers on, peer logging on, their own track off.
+  //
+  // Old key wins only where the new one is absent, so a device that has saved
+  // once since the rename never reads the stale half.
+  //
+  // **This block is compiled only where ENABLE_GROUP_MARKERS is**, which is no
+  // release env (platformio.ini). A card that passes through a release build
+  // between two devel builds has its mapTeam* keys dropped by that build's
+  // first save, and arrives here with nothing to migrate. The directory move
+  // still happens; the three toggles go back to their defaults.
+  //
+  // **It is also one-way.** Rolling a device back to a pre-rename binary --
+  // the documented hang recovery -- finds the directory moved and these keys
+  // gone, and reads as a wiped group. Said in docs/group-markers.md too. `needsResave` makes the
+  // next save drop the old keys, which is what ends this block's life: delete
+  // it once no card in use predates 2026-10-30.
+  {
+    struct Renamed {
+      const char* oldKey;
+      const char* newKey;
+      uint8_t* dest;
+    };
+    const Renamed renamed[] = {
+        {"mapTeamMarkers", "mapGroupMarkers", &mapGroupMarkers},
+        {"mapTeamLogPeers", "mapGroupLogPeers", &mapGroupLogPeers},
+        {"mapTeamLogSelf", "mapGroupLogSelf", &mapGroupLogSelf},
+        {"mapTeamStaleMin", "mapGroupStaleMin", &mapGroupStaleMin},
+        {"mapTeamKeepDays", "mapGroupKeepDays", &mapGroupKeepDays},
+    };
+    for (const auto& r : renamed) {
+      const SettingsMigratedToggle m =
+          settingsMigrateToggle(!doc[r.newKey].isNull(), !doc[r.oldKey].isNull(), doc[r.oldKey] | *r.dest, *r.dest);
+      *r.dest = m.value;
+      if (m.adopted) needsResave = true;
+    }
+    // Not in the table above because it is a uint16_t, and because the 30 ->
+    // 360 migration right above has to run on a value that arrived under the
+    // old name too.
+    if (doc["mapGroupHideMin"].isNull() && !doc["mapTeamHideMin"].isNull()) {
+      mapGroupHideMin = doc["mapTeamHideMin"] | mapGroupHideMin;
+      if (mapGroupHideMin == 30) mapGroupHideMin = 360;
+      needsResave = true;
+    }
+  }
+#endif
+#if defined(ENABLE_LORA_MESH) && ENABLE_LORA_MESH
+  loraMeshOn = (doc["loraMeshOn"] | (uint8_t)0) ? 1 : 0;
+  loraBeaconSec = doc["loraBeaconSec"] | (uint16_t)0;
+  {
+    const char* name = doc["loraNodeName"].is<const char*>() ? doc["loraNodeName"].as<const char*>() : "";
+    strncpy(loraNodeName, name, sizeof(loraNodeName) - 1);
+    loraNodeName[sizeof(loraNodeName) - 1] = '\0';
+  }
+#endif
+  // Same reason as toJson(): DynamicEnum in SettingsList, so the generic loop
+  // above skips it. Clamped against the full SLEEP_SCREEN_MODE_COUNT, not the
+  // five the menu offers -- a settings.json a power user hand-edited to Custom
+  // still has to render as Custom (SleepActivity.cpp).
+  //
+  // Only LocationCustom is migrated, onto Location -- the mode that already
+  // shows the same "no fix yet" text instead of a cover image. It has never had
+  // an on-device setter (grep the tree: only the enum definition, this
+  // migration, and SleepActivity.cpp's switch case ever name it), so nothing
+  // legitimate is lost moving it.
+  //
+  // Custom is deliberately NOT migrated, even though the menu no longer offers
+  // picking it (SettingsList.h, "The menu offers five..."): unlike
+  // LocationCustom it DOES have a real setter,
+  // BmpViewerActivity::doSetSleepCover() ("set as sleep screen" on a BMP opened
+  // from the file browser), so a hand-edited or reader-era settings.json that
+  // already says Custom is honoured exactly as before -- same "hide the row,
+  // keep the field working" discipline this file uses everywhere else
+  // (`hiddenFromMenu` in SettingsList.h). That BMP-viewer path is itself
+  // unreachable today (no Home entry leads to the file browser, confirmed by
+  // grepping every `goToFileBrowser` caller; the old reader-era Library entry
+  // that reached it is already gone), but that is exactly the kind of "not
+  // reachable, but still correct for the stored field" case this project does
+  // not destroy on load. QuickResume is not retired at all -- it is kept as
+  // its own mode, because it is not the same thing as the independent timeout
+  // toggle below: that toggle only fires on an auto-sleep-from-timeout
+  // (main.cpp:2804-2807 guards it on `fromTimeout`), so a manual sleep (the
+  // sleep button, a deliberate press) needs this mode to get quick resume at
+  // all.
+  {
+    const uint8_t fieldDefault = sleepScreen;
+    uint8_t loadedSleepScreen = clamp(doc["sleepScreen"] | fieldDefault, SLEEP_SCREEN_MODE_COUNT, fieldDefault);
+    if (loadedSleepScreen == LOCATION_CUSTOM) {
+      loadedSleepScreen = LOCATION;
+      needsResave = true;
+    }
+    sleepScreen = loadedSleepScreen;
+  }
+  mapGnssPosition = doc["mapGnssPosition"] | (uint8_t)0;
+  frontlightOn = (doc["frontlightOn"] | (uint8_t)0) ? 1 : 0;
+  // Clamped, not trusted: this reaches the LEDC duty calculation, and the file
+  // is one a user can open in a text editor. 0 would also mean "on at nothing",
+  // so the floor is 1.
+  frontlightBrightness = doc["frontlightBrightness"] | (uint8_t)50;
+  if (frontlightBrightness < 1) frontlightBrightness = 1;
+  if (frontlightBrightness > 100) frontlightBrightness = 100;
+  // Same clamp discipline as frontlightBrightness above: this reaches the LEDC
+  // duty split, and the file is user-editable.
+  frontlightColorTemperature = doc["frontlightColorTemperature"] | (uint8_t)50;
+  if (frontlightColorTemperature > 100) frontlightColorTemperature = 100;
+  mapGnssLog = doc["mapGnssLog"] | (uint8_t)0;
   mapHasLastFix = doc["mapHasLastFix"] | false;
   mapLastLatE7 = doc["mapLastLatE7"] | 0;
   mapLastLonE7 = doc["mapLastLonE7"] | 0;
   // Masked, not clamped: a MapHeading is 0-15 and any bit pattern already
-  // fits once the top nibble is dropped, same mask BlePositionServer applies
-  // to the wire value.
+  // fits once the top nibble is dropped.
+  //
+  // This is the *only* mask on the path. onWriteIngest stores data[14] raw
+  // (BlePositionServer.cpp:454) and MapActivity writes riderHeading() into
+  // mapLastHeading unmasked, so a heading of 200 off the wire is persisted as
+  // 200 and only cleaned up here on the way back in. Verified 2026-08-23 in
+  // the desktop simulator; docs/map-follow.md, "Nothing validates a position
+  // packet". This comment used to claim BlePositionServer applies the same
+  // mask. It does not.
   mapLastHeading = (doc["mapLastHeading"] | (uint8_t)0) & 0x0F;
 
   // Reader font size — an actual point size since 1.5. Files written by 1.4 and

@@ -24,7 +24,7 @@ void PowerTelemetry::accrueClock() const {
   clockSinceMs_ = now;
 }
 
-void PowerTelemetry::onRefresh(Refresh kind, uint32_t busyMs) {
+void PowerTelemetry::onRefreshUs(Refresh kind, uint32_t busyUs, WindowSite site) {
   switch (kind) {
     case Refresh::Full:
       ++refreshFull_;
@@ -37,12 +37,29 @@ void PowerTelemetry::onRefresh(Refresh kind, uint32_t busyMs) {
       break;
     case Refresh::Window:
       ++refreshWindow_;
+      // Clamped rather than trusted: the enum crosses a library boundary
+      // (GfxRenderer hands it down from an activity), and an out-of-range value
+      // would write past the array instead of merely mislabelling a refresh.
+      if (site < WindowSite::Count) ++windowSite_[static_cast<uint8_t>(site)];
       break;
   }
-  panelBusyMs_ += busyMs;
+  busyUs_[static_cast<uint8_t>(kind)] += busyUs;
+  // panelBusyMs stays the sum it always was, so every script written against
+  // the existing column keeps reading the same number.
+  panelBusyMs_ += busyUs / 1000;
 }
 
-void PowerTelemetry::onPanelWait(uint32_t busyMs) { panelBusyMs_ += busyMs; }
+void PowerTelemetry::onPanelWaitUs(uint32_t busyUs) { panelBusyMs_ += busyUs / 1000; }
+
+void PowerTelemetry::onAsyncCompletedInline(uint32_t busyUs) {
+  ++asyncCompletedInline_;
+  // Billed to Fast, because that is the waveform that ran. It used to be
+  // billed at 0 ms on the theory that the wait would arrive later from
+  // waitRefreshComplete() -- but on a driver that never defers, the wait
+  // returns immediately and the time was simply lost from the log.
+  busyUs_[static_cast<uint8_t>(Refresh::Fast)] += busyUs;
+  panelBusyMs_ += busyUs / 1000;
+}
 
 void PowerTelemetry::onLoop(uint32_t busyMs) {
   ++loopIters_;
@@ -67,6 +84,12 @@ PowerTelemetry::Snapshot PowerTelemetry::snapshot() const {
   s.refreshFast = refreshFast_;
   s.refreshWindow = refreshWindow_;
   s.panelBusyMs = panelBusyMs_;
+  s.busyFullMs = static_cast<uint32_t>(busyUs_[static_cast<uint8_t>(Refresh::Full)] / 1000);
+  s.busyHalfMs = static_cast<uint32_t>(busyUs_[static_cast<uint8_t>(Refresh::Half)] / 1000);
+  s.busyFastMs = static_cast<uint32_t>(busyUs_[static_cast<uint8_t>(Refresh::Fast)] / 1000);
+  s.busyWindowMs = static_cast<uint32_t>(busyUs_[static_cast<uint8_t>(Refresh::Window)] / 1000);
+  for (uint8_t i = 0; i < static_cast<uint8_t>(WindowSite::Count); ++i) s.windowBySite[i] = windowSite_[i];
+  s.asyncCompletedInline = asyncCompletedInline_;
   s.loopIters = loopIters_;
   s.loopBusyMs = loopBusyMs_;
   s.loopMaxMs = loopMaxMs_;
@@ -82,6 +105,9 @@ void PowerTelemetry::reset() {
   refreshFast_ = 0;
   refreshWindow_ = 0;
   panelBusyMs_ = 0;
+  for (auto& us : busyUs_) us = 0;
+  for (auto& n : windowSite_) n = 0;
+  asyncCompletedInline_ = 0;
   loopIters_ = 0;
   loopBusyMs_ = 0;
   loopMaxMs_ = 0;

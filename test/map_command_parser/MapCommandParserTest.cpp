@@ -5,10 +5,13 @@
 
 #include <algorithm>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "MapCommandConsole.h"
 #include "MapCommandParser.h"
+#include "MapPointShards.h"
+#include "MapProjection.h"
 
 namespace {
 
@@ -98,6 +101,57 @@ TEST(MapCommandParser, PosOptionalTailBare) {
   EXPECT_EQ(cmd.speedKmh, 30);
 }
 
+TEST(MapCommandParser, PosCarriesTheTwoFixQualityClaims) {
+  const MapCommand cmd = parseMapCommand("pos 48.4372 17.0186 heading 4 acc 40 dirq 2");
+  ASSERT_EQ(cmd.type, MapCommandType::Pos);
+  EXPECT_EQ(cmd.heading, 4);
+  EXPECT_TRUE(cmd.hasAccuracy);
+  EXPECT_EQ(cmd.accuracyM, 40);
+  EXPECT_TRUE(cmd.hasDirQuality);
+  EXPECT_EQ(cmd.dirQuality, 2);
+
+  // Absent is absent, not zero: zero accuracy is the "unstated" sentinel and
+  // the caller has to be able to tell "said nothing" from "said 0".
+  const MapCommand bare = parseMapCommand("pos 48.4372 17.0186");
+  EXPECT_FALSE(bare.hasAccuracy);
+  EXPECT_FALSE(bare.hasDirQuality);
+
+  // Both are keyword-only. A bare tail value is still heading then speed, so a
+  // stray number cannot silently become an accuracy.
+  const MapCommand bareTail = parseMapCommand("pos 1 2 4 30");
+  EXPECT_FALSE(bareTail.hasAccuracy);
+  EXPECT_EQ(bareTail.heading, 4);
+  EXPECT_EQ(bareTail.speedKmh, 30);
+}
+
+TEST(MapCommandParser, PosRejectsQualityValuesTheWireCouldNotCarry) {
+  // Accuracy crosses BLE as a saturating byte, and dirq is two bits.
+  EXPECT_EQ(parseMapCommand("pos 1 2 acc 255").accuracyM, 255);
+  EXPECT_EQ(parseMapCommand("pos 1 2 acc 256").error, MapCommandError::OutOfRange);
+  EXPECT_EQ(parseMapCommand("pos 1 2 dirq 3").dirQuality, 3);
+  EXPECT_EQ(parseMapCommand("pos 1 2 dirq 4").error, MapCommandError::OutOfRange);
+  // Given twice is a mistake, not a last-one-wins.
+  EXPECT_EQ(parseMapCommand("pos 1 2 acc 5 acc 6").error, MapCommandError::BadArity);
+  EXPECT_EQ(parseMapCommand("pos 1 2 dirq 1 dirq 2").error, MapCommandError::BadArity);
+  // A keyword with no value behind it.
+  EXPECT_EQ(parseMapCommand("pos 1 2 acc").error, MapCommandError::BadArity);
+}
+
+TEST(MapCommandParser, PosStillFitsWhenEveryOptionalIsGiven) {
+  // The longest legal line, which is what kMaxTokens is sized for. One token
+  // more must be rejected rather than truncated away.
+  const MapCommand full = parseMapCommand("pos 48.4372 17.0186 heading 4 speed 30 alt 220 acc 12 dirq 1");
+  ASSERT_EQ(full.type, MapCommandType::Pos);
+  EXPECT_EQ(full.heading, 4);
+  EXPECT_EQ(full.speedKmh, 30);
+  EXPECT_EQ(full.altitudeM, 220);
+  EXPECT_EQ(full.accuracyM, 12);
+  EXPECT_EQ(full.dirQuality, 1);
+
+  EXPECT_NE(parseMapCommand("pos 48.4372 17.0186 heading 4 speed 30 alt 220 acc 12 dirq 1 9").error,
+            MapCommandError::None);
+}
+
 TEST(MapCommandParser, PosOptionalTailKeyworded) {
   const MapCommand cmd = parseMapCommand("pos 48.4372 17.0186 heading 4 speed 30");
   ASSERT_EQ(cmd.type, MapCommandType::Pos);
@@ -162,8 +216,12 @@ TEST(MapCommandParser, HeadingZoomMarker) {
 TEST(MapCommandParser, Modes) {
   EXPECT_EQ(parseMapCommand("mode ride").mode, MapRideMode::Ride);
   EXPECT_EQ(parseMapCommand("mode hike").mode, MapRideMode::Hike);
-  EXPECT_EQ(parseMapCommand("mode cycle").mode, MapRideMode::Cycle);
-  EXPECT_EQ(parseMapCommand("mode cycle").type, MapCommandType::Mode);
+  EXPECT_EQ(parseMapCommand("mode tourist").mode, MapRideMode::Tourist);
+  EXPECT_EQ(parseMapCommand("mode tourist").type, MapCommandType::Mode);
+  // `cycle` was slot 2's name until 2026-10-27 and is NOT kept as an alias:
+  // the mode it named was never built, so answering to it would keep the
+  // promise alive on the wire after the menu stopped making it.
+  EXPECT_EQ(parseMapCommand("mode cycle").error, MapCommandError::BadMode);
 }
 
 TEST(MapCommandParser, BareCommands) {
@@ -417,8 +475,8 @@ TEST(MapCommandConsole, TwoChannelsShareOneState) {
   EXPECT_TRUE(feedLine(serial, out, "zoom 4"));
   EXPECT_EQ(ble.state().zoomStep(), 4);
 
-  EXPECT_TRUE(feedLine(ble, out, "mode cycle"));
-  EXPECT_EQ(serial.state().mode(), MapRideMode::Cycle);
+  EXPECT_TRUE(feedLine(ble, out, "mode tourist"));
+  EXPECT_EQ(serial.state().mode(), MapRideMode::Tourist);
 
   // Half a line on each channel. Neither completes, so neither runs, and
   // the halves never form one command.
@@ -437,13 +495,13 @@ TEST(MapCommandConsole, LaddersPushedBackByTheActivityAreWhatInfoReports) {
   MapCommandConsole console(state);
   CollectingWriter out;
   EXPECT_TRUE(feedLine(console, out, "zoom 1"));
-  state.setLadders(/*zoomStep=*/4, /*markerStep=*/0, MapRideMode::Cycle);
+  state.setLadders(/*zoomStep=*/4, /*markerStep=*/0, MapRideMode::Tourist);
 
   out.lines.clear();
   EXPECT_FALSE(feedLine(console, out, "info"));
   EXPECT_NE(std::find(out.lines.begin(), out.lines.end(), "INFO zoom=4"), out.lines.end());
   EXPECT_NE(std::find(out.lines.begin(), out.lines.end(), "INFO marker=0"), out.lines.end());
-  EXPECT_NE(std::find(out.lines.begin(), out.lines.end(), "INFO mode=cycle"), out.lines.end());
+  EXPECT_NE(std::find(out.lines.begin(), out.lines.end(), "INFO mode=tourist"), out.lines.end());
 }
 
 TEST(MapCommandConsole, TilesCommandBeforeAnyResetReportsNone) {
@@ -680,6 +738,50 @@ TEST(MapCommandParser, SkipRejectsJunk) {
   EXPECT_EQ(errorOf("skip 256 1 1"), MapCommandError::OutOfRange);
 }
 
+TEST(MapCommandParser, PointsIsBare) {
+  EXPECT_EQ(parseMapCommand("points").type, MapCommandType::Points);
+  EXPECT_EQ(errorOf("points 1"), MapCommandError::BadArity);
+}
+
+TEST(MapCommandParser, GoneTakesAShardCoordinate) {
+  const MapCommand cmd = parseMapCommand("gone 562 354");
+  ASSERT_EQ(cmd.type, MapCommandType::Gone);
+  EXPECT_EQ(cmd.skipCol, 562u);
+  EXPECT_EQ(cmd.skipRow, 354u);
+}
+
+TEST(MapCommandParser, GoneRejectsJunk) {
+  EXPECT_EQ(errorOf("gone"), MapCommandError::BadArity);
+  EXPECT_EQ(errorOf("gone 562"), MapCommandError::BadArity);
+  EXPECT_EQ(errorOf("gone 562 354 extra"), MapCommandError::BadArity);
+  EXPECT_EQ(errorOf("gone x 354"), MapCommandError::BadNumber);
+}
+
+// Found missing in code review, 2026-09-13: every other coordinate-carrying
+// command bounds its numbers (skip's z <= 255, missing's offset, push's
+// count); gone had no bound at all. z10's grid is 1024x1024, so 1023 is the
+// highest legal coordinate.
+TEST(MapCommandParser, GoneRejectsOutOfRangeCoordinates) {
+  EXPECT_EQ(parseMapCommand("gone 1023 1023").type, MapCommandType::Gone);
+  EXPECT_EQ(errorOf("gone 1024 0"), MapCommandError::OutOfRange);
+  EXPECT_EQ(errorOf("gone 0 1024"), MapCommandError::OutOfRange);
+  EXPECT_EQ(errorOf("gone 4294967295 4294967295"), MapCommandError::OutOfRange);
+}
+
+// A point shard the phone cannot supply reuses `skip` with z10
+// (MapPointShards::kShardZoom) rather than a second word -- see
+// MapCommandParser.h, "A shard the phone cannot supply reuses `skip`". This
+// confirms the parser accepts z10 like any other zoom; MapActivity is what
+// tells the two conversations apart.
+TEST(MapCommandParser, SkipAtShardZoomParsesLikeAnyOtherZoom) {
+  const MapCommand cmd = parseMapCommand("skip 10 562 354 nosource");
+  ASSERT_EQ(cmd.type, MapCommandType::Skip);
+  EXPECT_EQ(cmd.skipZ, 10);
+  EXPECT_EQ(cmd.skipCol, 562u);
+  EXPECT_EQ(cmd.skipRow, 354u);
+  EXPECT_STREQ(cmd.skipReason, "nosource");
+}
+
 TEST(MapCommandConsole, SkipCountsAndNeverRedraws) {
   MapConsoleState state;
   MapCommandConsole console(state);
@@ -876,6 +978,36 @@ TEST(MapCommandConsole, InfoReportsTheTileFormatVersionOnlyWhenPushed) {
   // A supplier of tiles reads this before it pushes anything: a tile built to
   // another version passes CRC and is then refused on open.
   EXPECT_NE(std::find(out.lines.begin(), out.lines.end(), "INFO tile_fmt=2"), out.lines.end());
+}
+
+// A pre-trip sender reads `info` as its whole briefing -- there is no
+// NEED_TILES to carry `fmt` when the device is missing nothing -- so
+// chunk_payload stopped being a log curiosity and became a number that gets
+// acted on. `mtu - 8` was right only below MTU 515: at the 517 the Android app
+// negotiates it yields 509, which builds a 514-byte frame, over the Core spec's
+// 512-byte attribute cap (BUG-103). Found by tools/sim_push_test.py, 2026-09-02.
+TEST(MapCommandConsole, InfoReportsTheChunkPayloadTheContractStates) {
+  struct Case {
+    uint16_t mtu;
+    const char* expected;
+  };
+  // 3 bytes of ATT header and 5 of chunk header come off every write, and the
+  // 512-byte attribute cap binds above MTU 515.
+  const Case cases[] = {
+      {23, "INFO chunk_payload=15"},
+      {256, "INFO chunk_payload=248"},
+      {517, "INFO chunk_payload=507"},
+  };
+  for (const Case& c : cases) {
+    MapConsoleState state;
+    MapCommandConsole console(state);
+    CollectingWriter out;
+    static uint16_t mtu;
+    mtu = c.mtu;
+    state.setLinkMtuProvider(+[]() -> uint16_t { return mtu; });
+    feedLine(console, out, "info");
+    EXPECT_NE(std::find(out.lines.begin(), out.lines.end(), c.expected), out.lines.end()) << "at MTU " << c.mtu;
+  }
 }
 
 // Nothing behind the command is the normal state on a host test and on any
@@ -1242,6 +1374,90 @@ TEST(MapCommandConsole, CheckedOnlySettlesWhatWasListed) {
   EXPECT_EQ(out.lines[1], "INFO have_13_4482_2840=00000001");
 }
 
+// The failure half of the loop. The phone said the tile was stale, settled the
+// entry by answering, and then could not supply the replacement. Without the
+// re-arm the device sits on a copy it has itself identified as out of date,
+// with nothing in `have` to say so (T-2069, observed 2026-11-05).
+TEST(MapCommandConsole, ASkippedReplacementRearmsTheHeldTile) {
+  MapConsoleState state;
+  MapCommandConsole console(state);
+  CollectingWriter out;
+  HeldTilesStore held;
+  seedHeld(held, {{13, 4482, 2839, 0xABB60454u}, {13, 4482, 2840, 0x00000001u}});
+  state.setHeldTilesStore(&held);
+
+  feedLine(console, out, "have");
+  feedLine(console, out, "checked 2");
+  out.lines.clear();
+  ASSERT_EQ(held.pendingCount(), 0u);
+
+  feedLine(console, out, "skip 13 4482 2839 nosource");
+  out.lines.clear();
+
+  feedLine(console, out, "have");
+  ASSERT_EQ(out.lines.size(), 3u);
+  EXPECT_EQ(out.lines[0], "INFO have_total=1");
+  EXPECT_EQ(out.lines[1], "INFO have_13_4482_2839=abb60454");
+}
+
+// A skip that lands before the phone answers the listing it came out of. The
+// answer must not settle the entry straight back again -- that is the same bug
+// one round later.
+TEST(MapCommandConsole, ASkipDuringAListingSurvivesTheAnswer) {
+  MapConsoleState state;
+  MapCommandConsole console(state);
+  CollectingWriter out;
+  HeldTilesStore held;
+  seedHeld(held, {{13, 4482, 2839, 0xABB60454u}});
+  state.setHeldTilesStore(&held);
+
+  feedLine(console, out, "have");
+  feedLine(console, out, "skip 13 4482 2839 nosource");
+  feedLine(console, out, "checked 1");
+  out.lines.clear();
+
+  feedLine(console, out, "have");
+  ASSERT_EQ(out.lines.size(), 3u);
+  EXPECT_EQ(out.lines[0], "INFO have_total=1");
+  EXPECT_EQ(out.lines[1], "INFO have_13_4482_2839=abb60454");
+}
+
+// Every reason word means the same thing to this half: no new bytes landed.
+// The device cannot verify the phone's vocabulary and must not depend on it.
+TEST(MapCommandConsole, EverySkipReasonRearms) {
+  for (const char* line : {"skip 13 4482 2839 nosource", "skip 13 4482 2839 refused",
+                           "skip 13 4482 2839 fmt3", "skip 13 4482 2839 oldcopy",
+                           "skip 13 4482 2839 offline"}) {
+    MapConsoleState state;
+    MapCommandConsole console(state);
+    CollectingWriter out;
+    HeldTilesStore held;
+    seedHeld(held, {{13, 4482, 2839, 0xABB60454u}});
+    state.setHeldTilesStore(&held);
+
+    feedLine(console, out, "have");
+    feedLine(console, out, "checked 1");
+    ASSERT_EQ(held.pendingCount(), 0u) << line;
+    feedLine(console, out, line);
+    EXPECT_EQ(held.pendingCount(), 1u) << line;
+  }
+}
+
+// A skip for ground the device does not hold is the ordinary missing-tile case.
+// It must not invent an entry, or the store fills with tiles nobody has drawn.
+TEST(MapCommandConsole, ASkipForAnUnheldTileAddsNothing) {
+  MapConsoleState state;
+  MapCommandConsole console(state);
+  CollectingWriter out;
+  HeldTilesStore held;
+  seedHeld(held, {{13, 4482, 2839, 0xABB60454u}});
+  state.setHeldTilesStore(&held);
+
+  feedLine(console, out, "skip 13 9999 1 nosource");
+  EXPECT_EQ(held.size(), 1u);
+  EXPECT_EQ(held.pendingCount(), 1u);
+}
+
 // "Cannot answer" must never read as "everything is current" -- the same
 // distinction `tiles=none` and `missing=unavailable` already make.
 TEST(MapCommandConsole, HaveSaysNoneBeforeAnythingIsDrawn) {
@@ -1323,6 +1539,189 @@ TEST(MapCommandConsole, FakeSaysUnavailableWithNoSink) {
   ASSERT_EQ(out.lines.size(), 2u);
   EXPECT_EQ(out.lines[0], "INFO fake=unavailable");
   EXPECT_EQ(out.lines[1], "OK");
+}
+
+namespace {
+
+// held is whichever (col, row) pairs the fake card has a shard for. A linear
+// scan is fine: writePoints() never asks about more than 9 shards in one
+// command (MapPointShards::Range::count()).
+class FakePointShards final : public IMapPointShardsSource {
+ public:
+  bool hasPointShard(uint32_t col, uint32_t row) const override {
+    return std::find(held.begin(), held.end(), std::make_pair(col, row)) != held.end();
+  }
+  std::vector<std::pair<uint32_t, uint32_t>> held;
+};
+
+}  // namespace
+
+TEST(MapCommandConsole, PointsSaysUnavailableWithNoSource) {
+  MapConsoleState state;
+  MapCommandConsole console(state);
+  CollectingWriter out;
+
+  // Same distinction `missing=unavailable` makes: a build that never wired
+  // this must not read as a device with zero shards.
+  feedLine(console, out, "points");
+  ASSERT_EQ(out.lines.size(), 2u);
+  EXPECT_EQ(out.lines[0], "INFO points=unavailable");
+  EXPECT_EQ(out.lines[1], "OK");
+}
+
+TEST(MapCommandConsole, PointsRefusesWithNoPosition) {
+  MapConsoleState state;
+  MapCommandConsole console(state);
+  CollectingWriter out;
+  FakePointShards shards;
+  state.setPointShardsSource(&shards);
+
+  // No `pos` and no BLE fix landed yet -- there is nothing to centre a shard
+  // range on, the same refusal the Nearby menu gives with no fix.
+  feedLine(console, out, "points");
+  ASSERT_EQ(out.lines.size(), 2u);
+  EXPECT_EQ(out.lines[0], "INFO points=no_position");
+  EXPECT_EQ(out.lines[1], "OK");
+}
+
+TEST(MapCommandConsole, PointsListsTheShardRangeAroundTheFix) {
+  MapConsoleState state;
+  MapCommandConsole console(state);
+  CollectingWriter out;
+  FakePointShards shards;
+  state.setPointShardsSource(&shards);
+
+  // Trnava, roughly -- the same fix a `pos` command or a BLE position report
+  // would carry.
+  const double lat = 48.377;
+  const double lon = 17.588;
+  double mercX = 0.0;
+  double mercY = 0.0;
+  MapProjection::lonLatToMerc(lat, lon, mercX, mercY);
+  const MapPointShards::Range range = MapPointShards::rangeForRadius(mercX, mercY, MapPointShards::kSearchRadiusM);
+  ASSERT_LE(range.count(), 9u);  // the whole point of z10 (MapPointShards.h)
+
+  // The card holds the north-west shard of the range and nothing else.
+  shards.held.push_back({range.col0, range.row0});
+
+  char posLine[64];
+  snprintf(posLine, sizeof(posLine), "pos %f %f", lat, lon);
+  feedLine(console, out, posLine);
+  out.lines.clear();
+
+  feedLine(console, out, "points");
+  ASSERT_EQ(out.lines.size(), range.count() + 2);  // point_total, one line per shard, OK
+  char totalLine[32];
+  snprintf(totalLine, sizeof(totalLine), "INFO point_total=%lu", static_cast<unsigned long>(range.count()));
+  EXPECT_EQ(out.lines[0], totalLine);
+
+  size_t index = 1;
+  for (uint32_t col = range.col0; col <= range.col1; ++col) {
+    for (uint32_t row = range.row0; row <= range.row1; ++row) {
+      char line[64];
+      const bool isHeld = (col == range.col0 && row == range.row0);
+      snprintf(line, sizeof(line), "INFO point_%lu_%lu=%s", static_cast<unsigned long>(col),
+               static_cast<unsigned long>(row), isHeld ? "have" : "absent");
+      EXPECT_EQ(out.lines[index], line);
+      ++index;
+    }
+  }
+  EXPECT_EQ(out.lines[index], "OK");
+}
+
+namespace {
+
+class FakeGoneObserver final : public IMapGoneObserver {
+ public:
+  void onPointShardGone(uint32_t col, uint32_t row) override {
+    ++calls;
+    lastCol = col;
+    lastRow = row;
+  }
+  int calls = 0;
+  uint32_t lastCol = 0;
+  uint32_t lastRow = 0;
+};
+
+class FakePointSkipObserver final : public IMapPointSkipObserver {
+ public:
+  void onPointShardSkipped(uint32_t col, uint32_t row, const char* reason) override {
+    ++calls;
+    lastCol = col;
+    lastRow = row;
+    lastReason = reason;
+  }
+  int calls = 0;
+  uint32_t lastCol = 0;
+  uint32_t lastRow = 0;
+  std::string lastReason;
+};
+
+}  // namespace
+
+// Regression for the code review finding, 2026-09-13: a z10 skip (the point
+// layer's reused wire word) must never reach the tile tally or
+// skipObserver_ -- TileSyncActivity's/MapActivity's tile-skip handlers do
+// not check z, so it would have been counted as a skipped z10 *tile* and
+// corrupted MissingTilesStore/autoSyncPending_ on a real device.
+TEST(MapCommandConsole, PointShardSkipNeverReachesTheTileTally) {
+  MapConsoleState state;
+  MapCommandConsole console(state);
+  CollectingWriter out;
+  FakePointSkipObserver pointSkip;
+  state.setPointSkipObserver(&pointSkip);
+
+  EXPECT_FALSE(feedLine(console, out, "skip 10 561 353 nosource"));
+  ASSERT_EQ(out.lines.size(), 1u);
+  EXPECT_EQ(out.lines[0], "OK");  // write-only, same shape as `gone`/`push`
+
+  // The tile tally and the tile observer must be completely untouched.
+  EXPECT_EQ(state.skips().count, 0u);
+
+  EXPECT_EQ(pointSkip.calls, 1);
+  EXPECT_EQ(pointSkip.lastCol, 561u);
+  EXPECT_EQ(pointSkip.lastRow, 353u);
+  EXPECT_EQ(pointSkip.lastReason, "nosource");
+}
+
+TEST(MapCommandConsole, PointShardSkipWithNoObserverStillAnswersOk) {
+  MapConsoleState state;
+  MapCommandConsole console(state);
+  CollectingWriter out;
+
+  feedLine(console, out, "skip 10 561 353 nosource");
+  ASSERT_EQ(out.lines.size(), 1u);
+  EXPECT_EQ(out.lines[0], "OK");
+  EXPECT_EQ(state.skips().count, 0u);
+}
+
+// T-561, decision 3: `gone` reaches the observer, same distinction
+// `missing=unavailable` makes when no source is wired.
+TEST(MapCommandConsole, GoneSaysUnavailableWithNoObserver) {
+  MapConsoleState state;
+  MapCommandConsole console(state);
+  CollectingWriter out;
+
+  feedLine(console, out, "gone 562 354");
+  ASSERT_EQ(out.lines.size(), 2u);
+  EXPECT_EQ(out.lines[0], "INFO gone=unavailable");
+  EXPECT_EQ(out.lines[1], "OK");
+}
+
+TEST(MapCommandConsole, GoneReachesTheObserverBeforeTheOk) {
+  MapConsoleState state;
+  MapCommandConsole console(state);
+  CollectingWriter out;
+  FakeGoneObserver observer;
+  state.setGoneObserver(&observer);
+
+  feedLine(console, out, "gone 562 354");
+  EXPECT_EQ(observer.calls, 1);
+  EXPECT_EQ(observer.lastCol, 562u);
+  EXPECT_EQ(observer.lastRow, 354u);
+  // Write-only, same shape as `push`: no INFO line, just the OK.
+  ASSERT_EQ(out.lines.size(), 1u);
+  EXPECT_EQ(out.lines[0], "OK");
 }
 
 TEST(MapCommandConsole, StaleAndCheckedReachTheObserver) {
@@ -1442,4 +1841,139 @@ TEST(StaleTilesList, StaysBoundedAndAllocatesNothing) {
   // The oldest are kept: what is on screen now was added first this round.
   EXPECT_TRUE(list.contains(13, 0, 0));
   EXPECT_FALSE(list.contains(13, StaleTilesList::kMaxEntries + 5, 0));
+}
+
+// ---------------------------------------------------------------- push
+
+namespace {
+
+struct RecordingPushObserver final : IMapPushObserver {
+  std::vector<uint16_t> announced;
+  void onPushAnnounced(uint16_t count) override {
+    announced.push_back(count);
+    g_events.emplace_back("push:" + std::to_string(count));
+  }
+};
+
+}  // namespace
+
+TEST(MapCommandParser, PushTakesOneCount) {
+  const MapCommand cmd = parseMapCommand("push 55");
+  ASSERT_EQ(cmd.type, MapCommandType::Push);
+  EXPECT_EQ(cmd.pushCount, 55u);
+}
+
+// Zero is a phone-side bug, not a no-op: answering OK to it would leave a
+// screen showing a run that can never move.
+TEST(MapCommandParser, PushRejectsZeroWrongArityAndGarbage) {
+  EXPECT_EQ(errorOf("push 0"), MapCommandError::OutOfRange);
+  EXPECT_EQ(errorOf("push"), MapCommandError::BadArity);
+  EXPECT_EQ(errorOf("push 12 13"), MapCommandError::BadArity);
+  EXPECT_EQ(errorOf("push fifty"), MapCommandError::BadNumber);
+  EXPECT_EQ(errorOf("push -3"), MapCommandError::BadNumber);
+}
+
+// The cap is an order of magnitude past any real batch (a 40 km box around
+// Barcelona is 77 tiles), so it exists to keep a garbage number off the panel.
+TEST(MapCommandParser, PushIsBounded) {
+  EXPECT_EQ(parseMapCommand("push 4096").type, MapCommandType::Push);
+  EXPECT_EQ(errorOf("push 4097"), MapCommandError::OutOfRange);
+}
+
+// The observer is called before the terminating OK: the phone sends its first
+// begin frame off the back of that OK, so the screen has to have the batch on
+// its books by then.
+TEST(MapCommandConsole, PushReachesTheObserverBeforeTheOk) {
+  MapConsoleState state;
+  MapCommandConsole console(state);
+  CollectingWriter out;
+  RecordingPushObserver observer;
+  state.setPushObserver(&observer);
+
+  g_events.clear();
+  feedLine(console, out, "push 55");
+
+  ASSERT_EQ(observer.announced.size(), 1u);
+  EXPECT_EQ(observer.announced[0], 55u);
+  ASSERT_EQ(out.lines.size(), 1u);
+  EXPECT_EQ(out.lines[0], "OK");
+  ASSERT_EQ(g_events.size(), 2u);
+  EXPECT_EQ(g_events[0], "push:55");
+  EXPECT_EQ(g_events[1], "reply:OK");
+}
+
+// A screen that cannot count a batch must not answer like one that counted it.
+// The map screen is exactly this case, and the phone is about to spend tens of
+// minutes of radio on the answer.
+TEST(MapCommandConsole, PushSaysUnavailableWithNoObserver) {
+  MapConsoleState state;
+  MapCommandConsole console(state);
+  CollectingWriter out;
+
+  feedLine(console, out, "push 55");
+  ASSERT_EQ(out.lines.size(), 2u);
+  EXPECT_EQ(out.lines[0], "INFO push=unavailable");
+  EXPECT_EQ(out.lines[1], "OK");
+}
+
+// Which screen is up. Omitted when nothing set it, so a phone reads a missing
+// line as "this firmware cannot say" -- which an older build genuinely is --
+// and never as either screen.
+TEST(MapCommandConsole, InfoReportsTheScreenOnlyWhenSet) {
+  MapConsoleState state;
+  MapCommandConsole console(state);
+  CollectingWriter out;
+
+  feedLine(console, out, "info");
+  EXPECT_EQ(std::count_if(out.lines.begin(), out.lines.end(),
+                          [](const std::string& l) { return l.rfind("INFO screen=", 0) == 0; }),
+            0);
+
+  out.lines.clear();
+  state.setScreenName("sync");
+  feedLine(console, out, "info");
+  EXPECT_NE(std::find(out.lines.begin(), out.lines.end(), "INFO screen=sync"), out.lines.end());
+
+  out.lines.clear();
+  state.setScreenName("map");
+  feedLine(console, out, "info");
+  EXPECT_NE(std::find(out.lines.begin(), out.lines.end(), "INFO screen=map"), out.lines.end());
+}
+
+// Regression for the code review finding, 2026-09-13: setLastKnownPosition()
+// (TileSyncActivity's askAboutPoints(), seeding from the rider's persisted
+// fix) must not make `info` hand out that coordinate over an unauthenticated
+// channel on a screen meant for preparing at home. `pos=1` still says a
+// position is set -- that is what pointShardRange() needs believed -- but
+// lat/lon themselves are withheld.
+TEST(MapCommandConsole, InfoWithholdsLatLonForAPersistedFixSeed) {
+  MapConsoleState state;
+  MapCommandConsole console(state);
+  CollectingWriter out;
+
+  state.setLastKnownPosition(483770000, 175880000);
+  feedLine(console, out, "info");
+  EXPECT_NE(std::find(out.lines.begin(), out.lines.end(), std::string("INFO pos=1")), out.lines.end());
+  EXPECT_EQ(std::count_if(out.lines.begin(), out.lines.end(),
+                          [](const std::string& l) { return l.rfind("INFO lat=", 0) == 0; }),
+            0);
+  EXPECT_EQ(std::count_if(out.lines.begin(), out.lines.end(),
+                          [](const std::string& l) { return l.rfind("INFO lon=", 0) == 0; }),
+            0);
+}
+
+// A live `pos` line is not a leak -- it is the rider's own screen reporting
+// itself -- and it must keep working exactly as before, including after a
+// persisted seed: a real fix landing later must un-withhold lat/lon.
+TEST(MapCommandConsole, InfoReportsLatLonForALivePosCommand) {
+  MapConsoleState state;
+  MapCommandConsole console(state);
+  CollectingWriter out;
+
+  state.setLastKnownPosition(483770000, 175880000);
+  feedLine(console, out, "pos 48.4372 17.0186");
+  out.lines.clear();
+  feedLine(console, out, "info");
+  EXPECT_NE(std::find(out.lines.begin(), out.lines.end(), std::string("INFO lat=48.4372000")), out.lines.end());
+  EXPECT_NE(std::find(out.lines.begin(), out.lines.end(), std::string("INFO lon=17.0186000")), out.lines.end());
 }

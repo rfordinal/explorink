@@ -196,6 +196,26 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
 
   enum TOUCH_READER_CONTROLS { TOUCH_READER_OFF = 0, TOUCH_READER_ON = 1, TOUCH_READER_CONTROLS_COUNT };
 
+  // What a touch panel is allowed to do. Only offered on boards that have one.
+  //
+  // ANYWHERE is what a touch board did before this setting existed: no hint
+  // boxes are drawn and every list row, gesture and swipe is live. BUTTONS
+  // draws the same six hint boxes an X4 draws and makes *only* those boxes
+  // touchable -- the rest of the glass is dead, so the panel can be held,
+  // wiped or rained on without the UI moving.
+  //
+  // Only BUTTONS draws the boxes. Their presence is the whole indication of
+  // which mode is on, which matters on a board whose only other feedback would
+  // be tapping something and watching for nothing to happen.
+  //
+  // **DISABLED is an EFFECTIVE mode, never a stored one.** It is what
+  // TouchPolicy reports while `touchLocked` is set, and it is deliberately not
+  // offered in Settings: a rider who picked it there could not reach Settings
+  // again to undo it, and on an X4 Pro -- whose Back and Confirm both come from
+  // touch -- that is a device with no working input at all. The lock is reached
+  // only from a gesture that can also undo it.
+  enum TOUCH_MODE { TOUCH_ANYWHERE = 0, TOUCH_BUTTONS_ONLY = 1, TOUCH_DISABLED = 2, TOUCH_MODE_COUNT };
+
   enum QUICK_RESUME_SLEEP_SCREEN {
     QUICK_RESUME_NEVER = 0,
     QUICK_RESUME_AFTER_TIMEOUT = 1,
@@ -283,6 +303,51 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   // IS a Settings-screen toggle, so the generic toJson/fromJson loop carries
   // it and nothing here has to.
   uint8_t mapAutoSyncTiles = 0;
+  // Take the map's position from a receiver on the device instead of from the
+  // phone, on a board that has one (GnssAccess.h). Off by default, and off is
+  // what every shipping device does today: the X4 and the X4 Pro have no
+  // receiver at all, so on those this field can only ever be 0 and the code
+  // that reads it is not even compiled in.
+  //
+  // In SettingsList (category Map) since 2026-09-03, behind ENABLE_GNSS_CMD so
+  // the row is compiled in only where a receiver exists -- the board condition
+  // the earlier version of this comment asked for. It stays reachable from the
+  // host too (CMD:SETTING mapGnssPosition 1, main.cpp).
+  //
+  // **It needs the row because it persists.** Left at 0 by a test, it survives
+  // every power cycle, and with no screen and no boot log naming it the
+  // symptom -- a map that draws no position -- is indistinguishable from dead
+  // hardware. That is not hypothetical: it was reported as a GNSS regression on
+  // 2026-09-03 and cost a device session
+  // (../docs/gnss-to-map-plan.md, "And it was reported as a GNSS regression").
+  uint8_t mapGnssPosition = 0;
+  // Write one CSV row per accepted GNSS fix to /explorink/gnss.csv (GnssLog.h).
+  // Off by default and it must stay that way: the file is a **track log**, not
+  // a single point, so on a lost or stolen device it is a record of where the
+  // rider went. Only exists on a build with a receiver.
+  //
+  // In SettingsList (category Map) since 2026-09-04, behind ENABLE_GNSS_CMD,
+  // beside mapGnssPosition. Until then it needed a USB cable and CMD:SETTING,
+  // so a rider could not record a walk without one -- which is what the row
+  // fixes. **Reachable is not the same as on**: the default stays 0, and the
+  // row's label says "track" rather than "log" so that switching it on tells
+  // the rider what it writes.
+  uint8_t mapGnssLog = 0;
+  // How long the satellite wait screen stands there before it opens the map
+  // anyway, as an index into the row's own values: 0 no limit, 1 two minutes,
+  // 2 five minutes, 3 ten minutes (SettingsList.h, GnssAcquireActivity.h).
+  //
+  // **Five minutes by default, and the default matters more than the value.**
+  // A ride on 2026-09-01 took 526 s to first fix and a walk on 2026-09-04 never
+  // got one, so a screen with no limit is a screen that can hold a rider out of
+  // their own map indefinitely. The map is useful without a fix -- it draws from
+  // the persisted last position and the receiver keeps searching behind it --
+  // so the wait is a courtesy, not a gate.
+  //
+  // "No limit" stays offered because somebody standing still watching the sky
+  // fill is exactly who this screen was built for, and a timeout would cut them
+  // off mid-observation.
+  uint8_t mapGnssWaitLimit = 2;
   // Edge markers for pins outside the viewport: a direction arrow and the
   // distance, drawn where the bearing ray leaves the screen
   // (MapActivity::drawPins(), ../docs/pins.md). Pins *inside* the viewport are
@@ -309,6 +374,84 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   // every older build skips as an unknown version and would cost a rider their
   // pins (docs/pins.md, "Reading, and damage").
   uint16_t mapPinsOffscreenMask = 0xFFFF;
+#if defined(ENABLE_GROUP_MARKERS) && ENABLE_GROUP_MARKERS
+  // ## Group markers (../../docs/group-markers.md)
+  //
+  // Whether other riders' dots are drawn at all. On by default *and* free when
+  // nobody is approved: with an empty roster the layer reads nothing and draws
+  // nothing, so a rider who does not ride in a group never pays for it.
+  uint8_t mapGroupMarkers = 1;
+  // **Two switches, because it is two kinds of data.** A member's position is
+  // theirs, sent to us on purpose; the rider's own trace is a record of where
+  // *they* went, on a card that is lost with the device. So the group's rows are
+  // on by default (the feature does not work without them) and the rider's own
+  // are off until they say otherwise, which is the same call GNSS track logging
+  // made for the same reason (mapGnssLog above).
+  uint8_t mapGroupLogPeers = 1;
+  uint8_t mapGroupLogSelf = 0;
+  // Minutes before a member's marker is drawn as stale (dithered head) and
+  // minutes before it is not drawn at all. 0 hides nothing -- a last known
+  // position kept on the panel forever is a legitimate choice for a search.
+  //
+  // A position whose age cannot be known is never hidden by these, whatever they
+  // are set to (GroupFix.h): every X4 is a device with no clock, and hiding what
+  // it cannot date would empty the panel at exactly the wrong moment.
+  //
+  // **Hide raised from 30 minutes to six hours on 2026-10-23**, maintainer's
+  // call, after watching it on the bench: two boards sat idle for two hours
+  // and the marker was simply gone, while the LoRa node list still reported
+  // the same board heard 223 seconds ago. Two surfaces on one device saying
+  // opposite things about one member, because they answer different questions
+  // -- heard, versus known to be somewhere -- and the map had no way to say
+  // which.
+  //
+  // Six hours is a walking day's worth of patience. A two-hour-old position
+  // is still the best lead anybody has about where a companion went, and
+  // drawing it dithered with `2h` under it says exactly that; drawing nothing
+  // says "no such person", which is a worse answer to the same question. The
+  // stale threshold is untouched at five minutes, so everything past that is
+  // visibly old rather than quietly trusted.
+  //
+  // `uint16_t` because six hours is 360 minutes and does not fit a byte. The
+  // settings file is JSON, so the width costs nothing on the card.
+  uint8_t mapGroupStaleMin = 5;
+  uint16_t mapGroupHideMin = 360;
+  // Days of black box kept on the card. Rotation deletes whole day files, so the
+  // oldest evidence goes first and a file a laptop is reading never changes
+  // under it (GroupFiles.h).
+  uint8_t mapGroupKeepDays = 14;
+#endif
+#if defined(ENABLE_LORA_MESH) && ENABLE_LORA_MESH
+  // ## The LoRa mesh node (../docs/lora-mesh.md)
+  //
+  // Whether the node comes up with the device. **Off by default**, and it is
+  // the rider's switch rather than a default because it costs: a listening
+  // SX1262 draws 5.4 mA continuously, and on this board the radio's power rail
+  // is shared with the GNSS receiver, so there is no way to pay for one and not
+  // the other (../docs/lora-bringup.md, ../../docs/lora.md constraint 2).
+  //
+  // Persisted because the alternative is worse: a rider who turned the radio on
+  // for a ride would have to turn it on again at every boot, and a group
+  // feature that silently stops after a battery change is a group feature
+  // nobody trusts.
+  uint8_t loraMeshOn = 0;
+  // Seconds between automatic adverts, 0 = never. **Off by default and a
+  // separate switch from the one above**, because they are different consent:
+  // listening tells nobody anything, while an advert is a plaintext broadcast
+  // of this device's name and position to anyone in range
+  // (../../docs/lora.md, "Security of the mesh channel").
+  //
+  // Refused below 70 s rather than clamped -- see kMeshBeaconMinSec in
+  // main.cpp for where that number comes from.
+  uint16_t loraBeaconSec = 0;
+  // What our advert calls us. Empty means "derive it from the public key at
+  // startup", which is what makes two boards on one bench distinguishable
+  // without anybody naming them.
+  //
+  // Longer than a group acronym on purpose: this is what another MeshCore node
+  // shows in a contact list, where two letters mean nothing.
+  char loraNodeName[21] = "";
+#endif
   // The GPS/tile/BLE readout in the map's top-left corner. Off by default: it
   // is diagnostic text, not something a rider needs on screen. Toggled from
   // the Settings screen (category Map) or live from the map's own menu
@@ -322,6 +465,21 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   uint8_t mapRotationMode = MAP_ROTATION_HEADING_UP;
   uint8_t mapHeadingMode = MAP_HEADING_AUTO;
   uint8_t mapTileFreshnessMode = MAP_TILE_FRESHNESS_OFF;
+  // Whether the device uses the point layer at all: the .tip shards on the card,
+  // the marks they draw, and the `Nearby` menu over them
+  // (../../docs/point-layer-lifecycle.md, decision 2). One switch for the whole
+  // layer, not one per category -- which categories are drawn is a view the map
+  // menu owns and it does not survive a reboot (docs/nearby-menu.md).
+  //
+  // **On by default, and that does not spend data.** When a shard is fetched is
+  // mapTileFreshnessMode's question, and that one defaults to Off; reading a
+  // shard the card already holds costs card time and no data at all. So this
+  // toggle answers "does this device deal in points", nothing else.
+  //
+  // Off dims the `Nearby` row rather than removing it (MapActivity::openMenu()):
+  // a row that vanished reads as a firmware that lost a feature, a dimmed one
+  // reads as a switch somebody turned off, which is the truth.
+  uint8_t mapPointsEnabled = 1;
   // Reader font settings
   uint8_t fontFamily = NOTOSERIF;
   // Point size of the reader font. Only sizes the active family actually ships
@@ -360,6 +518,30 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   uint8_t uiTheme = LYRA;
   // Sunlight fading compensation
   uint8_t fadingFix = 0;
+  // Frontlight state, persisted so the light comes back the way the rider left
+  // it. Two fields rather than one brightness: turning the light off must not
+  // forget the level it was at, and a level of 0 would.
+  //
+  // frontlightBrightness has a Settings row, behind FREEINK_CAP_FRONTLIGHT
+  // (SettingsList.h) -- a capability and not a board name, so it compiles in for
+  // the X4 Pro as well as the T5 S3 Pro without anything here naming either.
+  // frontlightOn has no row on purpose: off is a state the key holds produce,
+  // and storing it as a value would lose the level the rider picked.
+  //
+  // Both fields are serialised by hand in CrossPointSettings.cpp rather than by
+  // the generic loop, which is why the row carries no JSON key: two writers for
+  // one field would fight.
+  uint8_t frontlightOn = 0;
+  uint8_t frontlightBrightness = 50;
+  // Warm/cool mix for boards with a two-channel frontlight (FREEINK_CAP_WARMLIGHT,
+  // e.g. X4 Pro): 0 = fully cool, 100 = fully warm, 50 = neutral. Meaningless and
+  // unused on single-channel boards -- FrontlightManager::setColorTemperature()
+  // is a no-op there, so the row is gated out at SettingsList.h rather than kept
+  // in sync with a fact this field can't hold on that hardware.
+  //
+  // Serialised by hand alongside frontlightOn/frontlightBrightness for the same
+  // reason: it has no JSON key of its own in SettingsList.h.
+  uint8_t frontlightColorTemperature = 50;
   // Power button return from footnotes (1 = enabled, 0 = disabled)
   uint8_t pwrBtnFootnoteBack = 1;
   // Use book's embedded CSS styles for EPUB rendering (1 = enabled, 0 = disabled)
@@ -384,6 +566,24 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   uint8_t tiltPageTurn = TILT_OFF;
   // Touch screen reader zones/gestures on boards with a touch controller.
   uint8_t touchReaderControls = TOUCH_READER_ON;
+  // Touch policy on boards with a touch controller: ANYWHERE or BUTTONS_ONLY
+  // only. Defaults to ANYWHERE so an existing device behaves exactly as it did
+  // before the setting. Never DISABLED -- see TOUCH_MODE above.
+  uint8_t touchMode = TOUCH_ANYWHERE;
+  // Whether the panel is locked right now. Its own flag rather than a third
+  // value of touchMode, for two reasons. The Settings row would otherwise have
+  // to offer a value that can lock the rider out of Settings; and a stored value
+  // outside the row's own list is an out-of-bounds read in the settings screen
+  // (SettingsActivity.cpp, the enumValues[value] on the valuePtr path).
+  //
+  // Persisted, so a device that was locked when it slept wakes up locked -- the
+  // rider put it in a bag, and coming back unlocked would be a surprise. The
+  // preference underneath survives, so unlocking needs nothing remembered.
+  //
+  // **Written by hand in toJson/fromJson**, because it has no SettingsList entry
+  // and that list is what drives serialisation. Adding a field here and stopping
+  // is how it silently did not persist at all until 2026-09-07.
+  uint8_t touchLocked = 0;
   // Language setting (Language enum index, default 0 = EN)
   uint8_t language = 0;
   // Quick Resume: keep current content visible with moon icon instead of showing a static sleep screen.

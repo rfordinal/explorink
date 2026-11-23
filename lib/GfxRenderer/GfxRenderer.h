@@ -2,6 +2,13 @@
 
 #include <EpdFontFamily.h>
 #include <HalDisplay.h>
+// WindowSite is used directly below (displayBufferWindow's default arg) --
+// include it explicitly rather than relying on HalDisplay.h to pull it in
+// transitively. The simulator swaps in its own HalDisplay.h (explorink-
+// simulator replaces lib/hal/ wholesale, see platformio.ini's [env:simulator]
+// comment), which doesn't need PowerTelemetry for its own API and so doesn't
+// include it -- breaking this file's build there until this line existed.
+#include <PowerTelemetry.h>
 
 namespace BidiUtils {
 // Paragraph base direction for the Unicode BiDi algorithm (UAX#9).
@@ -212,7 +219,13 @@ class GfxRenderer {
   // The driver promotes a window in that state to a full-frame HALF refresh
   // (~1720 ms) which wipes every grey on the panel — always let
   // GrayscaleFrame finish its cleanup first. See docs/eink-grayscale.md.
-  bool displayBufferWindow(int x, int y, int width, int height) const;
+  //
+  // `site` names the caller for the refresh log, so a marker move stays
+  // separable from the debug overlay's timer, a status strip and closing
+  // chrome. One merged counter is why the 2026-09-07 walk's 2,608 window
+  // requests could not be read (T-277).
+  bool displayBufferWindow(int x, int y, int width, int height,
+                           PowerTelemetry::WindowSite site = PowerTelemetry::WindowSite::Other) const;
   void invertScreen() const;
   void clearScreen(uint8_t color = 0xFF) const;
   void getOrientedViewableTRBL(int* outTop, int* outRight, int* outBottom, int* outLeft) const;
@@ -244,6 +257,29 @@ class GfxRenderer {
 
   // Drawing
   void drawPixel(int x, int y, bool state = true) const;
+
+  // The inverse of drawPixel: is this logical pixel currently black?
+  //
+  // Added for the map's label placer, which picks where a name goes by how much
+  // ink each candidate position would cover (IMapCanvas::inkCoverage). That is a
+  // question about the finished frame, and the framebuffer is the only place the
+  // finished frame exists -- re-deriving it would mean a second pass over the
+  // roads layer off the SD card.
+  //
+  // Same rotation and the same bounds test as drawPixel, so a pixel written at
+  // (x, y) reads back at (x, y) in every orientation. Out of range reads false
+  // and does NOT log: this is called tens of thousands of times per frame and a
+  // clipped box is normal here, unlike a clipped write.
+  //
+  // False when there is no framebuffer to read, which callers must not confuse
+  // with white -- readbackAvailable() is the question to ask first.
+  bool isPixelInked(int x, int y) const;
+
+  // Whether isPixelInked() can answer at all. False while the framebuffer is
+  // lent out for a build (releaseFrameBufferForBuild) and false while a
+  // grayscale strip target is active, because then the band scratch holds the
+  // pixels and the framebuffer is stale.
+  bool readbackAvailable() const { return frameBuffer != nullptr && !_stripActive; }
   void drawLine(int x1, int y1, int x2, int y2, bool state = true) const;
   void drawLine(int x1, int y1, int x2, int y2, int lineWidth, bool state) const;
   void drawArc(int maxRadius, int cx, int cy, int xDir, int yDir, int lineWidth, bool state) const;
@@ -321,6 +357,30 @@ class GfxRenderer {
   // Helper for drawing rotated text (90 degrees clockwise, for side buttons)
   void drawTextRotated90CW(int fontId, int x, int y, const char* text, bool black = true,
                            EpdFontFamily::Style style = EpdFontFamily::REGULAR) const;
+
+  // Rasterise `text` into a caller-owned 1bpp mask instead of onto the screen.
+  // MSB-free layout: bit index is `y * strideBits + x`, LSB first within a byte,
+  // matching MapTextMask.
+  //
+  // This exists so a caller can rotate text freely without this class learning
+  // how: the map's contour height numbers sit along the contour at its own
+  // bearing, and the rotation happens over the mask (src/activities/map/
+  // MapTextMask.h). Adding a free rotation to renderCharImpl instead would put
+  // it in the text path every screen in the firmware draws through.
+  //
+  // **Deliberately simpler than drawText.** Advance widths only: no kerning, no
+  // ligatures, no combining marks, no CJK fallback, no 50 % scale. Its caller
+  // draws digits, and tabular figures have no kerning to lose. Anything with real
+  // text in it should use drawText.
+  //
+  // Returns false when the font is missing or the string does not fit the mask --
+  // a caller must then draw nothing, because half a number is a wrong number.
+  // Rasterise `text` into a 1bpp mask. `bits` is cleared here before inking, so a
+  // reused buffer carries no ghosts of the previous string. Advance widths only:
+  // no kerning, no ligatures, no combining marks, which is why the only caller
+  // passes digits.
+  bool renderTextMask(int fontId, const char* text, EpdFontFamily::Style style, uint8_t* bits, int strideBits, int maxW,
+                      int maxH, int& outW, int& outH) const;
   int getTextHeight(int fontId) const;
 
   // Grayscale functions

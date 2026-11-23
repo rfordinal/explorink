@@ -1,0 +1,2514 @@
+# GNSS
+
+The LilyGo T5 S3 Pro carries a GNSS receiver on board. This file is what the
+firmware does with it, what the board forces on any design, and what is still
+unverified. The board itself is
+[`lilygo-t5s3-bringup.md`](lilygo-t5s3-bringup.md); the radio next to it is the
+parent repo's `docs/lora.md`.
+
+**GNSS** is the generic name for satellite positioning -- GPS is one
+constellation inside it, alongside GLONASS, Galileo and BeiDou. **NMEA 0183** is
+the text protocol nearly every receiver speaks: one `$`-prefixed sentence per
+line, comma-separated fields, an XOR checksum after a `*`. **TTFF** is time to
+first fix, the wait from power-on to the first usable position.
+
+**Flashed and run on the board 2026-08-31.** Firmware `feat/t5s3-gnss`, env
+`t5s3pro`, on the LilyGo T5 S3 Pro. The receiver works and the parser reads it
+correctly for the one fix it was checked against.
+
+**This file was rewritten the same day after an adversarial review broke three
+of its conclusions.** What survived, what did not, and what the review found in
+the code are all below. The short version: the receiver was already powered and
+tracking when the firmware first enabled the rail (that holds); "therefore it is
+powered at every boot by a board default" does **not** follow from the evidence
+collected; the SD-card test could not have failed; and the sentence-loss figure
+was wrong by a factor of three. Numbers here are now either log-derived and
+shown, or labelled open.
+
+## Status
+
+| | |
+|---|---|
+| Receiver | Quectel L76K, on-board. GPS + GLONASS, both seen |
+| Reached by | `CMD:GNSS` over the USB serial console, `env:t5s3pro` only |
+| On any screen | the map's header row -- a three-state GNSS glyph plus four signal bars, see [`map-header-status.md`](map-header-status.md). Nowhere else |
+| Feeding the map | **yes, ridden 2026-09-01** -- behind `mapGnssPosition`, off by default. See "The map reads it" |
+| Verified on hardware | 3D fix indoors; parser correct for one N/E fix on one date; the rail's ON/OFF path works; the map drawing from the receiver on a ride, with no phone connected |
+| Still open | idle current, whether SPI contention is real, a TTFF from the receiver's own power-on, and the BLE path with `mapGnssPosition 0` |
+| What comes next | [`gnss-to-map-plan.md`](gnss-to-map-plan.md) -- five steps to the map reading this receiver, and the merge gate |
+
+**A working fix indoors**, on a desk, through a ceiling: `q=1`, 8 satellites
+used, 19 in view, 9 tracked, best C/N0 32 dB-Hz, HDOP 2.0. That was not the
+expected outcome -- an indoor attempt on the factory firmware got nothing
+(2026-08-31, earlier the same day) -- so the antenna and its placement are
+better than assumed.
+
+The receiver also emits `$GPTXT,01,01,01,ANTENNA OK`. **That is an open/short
+detection line, not an endorsement of placement**, and the first draft used it as
+one. What it actually asserts should be read out of the L76K or CASIC manual
+before it is quoted again; it is currently uncited.
+
+**Time arrives before a fix.** `utc` is populated while `q=0`, because the date
+and time come off RMC well before a solution does. Verified in the second run,
+and it matters: the safety budget in the parent repo's `safety-concept.md`
+wants a wall clock, and this supplies one without a fix and without a phone.
+
+Position reaching the map is a separate piece of work, written up under "The map
+reads it" below. It turned out **not** to need the abstraction over a position
+source the parent repo's `docs/lora.md` argues for under "What can be built
+today": `MapActivity::applyFix()` already is that seam, and the receiver became
+its third caller.
+
+## The receiver
+
+**L76K**, identified from the factory firmware on 2026-08-31. Quectel's own
+part, GPS + GLONASS + BeiDou, NMEA over UART.
+
+- **9600 baud, 8N1 is correct**, confirmed on hardware: checksum-clean NMEA
+  from the first read, no reframing, `cserr` at 0 across a rail-cycled session.
+  The guess held, so the datasheet is no longer needed to unblock anything.
+- **GPS and GLONASS in this configuration.** `GPGSV` and `GLGSV` arrive; no
+  Galileo or BeiDou GSV was seen and `GNGSA` carries system ids 1 and 2 only.
+  That is an observation of what the module emits as shipped, not a statement
+  about what the part can do -- the constellation set is configurable on an L76K
+  and the vendor lists BeiDou.
+  An `inview` of 19 was 10 GPS plus 9 GLONASS, which is also what confirms the
+  parser's per-talker summing works rather than double-counting.
+- **It sends more than we parse**, all checksum-valid, currently counted and
+  dropped: `GNGSA`, `GNGLL`, `GNVTG`, `GNZDA`, `GNDHV`, `GPTXT`. Two are worth
+  picking up later -- `GNZDA` carries date *and* time in one sentence, which
+  would remove the GGA-plus-RMC stitch described below, and `GPTXT` is where
+  `ANTENNA OK` comes from, a health line with no equivalent anywhere else.
+
+## This receiver reports no accuracy, in any protocol, and cannot be made to
+
+**It has no GST and no way to switch one on.** `[verified from the vendor
+document, 2026-10-29]` GST is the NMEA sentence that carries position error as
+a standard deviation in metres. The question came up because the marker's trust
+states want metres and only the phone can supply them
+(`marker-fix-trust.md`). The answer is no, and it is a hard no rather than an
+unmeasured one.
+
+Read out of **Quectel L76K GNSS Protocol Specification V1.1**, the vendor
+document for this module rather than for the CASIC chip family -- the same
+document "What Quectel's own protocol document actually supports" below is
+read from.
+
+- **The output sentence chapter lists eight sentences.** RMC, GGA, GSV, GSA,
+  VTG, GLL, TXT, ZDA (2.2.1 to 2.2.8). GST is not among them.
+- **`$PCAS03` cannot turn one on either.** Its synopsis is
+  `$PCAS03,<nGGA>,<nGLL>,<nGSA>,<nGSV>,<nRMC>,<nVTG>,<nZDA>,<nANT>` plus six
+  reserved fields (2.3.3). Eight switchable sentences, and no field for a
+  ninth.
+- **`GST`, `GRS` and `GBS` occur zero times in the whole document.** So do
+  `deviation`, `sigma`, `CEP` and `RMS`. `accuracy` occurs twice, both times in
+  the legal disclaimer on the cover pages.
+- **No `NAV-` message exists for this module.** The CASIC messages V1.1
+  documents are `ACK-NACK`, `ACK-ACK`, `CFG-PRT`, `CFG-MSG`, `CFG-RST` and
+  `CFG-RATE`. Six, all configuration or acknowledgement. The binary half
+  carries no navigation output at all.
+
+**So the whole quality vocabulary this receiver speaks is:** `HDOP` (GGA field
+9), `PDOP` / `HDOP` / `VDOP` (GSA), the used-satellite count, and the GGA
+quality digit. Geometry and counts. **Nothing that is an error estimate.**
+
+Two consequences, and neither is a preference:
+
+- **`MapFixTrust::posTrustFor(accuracyM, ...)` is a phone-only path and stays
+  one.** The device's own receiver has nothing to feed it, which is why
+  `posTrustForHdop()` exists next to it.
+- **A rule for the on-board receiver has to be derived from position and time**,
+  because those are the only honest inputs left. It is not a shortcut past a
+  better number; there is no better number.
+
+`GNGSA` is still worth picking up for `PDOP` and `VDOP` -- it already arrives
+and is counted and dropped. But it is more geometry, so it does not answer
+multipath either: see "A ride says HDOP misses what the rider sees" in
+[`marker-fix-trust.md`](marker-fix-trust.md).
+
+**The one avenue left is a long shot with a bad record.** The CASIC *family*
+spec V3.6 carries messages Quectel's module document does not mention. Two such
+candidates have already been tried on this part and the module ignored both --
+`$PCAS12` and `CFG-RST` `resetMode` 8, measured 2026-09-11 (T-209). Testing a
+family `NAV-` message costs a `CFG-MSG` write and `CMD:GNSS RAW BYTES ON` to
+see whether anything answers. `[open]`
+
+## Two pins, and they are UART0's
+
+```
+freeink-sdk/libs/hardware/BoardT5S3/include/BoardT5S3Pins.h:20  GPS_RXD 44
+                                                          :21  GPS_TXD 43
+```
+
+Read as **MCU-side**, and that reading is **confirmed**: `Serial1.begin(9600,
+SERIAL_8N1, 44, 43)` produces clean NMEA, so `RXD 44` is where the S3 receives
+and it goes to the receiver's TX. The header's names never actually said whose
+RX was meant, and a swap would have looked exactly like a dead receiver -- worth
+having settled rather than left as a coin flip for the next person.
+
+GPIO43 and GPIO44 are the ESP32-S3's default `U0TXD` / `U0RXD`. They are free
+here only because this env runs its console over USB CDC
+(`ARDUINO_USB_CDC_ON_BOOT=1`, and `logSerial` is `HWCDC& = Serial` in
+`lib/Logging/Logging.h:35`). One consequence: the ROM bootloader still logs on
+GPIO43 at every reset, so the receiver's RX takes a few lines of unsolicited
+text on each boot. Presumed harmless, on the grounds that a receiver discards anything that is not
+a command it knows -- **inferred, never observed**, and it is 115200-baud output
+arriving at a 9600-baud input, so the receiver sees framing errors rather than
+text.
+
+## What a ride with the setting off costs the power log
+
+**The 2026-09-03 ride drew 131 mA for 3.21 h and its GNSS state is unknowable
+from any log it left.** `mapGnssPosition` was 0, carried over from the BLE
+regression run of 2026-09-02, so `MapActivity::onEnter()` never called
+`gnssStart()` and the map drew from the phone the whole way. The cause, how the
+setting persists are in [`gnss-to-map-plan.md`](gnss-to-map-plan.md), "And it
+was reported as a GNSS regression" -- not repeated here. **A Settings row for it
+is written but unmerged** (branch `feat/gnss-settings-row`, 2026-09-03, nothing
+flashed), so as this file stands the setting is still reachable only from the
+host and the symptom is still indistinguishable from dead hardware.
+
+What that leaves open for the power side: **the firmware never opened the UART,
+and that says nothing about whether the receiver was powered.** The rail is an
+expander pin that latches until it loses power, and `disableGpsLora()` has never
+run on this board (next section). So the L76K may well have been powered and
+tracking for the whole ride with nothing reading it -- which would put it in the
+ride's budget while contributing nothing. That is the ~20-25 mA line marked
+`[open]` in [`power-management.md`](power-management.md), "Where the 131 mA is
+not", and T-244 in the parent repo is the latch itself.
+
+**Nothing in the ride's log can settle it**, because `power.csv` has no column
+for the rail and none for current. Pricing it is T-250.
+
+## Low power: no slower gear in the Quectel PDFs, and its two low gears are pins
+
+Asked 2026-09-08: the rider on a hike wants a fix once a minute, not once a
+second. Can the receiver be told to work less? **Not by anything Quectel
+documents.** Everything in this section is read off the two vendor PDFs, not
+measured.
+
+Corrected 2026-09-11: this section used to answer a flat **No**, on the
+strength of the two *hardware* PDFs alone. The CASIC family protocol spec has
+candidate commands they do not mention -- see "The CASIC spec carries three
+things the Quectel PDFs do not" below.
+
+**Corrected again the same day, and mostly back:** Quectel publishes a third
+document, the **L76K GNSS Protocol Specification V1.1**, and it is the vendor
+speaking about this exact module rather than about the chip family. It says no
+to every candidate. See "What Quectel's own protocol document actually
+supports" -- the flat **No** is close to right after all, and what survives is
+that *undocumented* is not the same as *refused*.
+
+**Tracking costs the same as searching.** Quectel L76K Hardware Design V1.0,
+Table 2: acquisition 29 mA, tracking 29 mA, standby 20 uA, backup 8 uA. Having
+the satellites already saves nothing.
+
+| Lever | What the spec says | Saving |
+|---|---|---|
+| `$PCAS02` fix interval | 1000 / 500 / 200 ms only (Protocol Spec V1.1, 2.3.2) | none, 1 Hz is already the floor |
+| CASIC `CFG-RATE` | same three values (Table 13) | none |
+| `$PCAS04` constellations | GPS, BDS, GLONASS combinations (2.3.4) | none, Table 2 gives 29 mA for GPS+BDS and for GPS+GLONASS alike |
+| `$PCAS03` sentence rates | which NMEA sentences are emitted (2.3.3) | UART and CPU only, not the RF |
+| CASIC `CFG-RST` `resetMode` 8 | "Controlled GPS stop" in the CASIC *family* spec (V3.6, 2.11.3). **Quectel's L76K document does not list it**: its `ResetMode` is 0, 1, 2, 4 | **none. Measured 2026-09-11**: the module never answers it and never stops (T-209) |
+| `$PCAS12,stdbysec` | timed standby with auto-wake, up to 65535 s -- **but the CASIC spec says "5L low power module supports the command"**, and Quectel's L76K document has no `PCAS12` at all | **none. Measured 2026-09-11**: output rate flat across 25 s after the sentence (T-209) |
+
+**The two real modes are entered by pins, not by commands** (HW Design 3.3):
+
+- **Standby, 20 uA.** Pull `WAKEUP` (pin 5) low. Release it and the module
+  returns to continuous mode.
+- **Backup, 8 uA.** Cut `VCC` while `V_BCKP` keeps the RTC domain alive. The
+  RTC domain holds the SRAM with time and ephemeris, so the restart is a hot
+  start. The datasheet adds that **with no backup supply the module cold starts
+  every time** (HW Design 3.2.2) -- which is true of a long enough outage and
+  not of a short one: measured 2026-09-11, this board keeps ephemeris and
+  almanac across a rail drop of 180 s and loses them by 300 s, presumably on
+  residual charge. See "Ephemeris survives a rail drop of 180 s and not 300 s".
+
+### Neither pin reaches the ESP32 on this board
+
+The whole GNSS section of the T5 S3 Pro schematic is `U0TXD`/`U0RXD` through
+two 0R resistors and a 5 pin header:
+
+```
+T5 E-paper S3 Pro V1.0 24-12-24, page 2, box "GPSMODE"
+  U0TXD -R11(0R)-> GPS_RX
+  U0RXD <-R12(0R)- GPS_TX
+  J3 HDR1X5: GPS_TX, GPS_RX, VCC3V3, GND
+```
+
+`GPSMODE` is the caption of that box, **not a net** -- checked by rendering the
+page, because the text layer makes it look like a floating signal name.
+LilyGo's `docs/pinmap.md` agrees: GPS has three entries, `PIN_GPS_TX` 43,
+`PIN_GPS_RX` 44, and `PIN_GPS_EN` = `PCA9535 IO0_0`, which is the same pin as
+`LORA_EN`.
+
+**No module symbol appears anywhere in the published schematic.** So the
+receiver sits on a plug-in board behind that header, or the sheet is
+incomplete. Either way `WAKEUP`, `RESET_N` and `V_BCKP` are not on it.
+
+That leaves exactly one lever: **switch the shared rail**, which also kills the
+SX1262.
+
+### Whether duty cycling pays: measured 2026-09-11
+
+Cost of a power cycle is the TTFF. Datasheet: hot start 2 s, cold start 30 s
+(Table 2). **Measured on this board: 526 s** (car, one ride, 2026-09-02, see
+"What the hardware pass found"). OpenTrailPaper measured a 716 s pathology on
+the same part.
+
+One fix a minute, arithmetic on the datasheet:
+
+| If a rail cycle gives | Duty | Average |
+|---|---|---|
+| hot start, 2 to 4 s | ~5 % | ~1.5 to 2 mA |
+| cold start, 30 s | ~50 % | ~15 mA |
+| our measured 526 s | never finishes | worse than leaving it on |
+
+The question that decides the feature used to be phrased as **does the module
+keep its RTC domain when `LORA_GPS_EN` goes low?** It does, for minutes (below).
+**That turned out to be the wrong question**, because keeping the data and
+coming back quickly are two different things, and only the second one pays.
+
+**Timed on the bench, 2026-09-11**, indoors at a window, build
+`0.2.1-t5s3pro`. The clock starts when `CMD:GNSS ON` is written, which is when
+the rail goes up, and stops at the first status reply carrying `q=1`. The
+firmware's own `ttff` cannot answer this and says so in
+`Gnss::timeToFirstFixMs()`. Each run established a fix first, so every number
+is a re-acquisition and not a first ever fix:
+
+| rail off for | first `q=1` after |
+|---|---|
+| 5 s | 55.1 s |
+| 60 s | 47.1 s |
+| 180 s | 95.2 s |
+| a real cold start (`$PCAS10,2`, receiver emptied) | **no fix in 25 minutes** |
+
+**Nothing here is a 2-second hot start, and the 5 s and 60 s rows are the same
+number.** The receiver provably still holds its ephemeris across both (it is
+the same board, the same hour, and `NAV-STATUS` was read across the same
+drops), so what those 50 seconds buy is not ephemeris. It is re-acquiring the
+signal itself: the runs had `used` between 6 and 10 of 18 to 24 in view and
+`hdop` between 1.5 and 7.6, which is a marginal solution, and a marginal
+solution is slow to reappear whatever the receiver remembers.
+
+**The cold row is the one that should scare a duty-cycle design.** The receiver
+was emptied deliberately rather than by a long rail drop, which is the same end
+state and takes one sentence instead of five minutes, and then it sat at the
+same window for 1500 s without ever reaching `q=1`. It was unaided: the firmware
+sends `AID-INI` only from `gnssStart()`, so a wipe with the rail already up
+gets no fresh aiding, and the one frame sent at the start of that run carried
+position but no time (no RTC on this board, no phone in the session). **So the
+526 s of 2026-09-02 is not the ceiling indoors -- through glass a cold start may
+simply never finish.**
+
+### And outdoors it did not finish either
+
+**Measured 2026-10-30**, board B on a walk, read back from the device's own
+`power.csv` (parent `docs/crashes/2026-10-30-t5s3pro-b-walk-freeze/`):
+
+| uptime_s | inview | tracked | bestsnr | q |
+|---|---|---|---|---|
+| 1263 | 10 | 0 | 0 | 0 |
+| 1563 | 13 | 7 | 35 | 0 |
+| 1924 | 17 | 15 | 34 | 0 |
+
+Eleven minutes with the receiver up, the last six of them with a sky that
+should have carried a fix -- seventeen satellites in view, fifteen tracked,
+best C/N0 **34 dB** -- and `q` never left 0. That is not the marginal sky the bench
+rows above were taken under. It is the sky a fix is supposed to come from.
+
+So the sentence "through glass a cold start may simply never finish" is too
+kind to the module: **this one did not finish under an open sky either.**
+Why is open -- parent `docs/TODO.md`, T-2049 -- and it needs the receiver's
+own diagnostics across an acquisition, not more source reading.
+
+What this run rules out, by reading rather than by assuming: the NMEA parser
+(`Gnss.cpp` skips the talker and matches `GGA`, so `GNGGA` lands), the
+position seed (44 km out, declared as 50 km, so honest), the battery
+(3,976 mV and falling normally), and any crash or hang (no coredump, heap
+and loop counters flat into the last row).
+
+**So the honest reading is that this bench measured the window, not the
+module.** Outdoors the same three drops should come back faster, and by how
+much is unmeasured. What the numbers do settle is that **a duty cycle cannot be
+designed off the datasheet's 2 s**: at a window it costs about a minute per
+wake, at 29 mA, and T-267's arithmetic in the parent repo turns on exactly that
+figure.
+
+### The MIA-M10Q variant answers this in software
+
+The board ships with either receiver and they cannot be told apart by looking
+(LilyGo mail 2026-08-26). For power they are not close. MIA-M10Q data sheet
+UBX-22015849 R04, Tables 16 and 18, 3.0 V, default GPS+Galileo+BDS B1I,
+`VCC` plus `V_IO`:
+
+| | L76K | MIA-M10Q |
+|---|---|---|
+| Acquisition | 29 mA | ~14.9 mA |
+| Tracking, continuous | 29 mA | ~12.9 mA |
+| Tracking, power save mode | not available | ~7.6 mA |
+| Software standby | **none, measured 2026-09-11** (T-209) | ~46 uA |
+| Hardware backup | 8 uA, needs `V_BCKP` | 28 uA, needs `V_BCKP` |
+
+**The row that matters is software standby.** u-blox M10 sleeps and wakes on a
+UART message, and its power save modes (on/off, cyclic tracking) take the fix
+period from configuration. That is the hike case with no pin, no rail switch
+and no LoRa side effect. It also has documented AssistNow aiding, where CASIC
+ephemeris injection is a dead end -- 4 ACK against 30 NAK, tried and shelved by
+OpenTrailPaper (parent repo `docs/prior-art-opentrailpaper.md`).
+
+**That cell read `not available`, then `[open]`, both on 2026-09-11.** The first
+was written off Quectel's two *hardware* PDFs and was a claim the evidence did
+not carry. The second went too far the other way on a CASIC *family* document.
+Quectel's own **L76K GNSS Protocol Specification V1.1** then answered it: no
+`PCAS12`, no `ResetMode` 8, no occurrence of the word standby anywhere. The cell
+stays `[open]` only because V1.1 is a documented subset and this module accepts
+two commands it omits -- see "Undocumented is not refused". Expect a refusal;
+T-209 is one frame and settles it. What stays true regardless is the M10Q's
+*cyclic* tracking: a configured fix period is a thing CASIC has no equivalent of
+at any confidence level.
+
+**This unit is an L76K**, its boot log says so. Our driver is fixed at 9600 and
+plain NMEA (`lib/Gnss/include/Gnss.h:68`), so an M10Q board would not come up
+at all today. Module detection is promise 4 to LilyGo, T-549.
+
+## The CASIC spec carries three things the Quectel PDFs do not
+
+Source: **CASIC Multimode Satellite Navigation Receiver Protocol Specification
+V3.6**, revision dated 2017-04-24, machine translated. We read it in
+OpenTrailPaper's repo at `investigations/ref/casic-protocol-spec.txt`. Read
+2026-09-11 while answering their AGNSS question.
+
+**Weigh it accordingly.** It is a 2017 *family* document and its own example
+strings say URANUS2, where this module reports URANUS5 V5.3.0.0. Nothing below
+has been sent to a receiver. Every item here is a lead, and the Quectel PDFs
+stay the source for anything they actually cover.
+
+### CFG-RST (0x06 0x02): a selective clear, and a possible RF stop
+
+Four byte payload: `navBbrMask` U2 at 0, `resetMode` U1 at 2, `startMode` U1
+at 3. The mask clears battery-backed RAM one bit at a time -- B0 ephemeris,
+B1 almanac, B2 health, B3 ionospheric, B4 receiver position, B5 clock drift,
+B6 crystal, B7 UTC, B8 RTC, B9 configuration. `resetMode`: 0 immediate
+hardware reset, 1 controlled software reset, 2 software reset GPS only,
+4 hardware reset after shutdown, **8 controlled GPS stop, 9 controlled GPS
+activation**. `startMode`: 0 hot, 1 warm, 2 cold, 3 factory, 8 serial output
+and RF off, 9 on.
+
+Being class CFG it is one of the few messages the spec says gets an ACK or a
+NAK (2.5), so an attempt is verifiable rather than silent.
+
+Two things were wanted from it, and **the bench got neither** -- see "What the
+bench actually answered" below, which is the measurement and wins over the
+paragraphs above:
+
+- **`navBbrMask` was going to be the cold start** `power-management.md`'s G1
+  asks for. Measured: the frame is acknowledged and restarts the receiver, and
+  the ephemeris and almanac are still there afterwards -- two masks, and all
+  three reset modes. **`StartMode` 2 is the one that does empty it**, so G1 has
+  its frame; it is just not the mask.
+- **`resetMode` 8 was the only candidate for a low-power gear.** Measured: the
+  module never answers it and never changes behaviour, while `resetMode` 9 and
+  the vendor's own frame both answer on the same path.
+
+The doubt this section recorded was the right doubt. The spec documents what a
+set bit *clears* and never says what is preserved, and it never states how
+`navBbrMask` interacts with `startMode`.
+
+### The `$PCAS10` route to the same thing is a trap
+
+`rs` in `$PCAS10,rs` maps to `startMode`, not `resetMode`, and no NMEA sentence
+carries a mask, so `$PCAS10,1` is not the ephemeris-only clear. Worse, 1.6.8
+contradicts itself: its parameter table gives 8 and 9 as serial and RF off and
+on, while its own examples three lines above label both `$PCAS10,8*14` and
+`$PCAS10,9*15` "Factory start". Since 3 is separately documented as factory
+boot, one of the two readings is wrong and the document does not say which. One
+of them wipes the configuration. **Do not send `$PCAS10,8` to a device we care
+about** until the binary `CFG-RST` path has answered the question instead.
+
+### NAV-STATUS (0x01 0x00): per-satellite ephemeris validity, no sky needed
+
+80 byte payload, cycle/query. Offset 8 is `gpsMsgFlag`, `U1 x 32`, one byte per
+GPS satellite: **high nibble almanac validity, low nibble ephemeris validity**,
+values 0 missing, 1 unhealthy, 2 expired, 3 effective. Offset 40 and offset 64
+carry the same encoding for 24 GLONASS and 14 BDS satellites. Offset 78 is
+`gpsUtcionFlag`, UTC in the high nibble and ionospheric in the low.
+
+This is the instrument the ephemeris-retention question has been missing, and
+**it is confirmed working on this module, 2026-09-11** -- enabled with
+`CFG-MSG`, not polled. Four of the offsets above were read back and checked (see "What
+the bench actually answered"). "Does the module keep ephemeris when the rail
+drops" needs no sky view and no TTFF run: read `gpsMsgFlag` before and after,
+and count the satellites at 3.
+
+It is also **the only working instrument for this**, rather than merely a better
+one. `$PCAS06,L` answers `LT=0` on this module whatever it is holding, so the
+count it was supposed to give does not exist.
+
+### ACK and NAK carry no reason, and the AID class has no ephemeris message
+
+- **2.5 scopes the ACK channel to CFG.** "When the receiver receives a CFG type
+  message" it replies ACK-ACK or ACK-NACK, and "Other messages received by the
+  receiver do not need to reply." The one-in-flight rule -- do not send a second
+  CFG before the first is answered -- is a CFG rule too. Read it as permissive:
+  the spec does not forbid a reply to some other class, it just gives one no
+  meaning.
+- **ACK-NACK (0x05 0x00) has no reason field.** Payload is `clsID` U1 at 0,
+  `msgID` U1 at 1, `res` U2 at 2, reserved. A refusal says which message it
+  refused and nothing about why.
+- **AID (0x0B) advertises A-GPS ephemeris and defines none.** The class table
+  calls it "Auxiliary messages: ephemeris, almanac and other A-GPS data". 2.15
+  then defines exactly two: AID-INI (0x0B 0x01, 56 bytes) and AID-HUI
+  (0x0B 0x03, 60 bytes), both typed "Query/input". There is no AID ephemeris
+  message anywhere in the document.
+
+Which sharpens why OpenTrailPaper's injection went nowhere. `MSG-GPSEPH` is
+0x08 0x07 and class 0x08 is "Satellite message information **output by the
+receiver**"; every message in it is typed "cycle". So injection is not a
+documented input on any message in V3.6, and the 4 ACK / 30 NAK they measured
+is a reply the spec assigns no meaning to. It does not follow that the module
+has no undocumented ingest path -- the vendor's own AGNSS blob is a stream of
+these very 0x08 messages -- only that the protocol document cannot be used to
+debug it.
+
+## What Quectel's own protocol document actually supports
+
+Read 2026-09-11: **Quectel L76K GNSS Protocol Specification V1.1**, the vendor
+document for this module rather than for the CASIC chip family. It is the
+authority the earlier sections were missing, and it narrows almost everything.
+(`waveshare.com` serves it; `curl` needs a browser user agent or Waveshare's WAF
+returns a CAPTCHA page with a `.pdf` name.)
+
+**The entire command surface it documents:**
+
+| | What V1.1 lists |
+|---|---|
+| NMEA commands | `PCAS01`, `PCAS02`, `PCAS03`, `PCAS04`, `PCAS10`. **Five.** |
+| `$PCAS10,<Flag>` | 0 hot, 1 warm, 2 cold, 3 cold plus factory reset. **No 8, no 9.** |
+| CASIC messages | `ACK-NACK`, `ACK-ACK`, `CFG-PRT`, `CFG-MSG`, `CFG-RST`, `CFG-RATE`. **Six.** |
+| `CFG-RST` `ResetMode` | 0 immediate hardware reset, 1 software reset, 2 software reset GPS only, 4 hardware reset after power off. **No 8.** |
+| `CFG-RST` `StartMode` | 0 hot, 1 warm, 2 cold, 3 factory. **No 8, no 9.** |
+| standby, sleep, low power | **zero occurrences in the document.** |
+
+So the three things this file got excited about on 2026-09-11 come back down:
+
+- **`$PCAS10,8` does not exist for this module.** The self-contradiction in the
+  family spec's 1.6.8 is real and is not our problem: Quectel documents four
+  flag values and none of them is 8. The warning stands for anyone on a bare
+  AT6558; it is moot here.
+- **`resetMode` 8 is not documented for this module either.** It stays the only
+  candidate for a software RF stop, and it is now a long shot rather than a
+  lead.
+- **`$PCAS12` is not this part.** Two independent transcriptions of the CASIC
+  spec carry `$PCAS12,stdbysec*CS` -- timed standby, auto-wake, up to 65535 s --
+  and both say the **5L low power module** supports it. Our V3.6 extract does
+  not contain it at all: it runs 1.6.8 `CAS10` straight to 1.6.9 `CAS20`.
+
+**And one thing gets stronger instead.** `CFG-RST`'s `NavBbrMask` is documented
+by Quectel for this module, bit for bit, with Bit 0 ephemeris and Bit 1 almanac,
+and V1.1 prints a worked frame and the ACK that answers it:
+
+```
+send  BA CE 04 00 06 02 FF 01 00 00 03 02 06 02
+ack   BA CE 04 00 05 01 06 02 00 00 0A 02 05 01
+```
+
+That payload is `NavBbrMask = 0x01FF`, `ResetMode = 0`, `StartMode = 0` -- bits
+0 to 8 on a hot start.
+
+~~So `NavBbrMask = 0x0001` is an ephemeris-only clear and the cold-start
+instrument `power-management.md`'s G1 has been asking for.~~ **Withdrawn the
+same day, on the bench.** The mask is acknowledged and inert: it changes nothing
+`NAV-STATUS` reports, at `ResetMode` 0, 1 or 2. What does empty the receiver is
+`StartMode` 2, which this reading never touched. G1 has its frame, and it is not
+this one -- see "`NavBbrMask` clears nothing, at any `ResetMode`. `StartMode`
+does". The vendor's own comment on the frame above is also wrong about what it
+clears, which is its own section below.
+
+### Undocumented is not refused, and this module proves it twice
+
+Nothing above says the silicon refuses what Quectel leaves out. Two commands
+this project and others already rely on are **absent from those six messages and
+five sentences**:
+
+- **`$PCAS06`**, which `CMD:GNSS EPH` sends to ask how many ephemerides are
+  held. Meshtastic probes L76K with `$PCAS06,0` and reads the `$GPTXT` version
+  line back.
+**Since 2026-10-31 the time half comes from `deviceWallClockUtc()`.** It asks
+the receiver first and the phone second, and latches whichever answered so a
+later session in the same boot still has a time.
+
+**The first version of this paragraph was wrong and is corrected rather than
+deleted.** It said the aiding "went out position-only every time" because a
+GNSS map session runs no BLE. False: `BlePositionServer::utcNow()` is itself a
+boot-long latch -- it anchors on any position packet carrying a time and
+nothing clears it, not a disconnect and not `end()`. So on any boot where a
+phone had been seen, aiding already carried time. What changed is the other
+direction, a GNSS-sourced time surviving into a later session, and the order:
+the receiver's clock now outranks the handset's.
+
+**The cold-boot case is untouched and is the one that matters.** No phone, no
+earlier session, so no time anywhere -- which is the walk below. T-2050.
+
+- **`AID-INI`** (0x0B 0x01), which `Gnss::injectAidIni()` sends on every map
+  entry. The whole AID class is missing from V1.1.
+
+Both work. So V1.1 is a documented subset, not an inventory of the firmware, and
+`resetMode` 8, `$PCAS12` and `NAV-STATUS` are each worth exactly one frame on a
+bench before being written off. That is T-209, and T-210 is the passthrough it
+needs.
+
+### The vendor was asked this directly, and answered
+
+Quectel forum, 2025-08-08, a question about low-power periodic location
+acquisition on the L76K. Their engineer: "You can lower the standby pin to enter
+the standby mode, disconnect the VCC power supply for at least 1 second and keep
+V_BCKP powered normally." Pin, or cut `VCC` with `V_BCKP` alive. No command was
+offered.
+
+Meshtastic agrees in code rather than in prose: it supports the L76K, and its
+standby is `PIN_GPS_STANDBY`, guarded by a comment naming "L76B, L76K and
+clones" (`src/gps/GPS.cpp`). A pin, on a board that routes one. Ours does not.
+
+## What the bench actually answered, 2026-09-11 (T-209)
+
+Every row below was sent to a real L76K and the reply read on the wire. T5 S3
+Pro, build `0.2.1-t5s3pro`, `env:t5s3pro`, `/dev/ttyACM0`, fourteen separate
+captures, board at a window indoors, receiver never opened. `CMD:GNSS SEND`
+and `CMD:GNSS RAW BYTES ON` (T-210) are what made it readable. The frame
+generator was checked against V1.1's own printed example before anything was
+sent, and it reproduces it byte for byte.
+
+**The captures are the evidence and they are kept**, gitignored, in the parent
+repo at `docs/gnss-captures/2026-09-11-t209/`. They hold the rider's real
+position, so they are never tracked and never quoted raw --
+`docs/gnss-captures/README.md` has the rule. They were written to a `/tmp`
+session scratchpad first and came within a reboot of being lost, which is why
+the rule now exists.
+
+| what was sent | frame | what the module did |
+|---|---|---|
+| the vendor's worked example (the control) | `BACE04000602FF01000003020602` | `ACK-ACK`, `BACE04000501060200000A020501` |
+| `resetMode` 8, "controlled GPS stop" | `BACE040006020000080004000E02` | **nothing at all.** No ACK, no NAK, NMEA rate unchanged. Twice, in two captures |
+| `resetMode` 9 | `BACE040006020000090004000F02` | `ACK-ACK` |
+| `$PCAS12,10` | `$PCAS12,10*2F` | nothing. Output rate flat across 25 s |
+| `NAV-STATUS` polled with an empty payload | `BACE0000010000000100` | `ACK-NACK` for `cls=0x01 id=0x00` |
+| `CFG-MSG` turning `NAV-STATUS` on | `BACE040006010100010005000701` | `ACK-ACK`, then an 80-byte `NAV-STATUS` every second |
+| `NavBbrMask` `0x0001`, at `ResetMode` 0, 1 and 2 | see the table below | `ACK-ACK`, receiver restarts, nothing cleared |
+| `StartMode` 2, a cold start | `BACE040006020000010204000704` | `ACK-ACK`, and ephemeris and almanac both go to zero |
+
+### `resetMode` 8 is not refused. It is ignored, and that is a third answer
+
+The task expected an ACK or a NAK and got neither: the receiver never replied
+and never changed what it was doing. That is not the spec's model of a CFG
+message, which says a CFG either gets `ACK-ACK` or `ACK-NACK` (2.5).
+
+**Two controls say the silence is the module's and not ours**, and it is worth
+being exact about where they sit, because an audit of this section found the
+first wording overstated them. `resetMode` 8 was sent twice, in two captures.
+One of those captures carried the vendor's worked example **9 seconds earlier**
+down the same path, and it answered with exactly the ACK V1.1 prints. The other
+carried no control at all. `resetMode` **9**, equally undocumented for this
+part, answered `ACK-ACK` -- in a **third** capture. So the module does not drop
+every `resetMode` it does not know, and the path was working either side of the
+silence.
+
+**What this cannot separate**: a frame ignored, from a frame whose ACK was lost
+twice. The firmware reported `sent=14 bytes` both times, which is the UART
+driver and not the wire, and this session did record real RX corruption
+elsewhere (`ferr` 0 to 31). Ten other CASIC frames in the same session all drew
+replies, so two independent losses is a stretch -- but the honest statement is
+that both readings end at the same cell, no software stop is reachable, and the
+one run that would separate them has not been done: vendor example, `resetMode`
+8, vendor example again, in a single capture.
+
+**So the `Software standby` cell is a measured refusal.** There is no software
+gear on the L76K reachable from this board: not by the pin (not routed), not by
+`$PCAS12`, and not by the one undocumented `CFG-RST` value that could have been
+one. Step 3 of T-209, pricing the gear with the USB meter, has nothing to
+price.
+
+### `$PCAS12` is not this part, confirmed by behaviour rather than by silence
+
+NMEA has no ACK, so this one was judged by what the receiver did: five 5-second
+windows before and after the sentence, 78 to 83 `GNSS_RAWBYTES` lines each,
+flat through all of them. No pause, no ten-second gap, no auto-wake. The CASIC
+family document's claim that the 5L low power module supports it stands; this
+module is not that module.
+
+### `NAV-STATUS` exists on this module, and it is the instrument
+
+V1.1 lists six CASIC messages and `NAV-STATUS` is not among them. It works
+anyway, which makes it the third command (with `$PCAS06` and `AID-INI`) proving
+V1.1 is a subset rather than an inventory.
+
+**It has to be enabled, not polled.** A zero-length poll of `0x01 0x00` came
+back `ACK-NACK`. `CFG-MSG` with payload `01 00 01 00` -- class, id, rate 1, one
+reserved byte -- came back `ACK-ACK` and the message started arriving at 1 Hz.
+
+The payload decodes exactly as the family spec describes, verified against a
+running receiver:
+
+```
+offset 0   U4  run time in ms          21548 right after a restart, 249242 before it
+offset 4   U4  fix interval in ms      1000, matching $PCAS02's floor
+offset 8   U1 x 32  gpsMsgFlag         high nibble almanac, low nibble ephemeris,
+                                       0 missing 1 unhealthy 2 expired 3 effective
+offset 40  U1 x 24  GLONASS, same encoding
+offset 64  U1 x 14  BDS, same encoding
+offset 78  U1  gpsUtcionFlag
+```
+
+A live read decoded: **PRN 7, 21 and 30** at ephemeris 3, and PRN 1, 6, 7, 15,
+21, 22, 23, 24 and 29 at almanac 3. (The array index is zero-based and the PRN
+is not, so an index of 6 is PRN 7. An earlier version of this paragraph printed
+the indices as satellite names and claimed a "GPS 0", which does not exist.)
+
+**Which also proves the nibble order rather than assuming it.** The family spec
+says high nibble almanac, low nibble ephemeris, and this file took that on
+trust. The captures settle it: the three satellites flagged with an ephemeris
+are exactly the three carrying signal in `GSV` in the same seconds, at 26 to
+31 dB-Hz, while several flagged only with an almanac were never tracked at all.
+A receiver cannot hold a freshly decoded ephemeris for a satellite it has never
+heard, so the nibbles cannot be the other way round. GLONASS agrees
+independently.
+
+**What was not checked**: the BDS block at offset 64 read all-zero in every
+capture, which is consistency and not confirmation; the GLONASS almanac half was
+computed and never printed; and offset 78 was never decoded at all. The
+documented layout also accounts for 79 of the 80 payload bytes.
+
+### `CMD:GNSS EPH` does not count ephemerides, and this file said it did
+
+`$PCAS06,L` answered `$GPTXT,01,01,02,LT=0,,,,*58` in **every** capture,
+including the ones where `NAV-STATUS` showed three effective ephemerides in the
+same second. So `LT=` is not a count of held ephemerides, or not one this
+module fills in. The claim that it is came from reading the command, not from
+running it, and it is withdrawn here: `src/main.cpp`'s `EPH` comment and the
+rail-cycle experiment it proposes both rest on a number that stays zero.
+
+**Re-checked with a fix, later the same day, because the first reading had
+none.** Every capture behind the paragraph above ran at `q=0`, so "whatever it
+is holding" was a generalisation across one condition -- the same shape of error
+that made the first `NavBbrMask` conclusion too wide. Asked again at `q=1`,
+`used=10` of 23 in view, with `NAV-STATUS` reporting 12 GPS ephemerides in the
+same minute: `LT=0`. The claim survives the check.
+
+**`NAV-STATUS` replaces it.** It answers the same question, needs no sky and no
+fix, and it distinguishes almanac from ephemeris per satellite where `LT=`
+offered one integer that never moved.
+
+### V1.1 contradicts itself about what the worked example clears
+
+Page 34 prints the `CFG-RST` payload table with **Bit 9 = Configuration
+information**, and three lines below prints this:
+
+```
+//Clear configuration information:
+BA CE 04 00 06 02 FF 01 00 00 03 02 06 02
+```
+
+`FF 01` little-endian is `0x01FF`, which is bits 0 to 8 and **not** bit 9. So
+the comment names the one thing the mask does not clear. Read from the vendor
+PDF itself (`Quectel_L76K_GNSS_Protocol_Specification_V1.1`, page 34), not from
+a transcription.
+
+It changes nothing on the bench -- the mask clears nothing here whatever it is
+set to -- but it matters for anyone reading the document as an authority: this
+is the frame every other document, ours included, quotes as the worked example.
+
+### `NavBbrMask` clears nothing, at any `ResetMode`. `StartMode` does
+
+This was the one step expected to work, and the mask half of it failed. Three
+trials, two masks, `NAV-STATUS` read immediately before and after each:
+
+| mask | ACK | module restarted | ephemeris after | almanac after |
+|---|---|---|---|---|
+| `0x0001`, ephemeris only | none seen (trial 1) | yes, run time 224166 ms to 9226 ms | unchanged | unchanged |
+| `0x0001`, ephemeris only | `ACK-ACK` (trial 2) | yes, 72246 ms to 8525 ms | unchanged | unchanged |
+| `0x01FF`, the vendor's own worked example | `ACK-ACK` | yes, 103926 ms to 11507 ms | unchanged | unchanged |
+
+The missing ACK in trial 1 is a lost byte and not a refusal: the same frame
+answered on the repeat. **The consistent part is the last two columns.** The
+receiver accepts the frame, acknowledges it, restarts -- its run-time counter
+proves that -- and comes back holding exactly the satellites it held before,
+ephemeris and almanac alike, within 9 seconds. An ephemeris takes 18 to 30 s of
+clean signal to download, so nothing was re-acquired in that gap.
+
+**The first run varied only the mask**, and every frame in it carried
+`ResetMode` 0 and `StartMode` 0. V1.1 page 34 calls `ResetMode` 0 an
+"Immediate hardware reset (Achieved via Watchdog)", which is a plausible reason
+for a clear never to happen, so a second run on the same day tried the other two
+software modes and the other knob:
+
+| frame | `NavBbrMask` | `ResetMode` | `StartMode` | reply | ephemeris after | almanac after |
+|---|---|---|---|---|---|---|
+| `BACE040006020100010005000702` | `0x0001` | 1, software reset | 0 hot | `ACK-ACK` | unchanged, 9 GPS | unchanged, 32 |
+| `BACE040006020100020005000802` | `0x0001` | 2, software reset GPS only | 0 hot | `ACK-ACK` | unchanged, 9 GPS | unchanged, 32 |
+| `BACE040006020000010204000704` | `0x0000` | 1, software reset | **2 cold** | `ACK-ACK` | **0** | **0** |
+
+So the mask is inert on this module in all three reset modes it documents, and
+**`StartMode` is the knob that works**: one frame, and the receiver comes back
+with no ephemeris, no almanac and nothing in either GLONASS or BDS. The read was
+taken twice, 13 s apart and with `CFG-MSG` re-sent in between, because a restart
+that dropped the subscription would read as an empty receiver either way.
+
+**So a cold start by command does exist, and G1 can have it.** The earlier text
+here said the only route was a rail drop of more than 3 minutes. That was true
+of the frames tried at the time and false of the receiver: nobody had moved
+`StartMode` off 0. Both routes are now measured, and the command is the cheap
+one -- instant, no rail, no wait.
+
+**What the mask was believed to do is still unexplained.** V1.1 documents it bit
+by bit and the module acknowledges every frame carrying it. What it does not do
+is change what `NAV-STATUS` reports, at any reset mode.
+
+### A reader of `NAV-STATUS` must check the CASIC checksum, or it will lie
+
+The bench script reassembled the byte stream out of `GNSS_RAWBYTES:` lines and
+found frames by scanning for `BA CE`. With an empty sky that works. **With a
+full one it does not**: the console saturates, hex lines drop, the stream
+misaligns, and a misaligned frame still parses. On 2026-09-11 one such frame
+decoded to a run time of 46 days on a board that had been up five hours, and to
+ephemeris nibbles of 7, 12 and 14 where the encoding defines 0 to 3.
+
+**The corruption does not announce itself.** Re-reading the same captures with a
+checksum test, several rejected frames decoded to values entirely inside the
+valid range and one satellite away from the truth. Only the 32-bit sum
+separates them.
+
+Every number in this section was re-derived from checksum-verified frames after
+that was added, and none of them changed. The rejection rate was 0 to 8 frames
+per capture, worst where the sky was fullest.
+
+### The module has two states and nothing between them
+
+The two frames left over from that run were sent later the same day, on a
+receiver holding 12 GPS ephemerides, 32 almanacs and 6 GLONASS ephemerides:
+
+| what was sent | frame | reply | after |
+|---|---|---|---|
+| `StartMode` 1, a warm start | `BACE040006020000010104000703` | `ACK-ACK` | **nothing cleared**, 12 / 32 / 6 unchanged, run time 155279 ms to 10828 ms |
+| `$PCAS10,2`, the NMEA cold start | `$PCAS10,2*1E` | NMEA has none | **everything cleared**, 12 / 32 / 6 to 0 / 0 / 0 |
+
+**So there is no middle gear.** A warm start was the interesting candidate --
+drop the ephemeris, keep the almanac, which is what a duty-cycled design would
+want -- and this module does not offer it. `StartMode` 0 and 1 keep everything
+whatever the mask says, `StartMode` 2 empties the lot, and nothing addresses
+one class of data without the other.
+
+**`$PCAS10,2` is worth having anyway**, because it does the same job as the
+binary cold start in one sentence that `Gnss::sendNmeaSentence()` already knows
+how to checksum. G1 can use either.
+
+### Ephemeris survives a rail drop of 180 s and not 300 s
+
+Read with `NAV-STATUS` before and after `CMD:GNSS OFF` / `ON`, which really does
+drop the rail -- `Gnss::end()` calls `powerEnable(false)` (`lib/Gnss/src/Gnss.cpp:191`),
+and the module's own run-time counter restarts, so it was not merely a closed
+UART.
+
+| rail off for | ephemeris after | almanac after |
+|---|---|---|
+| 60 s | **kept**, the same three satellites | **kept**, the same six |
+| 180 s | **kept**, the same two satellites | **kept**, the same eight |
+| 300 s | **gone**, empty | **gone**, empty |
+
+**Nothing at all arrives in 21 seconds**, which is how long the module had been
+back when each after-read was taken. That is what makes the rows conclusive, for
+the almanac as much as for the ephemeris. An earlier version argued it from the
+12.5 minutes a full almanac takes to download -- the wrong number for this,
+because that is the whole constellation, and this session's own `nav2` capture
+shows three almanac flags back within about 2.5 minutes of the 300 s wipe. The
+21-second argument needs no such figure.
+
+**So this module holds its data across a rail drop of minutes, on a board that
+routes no `V_BCKP`.** Residual charge on the module's own supply is the obvious
+reading and this bench cannot prove it.
+
+**Read the boundary as one trial per point, not as a constant.** Each row is
+`n=1`, one board, one day, one temperature, one charge state. And if the
+mechanism really is residual charge then the window depends on the discharge
+load, which includes the SX1262 sitting on the same rail -- so a different radio
+state moves it. What the three rows establish is that the window exists and is
+minutes rather than hours. "Between 3 and 5 minutes" is where this board's
+boundary fell once, not a property to design against. Repeats, and a point at
+240 s, are worth having before anything leans on the number.
+
+**What it changes.** A map entry that cycles the rail for a short time comes
+back to a receiver that still holds its ephemeris, where several docs here
+assumed it comes back to nothing. **That is not the same as a measured hot
+start**: no fix was acquired anywhere in this session -- every capture reads
+`q=0` -- so nothing here times a start of any kind, and a hot start also needs
+retained *time*, which was not checked. T-287 still owns the timings and they
+are still the evidence. A stop long enough to pass the window costs the full
+cold start, and the only cold-start figure this project has is the 526 s
+measured on 2026-09-02.
+
+## The power rail is shared with the LoRa radio, and that has a sharp edge
+
+One expander pin gates both parts:
+
+```
+BoardT5S3Pins.h:70  PCA9535_IO00_LORA_GPS_EN 0
+```
+
+So **the GNSS receiver cannot be powered without also powering the SX1262.**
+Any power budget is for the pair, never for the receiver alone.
+
+That would be merely inconvenient if it were not for the panel:
+
+```
+freeink-sdk/.../BoardT5S3/src/LilyGoT5S3LgfxConfig.cpp:162  pinOe  = T5S3_LORA_CS   (GPIO46)
+                                                      :166  pinPwr = T5S3_LORA_CS   (GPIO46)
+```
+
+`docs/lora.md` in the parent repo listed the consequence as `[open]` because
+M5GFX was not checked out. It is checked out now, and it is **confirmed**:
+LovyanGFX's `Bus_EPD` drives both fields as real GPIOs, and hands one of them to
+the i80 peripheral as its DC line.
+
+```
+.pio/libdeps/t5s3pro/M5GFX/src/lgfx/v1/platforms/esp32/Bus_EPD.cpp:83   gpio_hi(_config.pin_oe)
+                                                                 :85   gpio_hi(_config.pin_pwr)
+                                                                 :91   gpio_lo(_config.pin_pwr)
+                                                                 :120  pinMode(pin_oe, output)
+                                                                 :129  bus_config.dc_gpio_num = pin_pwr
+                                                                 :143  pinMode(pin_pwr, output)
+```
+
+Read off the M5GFX 0.2.28 source, not measured. What it means: once the rail is
+up, **every panel refresh asserts the radio's chip select** -- and the radio
+sits on the same SPI bus as the SD card (`SCLK 14 / MOSI 13 / MISO 21`,
+`BoardT5S3Pins.h:27-29`), where a second device driving MISO corrupts a tile
+read.
+
+**The intended defence: hold the SX1262 in reset.** `LORA_RST` (GPIO1) driven
+low should park the part and its MISO with it. `gnssPowerEnable()` in
+`src/main.cpp` does that before it touches the rail, every time.
+
+**Whether any of this matters is untested**, and the hardware pass did not test
+it -- see "What the hardware pass found", check 2. Two things are unestablished:
+whether GPIO46 is ever driven *low* during a refresh at all (`Bus_EPD` is seen
+driving it high, and a deasserted chip select is harmless), and whether reset
+parks MISO high-Z on an SX126x. The reset assertion stays because it is free and
+the failure it guards against is a corrupt tile read, not because it has been
+shown to do anything.
+
+### Why the firmware does that itself instead of trusting the SDK
+
+The SDK has a function for exactly this -- `BoardT5S3::disableGpsLora()`, which
+drives `LORA_RST` low and the rail off (`BoardT5S3.cpp:101-113`) -- and
+`BoardT5S3::begin()` calls it (`:123`).
+
+**Nothing in this firmware calls `BoardT5S3::begin()`.** Grep for it across
+`src/` and `lib/` and there is not one hit; the only code using the expander is
+`LilyGoT5S3LgfxConfig.cpp`, for the EPD power pins. So `disableGpsLora()` has
+never run on this board, `LORA_RST` is undriven at boot, and the rail enable
+sits in the PCA9535's power-on default of "all pins inputs".
+
+That makes the reset assertion mandatory in our own code rather than inherited.
+It is also why `gnssPowerEnable()` writes the expander's output register
+*before* switching the pin to output: the other order would briefly drive
+whatever the register happens to hold, which on a cold boot is high.
+
+There is an unmerged branch (`feat/t5s3-board-begin`) that adds the
+`BoardT5S3::begin()` call for the sake of the user button. Nothing here depends
+on it either way, which is the point.
+
+### The receiver was already powered when the firmware first enabled the rail
+
+**That much is measured. What it implies about "every boot" is not**, and the
+first version of this section claimed the larger thing. Review broke it the same
+day; this is the corrected account.
+
+**What holds.** At run 1's first `CMD:GNSS ON` the receiver was already powered
+and tracking. Two independent signs, neither of which is the TTFF number:
+
+- The UART opened **mid-sentence**: exactly one error of that class in the
+  session, while a rail-cycled start later the same session logged none. (The
+  counter was first *sampled* 14 s and 215 sentences after the open, so
+  "mid-open caused it" is the best explanation rather than a timed observation.) A
+  receiver that had just been powered 100 ms earlier (`GnssConfig::powerSettleMs`)
+  is not in the middle of transmitting a sentence.
+- The first status reported `q=1` with 8 satellites used. A receiver powered at
+  the moment of that command cannot be there half a second later.
+
+**Why the TTFF number is not evidence.** `ttffMs_` is `lastFixMs_ - beginMs_`
+with `beginMs_` set after the UART opens (`lib/Gnss/src/Gnss.cpp`,
+`begin()`/`parseGga`). On a receiver that is *already fixed* and emitting a 1 Hz
+cycle led by GGA, that measures the phase between our UART open and the next
+GGA -- a uniform draw over roughly 0 to 1000 ms. Any value under about 1.2 s
+says "already tracking" and nothing more. The 531 ms and 526 ms readings landing
+close together is chance, not reproduction, and the earlier claim that "two
+independent boots giving a half-second fix is not a coincidence" was numerology.
+
+**Why the third run was not independent at all.** `gnss_pass2.py` ends on
+`CMD:GNSS ON` and never sends `OFF`, so run 2 left the rail **firmware-commanded
+on**. The reflash that followed reset the S3 and not the PCA9535, which sits on
+the 3.3 V rail and latches its output and direction registers until it loses
+power. So the confirm run found an already-tracking module because run 2 had
+turned it on and nothing turned it off.
+
+**Why "the board powers it by default" does not follow.** The same latching
+argument applies to run 1. No reset in any of the three runs power-cycles the
+expander: a serial-open reset, a reflash and `ESP.restart()` all reset only the
+S3. The board ran its **factory firmware** earlier the same day, and that firmware
+presumably drives this rail -- **assumed, not established**; nobody has read its
+expander writes. If the board was not physically unplugged in between,
+run 1's "already powered" is fully explained by a latched write from that
+session -- no pull-up and no board default needed. Run 1's "fresh boot at millis
+401" was itself a warm reset caused by the test script opening the port, which
+is precisely the kind of reset the expander survives.
+
+**Why the "no backup supply" conclusion is withdrawn.** Run 2 dropped the rail
+for 49.7 s (not the 45 s previously written) and got no fix in the following
+40 s, with 3 then 6 satellites tracked and best C/N0 27. A fix needs four usable
+satellites. A backup-powered hot start indoors at 3 to 6 tracked can fail to
+reacquire in 40 s just as easily as a cold one, so that outcome discriminates
+nothing. Receivers in this class can also retain almanac and ephemeris in their
+own flash, which no rail outage clears at all.
+
+**What actually is established by run 2:** the `ON`/`OFF` path really does
+control the module. The re-enable came back `q=0` with `inview` dropped from 20
+to 12 -- a module that had stayed powered and fixed would have answered `q=1` on
+its first GGA after the port reopened.
+
+The first version of this paragraph also cited "every counter reset" as evidence.
+That was vacuous: `begin()` zeroes the counters in software on any successful
+call, powered module or not. Same class of check as the SD-card test below, and
+deleted for the same reason.
+
+#### The experiment was run, 2026-08-31, and it killed my own explanation
+
+**The board did not lose power, and this section said it did.** Corrected
+2026-09-01: the maintainer had said no battery was attached, this section rested
+its whole validity on that, and it was a slip -- **the battery is connected.**
+
+**Label that claim `assumed`, not measured.** It comes from conversation on
+2026-09-01, and the opposite came from conversation the day before -- the same
+class of evidence that voided the numbers below. Nothing on the device has
+confirmed it. **Two free ways to settle it, neither needing a code change:**
+`CMD:SCREENSHOT` on Home shows the battery percentage the theme draws
+(`src/components/themes/roundedraff/RoundedRaffTheme.cpp:70-74`), and step 2a of
+[`gnss-to-map-plan.md`](gnss-to-map-plan.md) settles it as a by-product -- a
+`reset=POWERON` that appears only once the cell is unplugged *is* the proof the
+cell was holding the board.
+
+So
+removing USB leaves the board running on the cell and the 3.3 V rail up. Every
+"power cycle" in this file's evidence removed nothing.
+
+The USB device node still vanished, which is what the test scripts watched, and
+that is only the USB peripheral losing its host. **A vanished node is not a power
+cut** -- written here already for deep sleep, and true for this reason too.
+
+Two things follow immediately: `cfg0=0x00` surviving is expected rather than
+puzzling, and **no test in this file has ever power-cycled the expander.** The
+outage figures below (21.0 s, later 345 s and 381 s) are node-absence, not
+outages, and the wording keeps them only because the logs do.
+
+**The outage figure was also read off the wrong line** -- the first version said
+7.7 s, which was the script's wait for the maintainer to pull the plug, not the
+gap; the node was absent 21.0 s. Then `CMD:GNSS PROBE`, which reads the
+expander's registers and opens the UART with **no power hook at all**, before
+anything can write the rail.
+
+```
+GNSS_PROBE:cfg0=0x00 out0=0xFF in0=0xFF io00_dir=output io00_level=high
+           bytes=1767 sent=36 cserr=1 ferr=0
+```
+
+**Two results, and they point in different directions.**
+
+**Solid, but narrower than it reads -- the mechanism is a stale latch, not board
+design; see "Settled 2026-09-01" below. The receiver is powered without this
+firmware asking.** 1,767 bytes and
+36 checksum-valid sentences in 2.5 s, with `powerEnable` set to `nullptr` so no
+code path could have touched the rail. That half of the original finding stands.
+
+**With one caveat the first draft hid.** These registers were read **two board
+resets and 5.5 minutes after** the power-on they are being interpreted against.
+The bridge is a code argument -- nothing in this firmware writes port 0, verified
+by grep and by the port arithmetic in `updatePca9535Bit` -- which is read off the
+code, not measured. And `CMD:GNSS PROBE`'s own comment demands a `POWERON` reset
+cause before the answer means anything: **no log in this session contains one.**
+The power-cycle boot's capture started mid-line at millis 944, past the ROM
+banner, and the boot that actually ran the probe was an esptool reset. The rerun
+is cheap now that the dropped-command failure mode is understood: open the port
+*before* the replug.
+
+**Killed: the pull-up explanation, which was mine.** This file previously said
+"the expander comes out of reset with every pin an input and something on the
+board pulls the enable line up". `io00_dir=output` says the opposite. The pin is
+being **driven**, not pulled. A pull-up hypothesis predicts an input, and that
+prediction failed.
+
+**And `cfg0=0x00` is not explained by anything in this firmware.** That is all
+eight pins of port 0 configured as outputs. `gnssPowerEnable()` sets one bit by
+read-modify-write (`BoardT5S3::setPca9535PinMode`), which would leave 0xFE, and
+the EPD code writes only port 1 -- `PCA9535_IO10..IO17` are linear indices 8 to
+15, so `updatePca9535Bit` addresses register 0x07, never 0x06. Nothing here
+writes eight bits of port 0.
+
+The part's own datasheets settle what a reset would have produced, and they are
+unanimous across four vendors plus the common clone:
+
+| fact | value | source |
+|---|---|---|
+| Configuration register reset default | **0xFF**, all pins inputs | TI SCPS129K Tables 8-3, 8-7; NXP Rev. 6 Tables 11, 12 |
+| Configuration bit polarity | 1 = input, 0 = output | TI SCPS129K 8.3.2; NXP Rev. 6 6.2.5 |
+| Output register reset default | 0xFF | TI Table 8-5; NXP Tables 7, 8 |
+| Register map | 0x00/01 input, 0x02/03 output, 0x04/05 polarity, 0x06/07 config | TI Table 8-3; NXP Table 4 |
+| Any way for a register to survive losing VCC | **none** -- no backup pin, no non-volatile storage | both, by omission and by 8.2 |
+
+Checked against TI SCPS129K (rev. March 2021), NXP PCA9535/PCA9535C Rev. 6,
+NXP PCA9535A Rev. 1.1, Nexperia Rev. 1.1 and the Xinluda XL9535 clone, which
+agrees on all of it.
+
+**So a genuine reset cannot produce 0x00 here.** But the reset condition is about
+volts, not about the cable: it trips when VCC at the chip falls below VPORF,
+0.77 to 1.14 V (TI Table 10-1), and both vendors say a *guaranteed* power-reset
+cycle needs VCC below 0.2 V. Standby draw is 1 uA max. So an unloaded rail held
+up by bulk decoupling decays slowly, and **whether 21 s at the connector took
+this board's 3.3 V rail below 0.8 V at the expander is a board question no
+datasheet answers.** The ESP32 clearly reset, so the rail fell below its brownout
+of roughly 2.5 V; the remaining 1.7 V is the whole question.
+
+Three candidates, and this probe cannot separate them:
+
+1. **The expander never lost power.** No longer one candidate among three --
+   **this is the reading, as of 2026-09-01, and it is now proven** -- by
+   `CMD:GNSS RELEASE` rather than by any power cycle, see "Settled 2026-09-01"
+   below. `cfg0=0x00` is a latch that has survived every reset since something
+   wrote it, plausibly the factory firmware, which does configure the whole
+   expander.
+
+   **The route this paragraph used to argue is withdrawn, and it was resting on an
+   unconfirmed claim.** It said the battery is connected, so removing USB never
+   dropped the rail and the datasheet's VPORF threshold (0.77 to 1.1 V, TI
+   SCPS129K Table 10-1) never came into it. Whether a cell is fitted at all is
+   **still unconfirmed** -- `batt_mv=4102` is a node voltage the BQ25896 holds near
+   float with or without a cell (T-583). The conclusion no longer needs it: the
+   release test does not care what powers the board.
+2. **This part's power-on default is not all-inputs.** An NXP PCA9535 resets its
+   configuration registers to 0xFF; a second-source part or a clone may not.
+   Datasheet question, no hardware needed.
+3. ~~**The read is misaddressed**~~ -- **excluded 2026-08-31.** `CONFIG1` reads
+   **0xC4**, exactly the value predicted from `prepareEpdPower()`'s writes, so
+   register 0x06 is being addressed correctly and `cfg0=0x00` has to be believed.
+   Review
+   added a specific mechanism for this that I had not considered: the PCA9535
+   holds a command-byte pointer until it is rewritten, and a read with the
+   pointer at 0x00 returns Input Port 0, whose value is the external pin levels
+   -- all-low inputs read exactly 0x00. Argued against by the data, not
+   excluded by it: the three reads returned 0x00, 0xFF and 0xFF, so at least
+   0x06 is being addressed differently from 0x02 and 0x00, which a stuck pointer
+   would not do.
+
+**What the datasheet makes most likely is candidate 1**, and the datasheet was
+right.
+
+#### Settled 2026-09-01: candidate 1, and no power cycle was needed
+
+**`CMD:GNSS RELEASE` answered it on the bench, twice.** The power-cycle route was
+dropped before it was ever run: it needed unplugging connector `P2`, whose part
+number is `[open]` and which nobody here has identified on the board, and it was
+only ever a detour. The direct question is not *what does the expander come up
+as* -- that is a proxy -- but **does anything other than the expander hold
+`LORA_GPS_EN` high**. Stop the expander driving the pin and ask the receiver.
+
+| window | run 1 | run 2 | what it shows |
+|---|---|---|---|
+| `cfg0_base` | `0x00` | `0x00` | bit 0 clear: the pin was already an **output** before anything touched it |
+| baseline, 3 s | 1722 B / 42 sentences | 1606 B / 38 | the receiver really was streaming first |
+| `cfg0_released` | `0x01` | `0x01` | the I2C write took -- bit 0 set, pin now an input |
+| released, 5 s | 308 B / 6 | 467 B / 10 | **NMEA stops** |
+| `cfg0_restored` | `0x00` | `0x00` | back to output |
+| restored, 4 s | 1737 B / 43 | 1743 B / 43 | the receiver returns; the test left the board as it found it |
+
+Measured on the LilyGo T5 S3 Pro, `env:t5s3pro`, firmware built from
+`feat/t5s3-gnss` at the merge of `release/lilygo-t5-s3-pro`. The instrument is
+the receiver itself -- `Gnss::bytesRead()` and `Gnss::sentencesParsed()` deltas
+across three windows -- and no external meter is involved.
+
+**The released window is not zero, and the most likely reason is a rail coasting
+down** -- 308 B against that run's own 574 B/s baseline is 0.54 s, 467 B against
+535 B/s is 0.87 s. That reading is **inferred, not measured**: the alternative is
+the driver's RX ring handing back bytes that arrived before the release. It is
+disfavoured because `sample()` polls in a tight loop, so the ring is near empty,
+but nothing here measured the ring depth at the moment of release. The window is
+5 s and not 3 for the same reason.
+
+**Both baselines run about 30 % under this file's 810 to 816 B/s**, at a matching
+sentence rate (14 and 12.7/s against 14.9). That is 41 to 42 bytes per sentence
+against the established 55, which is what a NOFIX sentence mix on an indoor desk
+looks like, and it is **unconfirmed**. It does not touch the conclusion: the
+arithmetic above uses each run's own baseline, not the file's headline number.
+
+**So the rail was held by the expander's own latched output.** Nothing else on
+the board holds it. `cfg0=0x00` is a latch that no reset has ever cleared,
+because the expander has never lost power -- which is also why every "power
+cycle" in this file's earlier evidence could not have cleared it, battery or no
+battery.
+
+**One earlier claim needs its scope narrowed rather than withdrawn.** "The
+receiver is powered without this firmware asking" stands as written: in the boot
+that ran the probe, no code here wrote the rail. What it never established, and
+what the first draft implied, is *by design* -- the mechanism is a stale latch,
+most plausibly left by the factory firmware, which does configure the whole
+expander.
+
+**Two consequences for step 3.** The receiver cannot be assumed powered on a
+board whose expander has genuinely been cold-started, so `gnssPowerEnable()`
+stays the path that turns it on rather than an optional courtesy. And a rail this
+firmware did not ask for is a rail nobody is accounting for in the power budget,
+which is step 2b's problem.
+
+**Still open here:** `reset=UNKNOWN` came back from this boot, which began with
+an esptool hard reset. That is **one** sample, not two -- both `RELEASE` runs sat
+on the same boot, because nothing between them reset the board
+(`mapcmd.open_port` never toggles DTR/RTS). Reset cause is a per-boot fact, so
+two runs of the command are one observation of it. The field is worth keeping in
+the reply, but on this board it has not yet named a single reset cause, so
+nothing should be concluded from the absence of `POWERON`.
+
+#### The detection method was wrong, and it cost three attempts
+
+**A vanished USB device node does not mean the board lost power.** It means the
+USB peripheral went down, and on this board the ordinary cause is the firmware
+falling asleep. Three probe attempts on 2026-08-31 waited for the node to
+disappear and treated that as an unplug. One of them was demonstrably **deep
+sleep**: the board itself said so.
+
+**Retracted the same day: `millis` continuity was not sound evidence for the
+other two.** The first draft here argued that `millis` continued straight across
+the gap, which no power loss can do. But opening the port can deliver
+kernel-buffered bytes from before the unplug, so the first lines' `millis` need
+not belong to the current boot -- a proxy used without checking the proxy, which
+is the same mistake one level up. What stands is `reset=DEEPSLEEP` for the one
+boot that reported it, read from the chip. Whether the two earlier attempts were
+sleep or real power loss is **unknown**, and the probe line is now the only way
+to tell.
+
+`reset=DEEPSLEEP` in the probe reply is what finally settled it. Which is the
+lesson: **the device is the only authority on whether it lost power**, and the
+probe now self-certifies -- the register values arrive in the same line as the
+reset cause that qualifies them. No line saying `reset=POWERON`, no conclusion.
+This is why that field was added, and it earned itself on the first run.
+
+**Before any of that, rule out the boring cause.** A `CMD:GNSS` that answers
+nothing may not be compiled in. On 2026-09-01 two probe attempts were spent on
+the RX-starve hypothesis when the board was simply running a build without
+`-DENABLE_GNSS_CMD` -- that flag lives in `env:t5s3pro` and in no release env, so
+the whole handler is absent and an unknown command falls through in silence. The
+tell is cheap and decisive: **another `CMD:` still answers.** `CMD:SCREENSHOT`
+and the map console both replied in the same session, so the handler loop was
+alive and only the GNSS branch was missing. Check that first, because the
+RX-starve trap makes the wrong diagnosis the attractive one and it costs a flash
+to find out otherwise.
+
+Two consequences for any repeat, both free:
+
+- **Keep the board awake.** Real input resets its sleep deadline, so a harmless
+  read-only command every 15 s during a long wait stops it dropping off. The
+  three failed attempts each sat silent for minutes and were put to sleep by
+  their own patience.
+- **Wait in one long window, not four short ones.** The firmware's stuck-byte
+  drain only fires after 5 s of the same byte, so a reader that gives up after
+  12 s can never see the recovery it triggered.
+
+  **And whether that drain clears the wedge is unverified.** In the session where
+  commands finally arrived it never fired -- zero `serial head byte` lines -- so
+  they arrived because the board was awake and its buffer clean, not because
+  anything was cleared. What is verified is that the **diagnostic** names the
+  byte, which is what turned this from a coin flip into a mechanism. What would
+  settle the fix: reproduce the wedge and watch a `CMD:` succeed within seconds
+  of the drain line appearing.
+
+And it explains something the bring-up doc had filed as an open USB fault: at
+least today's dropouts were auto-sleep, not a bus problem.
+
+**The cheap check that excludes 3, and it has not been run:** read `CONFIG1`
+(0x07) in the same probe. This firmware *does* configure port 1, for the EPD
+pins, so the expected value is computable rather than a hand-wave.
+`prepareEpdPower()` sets `IO10`, `IO11`, `IO13`, `IO14`, `IO15` as outputs and
+`IO16`, `IO17` as inputs, and **it never touches `IO12`** (the button, linear
+index 10) -- `BoardT5S3::begin()` would set that one as an input and never runs.
+So under the all-inputs default `CONFIG1` should read **0xC4**.
+
+The first version of this prediction enumerated the five outputs and said
+"exactly", omitting `IO12` -- so a correct 0xC4 would have read as a failure to
+whoever ran it. Caught by review before anybody did.
+
+So the honest state: **the receiver is powered before any firmware asks, by a
+driven expander output that this firmware did not write.** Why that output
+survives a power cycle is open, and the mechanism matters for T-579 -- a latch
+that any reset preserves is a very different power story from a board that holds
+the rail by design.
+
+#### An acquisition really happened. The 41,751 ms figure still is not it
+
+**Corrected before merge, by the author, and it is the same mistake twice.**
+
+The run reported `ttff=41751` after the power cycle, with two statuses at `q=0`
+first (14.3 s and 22.7 s of `Gnss` uptime). This file's first draft called that
+"the first honest acquisition figure". It is not one.
+
+The receiver never lost power between the USB replug and that command. The board
+was reset twice in between -- once by a port open, once by esptool -- but a board
+reset does not touch the rail, so the receiver had been powered and searching the
+whole time. From the log timestamps and the board's own `millis`:
+
+```
+USB replug, receiver powered:  18:56:44
+CMD:GNSS ON:                   19:02:17   -> 333 s (5.5 min) already powered
+first fix:                     19:02:59   -> 41.8 s after begin()
+```
+
+So the acquisition took about **6.2 minutes** from power-on, and `ttff=41751` is
+its **last 11 %**. `timeToFirstFixMs()` measures from `begin()`, and `begin()`
+arrived five and a half minutes late. Wrong interval attributed to the number --
+exactly what the 531 ms readings did, in the other direction.
+
+**What does survive, and it matters:**
+
+- At `begin()` the receiver was **not** holding a fix, proven by two `q=0`
+  statuses. So this reading reflects an acquisition in progress rather than a
+  phase offset, which is a qualitative difference from every earlier run and does
+  corroborate the review's argument about what a sub-second value means.
+- ~~**The reacquisition took roughly 6.2 minutes indoors**~~ -- **void as of
+  2026-09-01.** It was measured from the USB replug on the belief that the
+  receiver had lost power there. With the battery connected it never did, so the
+  interval spans "the receiver was already running" to "a fix", and that measures
+  nothing. **A fifth number attributed to the wrong interval**, and the first one
+  where the wrong endpoint came from a fact about the hardware rather than a
+  misread log. There is still **no acquisition figure** for this receiver.
+
+  Two earlier attempts to salvage this number both failed, and the sequence is
+  the lesson. First it was published as an acquisition figure; review pointed out
+  the counter started 5.5 minutes late. Then it was relabelled a warm
+  reacquisition after a 21 s power interruption. Now there was no power
+  interruption at all. **A number that needs relabelling twice is a number whose
+  endpoints were never established** -- the honest move was to drop it at the
+  first correction, not to find a weaker claim it could still support.
+
+The lesson is not about GNSS. `timeToFirstFixMs()` now carries a warning that a
+small value means nothing, and the author then read a large value as if it meant
+something. **A counter that starts when you happen to start looking measures your
+attention, not the world.** A real TTFF needs the measurement to begin when the
+receiver does, which means either the firmware powers it, or the number comes
+from somewhere other than this counter.
+
+## The serial command
+
+Devel-only, `-DENABLE_GNSS_CMD=1` in `env:t5s3pro` and in no release env. Two
+independent reasons, and either one is enough under `CLAUDE.md`'s security rule:
+it **powers a radio rail**, and its reply is **the rider's exact position**.
+
+```
+CMD:GNSS           ->  GNSS_FIX:... | GNSS_NOFIX:... | GNSS_OFF
+CMD:GNSS ON        ->  GNSS_OK:on          powers the rail, opens the UART
+CMD:GNSS OFF       ->  GNSS_OK:off         closes the UART, drops the rail
+CMD:GNSS RAW ON    ->  GNSS_OK:raw=1       every sentence to the log
+CMD:GNSS RAW OFF   ->  GNSS_OK:raw=0
+CMD:GNSS RAW BYTES ON  -> GNSS_OK:rawbytes=1   every byte, hex-dumped
+CMD:GNSS RAW BYTES OFF -> GNSS_OK:rawbytes=0
+CMD:GNSS SEND <hex>    -> GNSS_OK:sent=<n> bytes, or GNSS_ERR:...
+CMD:GNSS PROBE     ->  GNSS_PROBE:...      reads the expander, writes no rail
+CMD:GNSS RELEASE   ->  GNSS_RELEASE:...    stops the expander driving the rail pin,
+                                           then puts it back (step 2a)
+```
+
+**T-210, the devel passthrough T-209's bench needs.** `SEND` writes a
+pre-computed frame verbatim -- hex with or without spaces, no framing and no
+checksum added, since T-209's frames already carry theirs. `RAW ON` only ever
+sees NMEA sentences that passed a `$...*hh` checksum, so a binary CASIC reply
+(an ACK-ACK is `BA CE ...`, no `$` and no NMEA checksum) never reaches it and
+the bench would be blind to every ACK/NAK. `RAW BYTES ON` sees every byte
+before any NMEA framing is applied, so it catches those too -- at the cost of
+seeing ordinary NMEA traffic as well, hex-dumped in 32-byte
+`GNSS_RAWBYTES:` lines. `RAW BYTES OFF` flushes whatever is still buffered.
+Both `Gnss::sendRaw()` and `Gnss::GnssRawByteSink` are new library surface
+(`lib/Gnss/include/Gnss.h`); everything else in this section is unchanged.
+
+**Verified on hardware, 2026-09-11**, build `0.2.1-t5s3pro`, over
+`/dev/ttyACM0`, one continuous serial capture (no reset mid-run). `CMD:GNSS
+SEND BACE04000602FF01000003020602` (the vendor's worked example, no spaces)
+round-tripped: `GNSS_RAWBYTES:BA CE 04 00 05 01 06 02 00 00 0A 02 05 01` --
+`BA CE 04 00 05 01 06 02 ...`, the ACK-ACK V1.1 predicts, showed up in the
+`RAW BYTES ON` log where `RAW ON` would have shown nothing. This is also
+T-209 step 1 ("prove the path"): the path is proven, so T-209's remaining
+steps 2-7 ran the same day.
+
+**`RELEASE` is the one that writes**, which is why it is not folded into `PROBE`.
+It drops the receiver's power for five seconds by design, and a caller who
+expected a read would lose the fix underneath them. It restores the pin before it
+replies, and the reply carries the `CONFIG0` readback at each stage so a restore
+that silently failed cannot be mistaken for a clean run.
+
+A status reply is one line of `key=value`, so a host script can grep it:
+
+```
+GNSS_FIX:q=1 used=9 inview=14 tracked=11 bestsnr=38 lat=12.345678 lon=98.765432
+  alt=191.0 hdop=1.20 speed=0.0 course=0.0 utc=1788178462 ttff=42313 age=612
+  sent=1204 cserr=0 bytes=98304
+GNSS_NOFIX:q=0 inview=11 tracked=4 bestsnr=19 utc=1788178462 uptime=63120
+  sent=214 cserr=0 bytes=17408
+```
+
+(Wrapped here for reading. On the wire it is one line. **The coordinates above
+are invented**, not a recorded fix -- this repo is public and a real one would be
+the maintainer's address. See Privacy, below.)
+
+**`used`, `inview` and `tracked` are three different counts, and the gaps
+between them are the diagnosis.** `inview` comes from the almanac -- what the
+receiver believes is above the horizon, which it will happily report from
+indoors. `tracked` counts satellites reporting a non-zero C/N0, so it is what
+the antenna can actually hear. `used` is what went into the solution. Under a
+ceiling `inview` stays healthy while `tracked` collapses and `bestsnr` sits in
+the teens; that pair, not the absence of a fix, is what says "no sky".
+
+**`cserr` is the baud-rate check and `ferr` is not.** `cserr` counts sentences
+whose checksum did not match: at zero with `sent` climbing, the UART is clean;
+climbing together with `sent`, the baud rate is wrong -- the framing is close
+enough to produce lines but not correct ones. `ferr` counts input that had no
+usable `*hh` at all, which is a garbage burst on a cold UART or a line lost to
+buffer overflow. They were one counter until review pointed out that mixing them
+makes the first useless: opening the UART on an already-talking receiver logs a
+`ferr`, and reading that as a checksum error is how a clean line looks dirty.
+
+`bytes` climbing with both counters at zero and `sent` flat means something is
+talking and it is not NMEA.
+
+### Privacy
+
+`GNSS_FIX` prints latitude and longitude to six decimals, which is metres.
+`CLAUDE.md`'s screenshot rule covers this: a log or a screenshot carrying a real
+fix taken at the maintainer's address does not leave the local machine, and a
+debug line printing exact coordinates is the same leak as a rendered map of the
+same place. Redact or discard, do not publish.
+
+## The map reads it
+
+**Written 2026-09-01, and ridden the same day.** The claim that mattered -- a
+dot on the panel from this receiver, with no phone connected -- was settled on
+the device: the marker followed the rider. The logged ride, read out 2026-09-02,
+then priced it: 526 s to a first fix, three to five satellites, gaps of up to
+21 s while the map renders. Those numbers are below. Step 3 of
+[`gnss-to-map-plan.md`](gnss-to-map-plan.md).
+
+**The wait in front of the map** -- the screen a rider sees while the receiver
+searches, the sky panorama on it, and who owns the rail across the handover --
+is [`gnss-acquire.md`](gnss-acquire.md). Built 2026-09-10, not yet on hardware.
+
+**Three claims in this section are still read off the code, not observed**: the
+BLE path with `mapGnssPosition 0`, the rail's state after a map-exit crash, and
+the tiles under SPI contention. Each says so where it is written, and the third
+is why T-576 is still open.
+
+### It is three callers of one function, not an abstraction
+
+`MapActivity::applyFix()` is already transport-agnostic: the follow decision, the
+persisted-fix banner, the marker move and the debounced save all sit on its far
+side, so a new position source adds a reader and nothing else.
+
+| caller | source | `MapActivity.cpp` |
+|---|---|---|
+| 1 | the BLE packet from the phone | the `getLatest(update)` block in `loop()` |
+| 2 | the command console, `pos ...` | the `consoleState_.hasPosition()` block in `loop()` |
+| 3 | **the on-device receiver** | `pollGnssFix()`, called from `loop()` |
+
+No interface, no base class, no per-source state machine. One function, three
+callers of it.
+
+### What was added
+
+- `src/GnssAccess.h` -- the whole seam: `extern Gnss gnss` and `gnssStart()`.
+  Entirely behind `ENABLE_GNSS_CMD`, so on any other env the header is empty and
+  `MapActivity` compiles as it did before.
+- `gnssStart()` in `main.cpp`, lifted out of the `CMD:GNSS ON` branch that used
+  to hold it inline. Two callers must not carry two copies of the pin numbers,
+  the baud and the ring size.
+- `CrossPointSettings::mapGnssPosition`, `uint8_t`, **default 0**. In the
+  settings file, deliberately **not** in `SettingsList`: a Settings row would
+  offer every rider a toggle for hardware one development board has.
+- `mapGnssPosition` in the `CMD:SETTING` allow-list, itself behind
+  `ENABLE_GNSS_CMD` -- a build with no receiver answers `SETTING_ERR:unknown`
+  rather than `SETTING_OK` for a toggle that cannot do anything.
+- `MapActivity::pollGnssFix()`, plus the rail's lifecycle in `onEnter()` /
+  `onExit()`.
+
+### Three decisions inside it, and the reason for each
+
+**Heading was 0 and stayed 0, until a ride found it.** Mapping the course
+straight through would be wrong rather than rough -- at rest it is noise
+(`speed=1.3 course=211.9` on a stationary desk, measured 2026-08-31) -- so the
+first cut passed 0 and left step 4 for later. On the first ride, 2026-09-01, the
+marker followed the rider correctly and its arrow pointed north the whole way. **A wrong heading and a missing one look identical on the
+panel**, which is why "leave it for later" was the wrong call and not a
+conservative one. `MapGnssHeading` now derives it -- see "Heading, and the gate
+that decides whether to believe the course".
+
+**A sample is identified by when the driver's fix last changed**, computed as
+`millis() - Gnss::fixAgeMs()`. `Gnss::poll()` returns "something changed", but
+`main.cpp`'s `loop()` is the one calling `poll()` and it consumes that answer, so
+a second reader needs its own way to tell a new sample from the same one. The
+change instant is constant between changes and moves on every one of them.
+
+**`quality == 0` and `quality == 6` are skipped.** 0 is no fix. 6 is dead
+reckoning with no satellites behind it (`Gnss.h`), and a map whose whole claim is
+*where am I* must not draw a position nothing measured. `fix.valid` cannot do
+this job: it latches true on the first solution and stays true, so it says "has
+ever had a fix", not "has one now".
+
+### What to expect from this receiver, by placement
+
+**The lesson from the first ride, and it is not about the receiver.** Nobody had
+written down what a good result looks like, so eight minutes and forty-six
+seconds to a fix read as a failure rather than as the price of a cold start
+behind a windscreen. An expectation nobody recorded cannot be met or missed --
+it can only be a surprise. This table exists so the next run is a **check**
+instead of a reaction.
+
+Almost all of it is `[open]`. That is the point: it says what is not known, and
+one row at a time closes it.
+
+| placement | satellites used | HDOP | cold fix | measured? |
+|---|---|---|---|---|
+| car dashboard, inside | **3 to 5** | **3.0 to 4.2** | **526 s** (upper bound, from boot) | measured 2026-09-02, one ride, T5 S3 Pro |
+| indoors, on a desk, stationary | **8 to 9** | **1.4 to 1.8** | not measured | measured 2026-09-01, two runs, T5 S3 Pro |
+| open sky, stationary outdoors | `[open]` | `[open]` | `[open]` | **never measured** |
+| handlebar, moving, open sky | `[open]` | `[open]` | `[open]` | **never measured** |
+| rucksack strap, walking | `[open]` | `[open]` | `[open]` | **never measured** |
+| the L76K's own datasheet figures | `[open]` | -- | `[open]` cold / warm / hot | **never read** |
+
+Three things to be careful about when filling a row in:
+
+- **Name the device.** One C3 or S3 binary drives more than one board, and a
+  build string does not say which hardware produced a number.
+- **Say whether the receiver was already tracking.** `Gnss::timeToFirstFixMs()`
+  is not a TTFF when the rail was already up, and anything under about 1.2 s
+  means only "already tracking".
+- **One run is one sample.** The 1.3 km/h "noise floor" in this file was one
+  reading treated as a floor, and a stationary desk later reported 23.7 km/h.
+
+**Not for the public site.** These are bring-up numbers from a development
+board in the worst and the second-worst placements it will ever see, and the
+open-sky rows -- the ones the product actually lives in -- are empty. Nothing
+here is a claim about what a rider gets. `docs/site.md` states what works today;
+this does not qualify yet.
+
+### Ten minutes to a first fix outdoors, and the design is the likely cause
+
+**Reported from the logged ride, read out 2026-09-02: over ten minutes outdoors
+before the receiver had a position.** That is not a bring-up curiosity, it is a
+product problem -- a device whose whole claim is *where am I* answering it a
+quarter of an hour after the rider stops is answering the wrong question.
+
+The estimate this branch wrote down was wrong by an order of magnitude. "Tens of
+seconds from cold" is in the `onEnter()` comment and in the plan's step 5 note,
+and it was arithmetic-free guesswork.
+
+**Two mechanisms, not one, and the first draft of this section named only the
+first.** Corrected 2026-09-02 once the rider said where the device had been.
+
+1. **This branch's own design.** The rail comes up in `MapActivity::onEnter()`
+   and goes down in `onExit()`, so the receiver loses power every time the map
+   is closed. With no power it keeps no ephemeris and no almanac, so **every map
+   entry is a cold start**.
+2. **The device was on a car dashboard**, where the receiver saw three to five
+   satellites all trip (see below). A cold start has to read ephemeris off the
+   satellite broadcast without a single bit error, and marginal signal makes
+   that fail and restart repeatedly. A cold start under open sky and a cold
+   start under a windscreen are not the same event.
+
+So the ten minutes is the product of both, and **neither number is separable
+from this run**. Attributing it to the rail cycling alone -- which this file did
+for an hour -- overstates what one ride can show.
+
+**`[open]` -- the 12.5 minute almanac figure is textbook GPS and not cited from
+a primary source here, and the L76K's own cold/warm/hot TTFF numbers have never
+been read off its datasheet.** Both belong in this file before the mechanism is
+treated as settled. What would confirm it cheaply: a second map entry a minute
+after the first should fix in seconds if the receiver kept anything, and in
+minutes again if it did not.
+
+**And the board may not offer a way out.** The L76K's backup supply is what
+normally keeps ephemeris alive across a power cut, and `BoardT5S3Pins.h` exposes
+exactly three GNSS-related lines -- `T5S3_GPS_RXD` (44), `T5S3_GPS_TXD` (43) and
+the shared `PCA9535_IO00_LORA_GPS_EN`. There is no separate backup rail in the
+header. Whether the module has one wired on the board at all is a schematic
+question for LilyGo, and the vendor thread is open.
+
+So the design choice this branch made deliberately -- no silent power drain,
+rail follows the map -- **bought the wrong thing**. It saves current the rider
+was not asking to save and spends the one resource the product cannot get back,
+which is the seconds between opening the map and knowing where you are. Step 5
+of [`gnss-to-map-plan.md`](gnss-to-map-plan.md) was framed as "can the receiver
+stay powered during a ride"; the real question is now the opposite one: **what
+does it cost to never power it down**, and is there any acceptable middle.
+
+**Needs observing more than once before anything is changed.** One ride is one
+sample, the sky was whatever it was that morning, and the receiver's state
+before the ride is not known with certainty. The next rides should each record
+what the fix cost, which `gnss.csv` now makes possible.
+
+#### The log confirms it: 526 s, and the fix landed at 65 km/h
+
+**Two rides, not one, and this is the second.** The first, on 2026-09-01, ran a
+build with no heading module and no fix log -- it is the one that found the arrow
+pointing north. `GnssLog` landed at 23:18 that night and `MapGnssHeading` at
+22:46, so any ride carrying a `gnss.csv` with `moving` and `heading` columns is
+later than both. Derived from commit timestamps on `feat/t5s3-gnss`, not from a
+note anybody wrote at the time; the two were called "the first real ride" in two
+different sections until 2026-09-02.
+
+`gnss.csv`, boot 2, downloaded 2026-09-02. **The first row with a solution is at
+`uptime_ms` 526,246 -- 8 minutes 46 seconds after boot -- and it already reads
+65.6 km/h.** So the rider set off without a position and got one nearly nine
+minutes into the trip. The rider's own report of "more than ten minutes" and the
+file agree.
+
+It is an upper bound on time-to-first-fix rather than a measurement of it: the
+zero point is the device booting, not the receiver powering up, and the map has
+to be opened in between. It is still the first honest number this project has
+for a genuine cold start, and every earlier `ttff` reading was the useless kind
+`Gnss::timeToFirstFixMs()` warns about.
+
+#### The receiver did WORSE outdoors moving than indoors sitting
+
+Not a typo, and it is the finding worth chasing:
+
+| | satellites used | HDOP |
+|---|---|---|
+| indoors, stationary, night before | **8 to 9** | **1.4 to 1.8** |
+| outdoors, riding, 60 to 85 km/h | **3 to 5** | **3.0 to 4.2** |
+
+The whole ride ran on 5 satellites or fewer and never once matched what a desk
+indoors gave it.
+
+**Answered by asking the rider: the device sat on a car dashboard, inside the
+car.** That is one of the worst places a GNSS receiver can be. The roof removes
+most of the sky, the windscreen takes the rest at a shallow angle, and modern
+athermic screens carry a metallised coating that attenuates L-band badly. Three
+to five satellites is the ordinary result there, not an anomaly.
+
+The reason a desk indoors beat it is the same reason: a room has windows on the
+sides and a receiver sitting still can integrate for as long as it likes, while
+a dashboard has one heavily attenuating window in front and everything else is
+steel.
+
+So the first hypothesis was the whole story, and the second one is **not
+needed** to explain this ride:
+
+- **The map's own rendering** -- panel 15% busy, 529 refreshes an hour, an EPD
+  bus switching next to the antenna. Nothing here shows it, and nothing here
+  clears it either. It stays `[open]`, and it is cheap to test whenever
+  somebody wants to: one stationary outdoor spot, once with the map open and
+  once with the map closed and `CMD:GNSS ON` from the console. Same sky, same
+  antenna, and the only difference is whether the panel works.
+- **Still acquiring** -- ruled out. The sat count never climbed across seven
+  minutes.
+
+**And weigh the ride accordingly, but do not dismiss it.** A car dashboard is
+**one of this product's named scenarios** -- `V50` lists a car trip beside the
+motorbike and the walk, and `V24` says the vehicle does not define the target.
+So three to five satellites behind a windscreen is not an edge case to wave
+away: it is what one of the four shapes of the target actually gets, and the
+product has to be honest about it (`V38`). What this ride does **not** say is
+what the other three shapes get. Open sky, a handlebar and a rucksack strap are
+all unmeasured, and every number here is from the most attenuated placement the
+receiver will see.
+
+An earlier draft of this paragraph said a car dashboard is not the target and
+cited `V4` and `V48` for it. Both are about which hardware carries a receiver,
+not about where the device sits, and the claim contradicted `V50` outright.
+
+#### Fixes stop while the map renders, by up to 21 seconds
+
+Gaps between accepted fixes during the ride: six of about 4.2 s, and one of
+**21.0 s**. The RX ring is not the cause -- it holds about 10 s and no overflow
+counter moved -- so this is the map's loop not calling `poll()` while it renders,
+which is the other half of step 1 that a bigger buffer never addressed.
+
+**At 85 km/h a 21 s gap is about 500 m of stale dot**, and the panel has no way
+to say so. The ring fixed sentence *loss*; it does not fix position *age*, and
+this is the first measurement of how large that age gets in real use.
+`[open]` -- the correlation with a render is an inference from the loop's
+structure, not from a log that carries both. A render timestamp in the fix log
+would settle it.
+
+#### What the ride did settle: the speed gate is fine outdoors
+
+Yesterday's indoor run had the receiver reporting up to 23.7 km/h while parked,
+which made the 3.0 km/h gate look worthless. The ride says otherwise:
+
+- **31 rows at exactly 0.0 km/h during the ride, and `moving` was set on none of
+  them.** The gate held, and the held headings were 4, 7 and 9 -- the direction
+  the rider had last been going, which is what it is supposed to do.
+- **One ride, and inside a car.** 31 stationary rows is enough to say the gate
+  did not misfire that morning; it is not enough to say it never will. The
+  parked-outdoors case with open sky has not been seen at all.
+- Indoors the night before, the same code produced 9 false `moving` rows and
+  four different wrong headings.
+
+So the gate is not broken; **it is defeated by indoor multipath specifically**.
+That is worth knowing before anyone "fixes" it into something worse for riding.
+
+
+### Heading, and the gate that decides whether to believe the course
+
+`src/activities/map/MapGnssHeading.{h,cpp}`, a pure module next to `MapFollow`
+and split out for the same two reasons: the decision is worth testing on the
+host, and a second client (iOS, the simulator, a replay tool) has to reproduce
+it exactly. Eleven host tests in `test/map_gnss_heading/`.
+
+| | |
+|---|---|
+| believe the course above | **3.0 km/h** |
+| stop believing below | **2.0 km/h** |
+| deadband past a step boundary | **6 degrees** |
+| step width | 22.5 degrees, 16 steps (`MapHeading`) |
+
+**Two thresholds, not one.** A rider sitting on a single threshold flips between
+believed and not on every fix, and a flip that changes the step rotates the whole
+frame -- a full e-ink redraw, about a second. What the hysteresis holds between
+the two is the **gate**, not the step: a rider already believed keeps being
+believed, so the course still drives the heading down to 2.0.
+
+**3.0 rather than a motorbike-shaped 5.0, because of Hike mode.** Walking is
+about 4 to 5 km/h, and a gate at 5 would leave a hiker permanently without a
+heading. 3.0 still clears the 1.3 km/h noise floor. **A first cut, chosen on
+those two numbers and not yet judged on the device** -- a per-mode gate is the
+obvious refinement and is deliberately not built.
+
+**Below the gate the last step is held, never decayed to north.** A held heading
+is not a missing one, and north is a claim.
+
+**The deadband is measured against the step on the panel, not the previous
+course.** The question is whether the course has moved far enough to be worth
+rotating the frame, and the frame shows a step. 6 degrees is about a quarter of
+a step: enough to stop the flutter, small enough that a real turn still lands
+within one fix.
+
+Two wrap-around cases have tests because both are easy to get wrong: 350 degrees
+is 10 degrees from north and not 350 (measured the long way it looks like a huge
+turn and rotates the frame for nothing), and a receiver reporting 360.0 must not
+land on step 16 in a four-bit field.
+
+**Ridden once, and not yet judged on the panel.** The logged ride (`gnss.csv`,
+read 2026-09-02) ran this module: 31 stationary rows with `moving` set on none of
+them, and the held headings were 4, 7 and 9 -- see "What the ride did settle: the
+speed gate is fine outdoors". What nobody has done is watch the arrow itself
+while riding, and the two thresholds have not been judged against a walker or
+against a rider parked under open sky.
+
+### The ride has to write its own numbers down
+
+`GnssLog` (`src/GnssLog.{h,cpp}`), one CSV row per accepted fix to
+`/explorink/gnss.csv`. Same conventions as `PowerLog`: header once per boot as
+the run marker, `build` on every row, appended across boots, a reader skips any
+line starting with `uptime_ms`.
+
+```
+uptime_ms,utc,lat,lon,quality,sats_used,hdop,speed_kmh,course_deg,moving,heading,build
+```
+
+**Why a file.** The measurement that settles the heading gate is a rider
+outdoors, and a rider outdoors has no laptop. The `gnss fix:` log line already
+says everything needed -- it just says it to a console nobody is holding.
+
+**`moving` and `heading` sit next to the `speed` and `course` they came from**,
+on purpose. The question is not what the receiver said, it is whether
+`MapGnssHeading` was right to believe it, and a row that carried only the
+receiver's side could not answer that.
+
+**Off by default, behind `mapGnssLog`, and it stays off.** This file is a
+**track log**, not the single point the device already persists: on a lost or
+stolen device it is a record of where the rider went. Two gates, not one -- it
+is compiled only into a build with a receiver, and inside that build it writes
+nothing until the setting is turned on for one measurement.
+
+Position is in the row rather than left out, and that is the deliberate half of
+the cost: the open question is whether a speed gate can work at all or whether
+heading has to come from displacement between fixes, and the second cannot be
+answered offline without positions. A log that could not settle it would be a
+privacy cost with nothing bought.
+
+Rows buffer and flush about every ten seconds, and on map exit -- an
+open/append/close per fix would land inside the render loop this branch spent
+its first step keeping the UART alive through.
+
+**Verified on hardware 2026-09-01**, and the rate was not what was estimated:
+
+```
+before:  GNSS_LOG:setting=0 bytes=0    buffered=0    disabled=0
+after:   GNSS_LOG:setting=1 bytes=7454 buffered=1500 disabled=0
+```
+
+About **85 bytes a row at roughly 1.7 rows a second**, not the 1 Hz the first
+estimate assumed, so **about 500 KB an hour** rather than 320 KB. The receiver
+does not emit one fix a second: `Gnss::poll()` reports a change when position,
+speed, course **or the clock** moves, and three rows inside 400 ms were seen
+(`seq 104, 105, 106`). Nothing is lost -- a full buffer forces the write rather
+than dropping a row -- but a long ride's file is bigger than the header first
+claimed.
+
+### The gate was chosen on a number that was not a noise floor
+
+**Measured 2026-09-01, device stationary on a desk indoors, no phone.** The
+receiver, at `quality=1` with 8 satellites and HDOP 1.4, reported this over
+about twenty seconds:
+
+```
+speed  9.6 course 206.6   speed 16.3 course 252.6   speed 23.7 course 235.8
+speed  0.0 course 235.8   speed  3.8 course  21.1   speed  2.6 course 148.1
+```
+
+**Up to 23.7 km/h, and the course swung right round the compass, while nothing
+moved.** The 3.0 km/h gate passed for eleven consecutive fixes.
+
+This refutes the number the gate was built on. `speed=1.3 course=211.9`
+(2026-08-31) was **one sample**, and it was written down as if it were the
+noise floor -- in this file, in the plan, and in the constant's own comment.
+One reading is not a floor, and the doc that called it one is what made the
+gate look justified.
+
+Two things follow, and they are different:
+
+- **No threshold on instantaneous speed can separate indoor multipath from a
+  rider.** A gate high enough to reject 23.7 km/h rejects every cyclist and
+  every hiker. So the current gate is not "slightly too low", it is the wrong
+  instrument for this case.
+- **This says nothing yet about outdoors**, which is the case the product cares
+  about. Multipath off walls is what produces this; with real sky the figure is
+  expected to be far lower, and nobody here has measured it. **Do not conclude
+  the gate is wrong for riding from an indoor run** -- that would be the same
+  mistake in the other direction.
+
+So the gate ships as a placeholder that behaves correctly for a moving rider
+and wrongly for a device parked indoors, and the next measurement is a
+stationary one **outdoors, with sky**. Until it exists, a heading held from
+indoor noise is a known way for the arrow to be wrong.
+
+
+### The rail comes up with the map and goes down with it
+
+`onEnter()` calls `gnssStart()` when `mapGnssPosition` is set; `onExit()` calls
+`gnss.end()` **only if this activity is what started it**, so a `CMD:GNSS ON`
+bring-up session from the host survives a trip through the map screen.
+
+Not at boot, on purpose: that rail also powers the LoRa radio, and leaving it on
+behind a screen that is not using a position is a silent drain. The price is that
+leaving the map and coming back pays acquisition again -- tens of seconds from
+cold, not the sub-second figure `Gnss::timeToFirstFixMs()` reports for a receiver
+that was already tracking. Whether that trade is right is the duty-cycle question
+in step 5 of the plan, and it needs step 2b's numbers first.
+
+**Read off the code, not observed.** Nobody has caught the rail latched on after
+a crash on this branch; the sequence below is `onExit()`'s two calls and the
+coredump's confirmed crash point, put together by reasoning. What would settle
+it: `CMD:GNSS PROBE` on the boot straight after a map-exit crash.
+
+**A crash on map exit leaves the rail on, and that is how the latch gets
+stuck.** `onExit()` calls `BlePositionServer::end()` before `gnss.end()`, and
+that first call is a known dice roll: `NimBLEDevice::deinit(true)` can kill the
+NimBLE host task on a NULL event callback ([`ble-deinit-crash.md`](ble-deinit-crash.md),
+root cause confirmed from a real coredump on this branch's own build,
+2026-09-01). When it fires, `gnss.end()` never runs, the expander's
+`LORA_GPS_EN` latch is never cleared, and the receiver and the LoRa part stay
+powered through the reset with nothing managing them.
+
+That is the same mechanism step 2a identified as "an uncleared latch" -- and it
+now has a named cause rather than being a mystery of who left the rail on. It
+also means the rail can be live on a boot where no code asked for it, which is
+exactly the reading `CMD:GNSS PROBE` exists to make. Ordering the two `end()`
+calls the other way round would narrow the window and is **not** done yet: the
+crash is being fixed at its source (T-586) and a reorder here would hide it
+rather than fix it.
+
+**This is also the first code path that powers the rail while the map is reading
+tiles off the SD card**, which is the SPI contention that has never been tested
+(`LORA_CS` is GPIO46, which LovyanGFX also drives as the panel bus's DC line --
+see "The power rail is shared with the LoRa radio"). The defence, holding the
+SX1262 in reset, is already in `gnssPowerEnable()`. A hardware pass of this step
+exercises that combination for the first time.
+
+### Both sources live: not decided here
+
+With a phone connected and the receiver running, `pollGnssFix()` runs after the
+BLE read in the same `loop()` iteration, so the later sample wins. That is the
+smallest thing that is **not** a priority decision -- the real one is step 5, and
+it needs the power numbers and a device-side heading first. The case step 3 is
+built for has no phone connected at all.
+
+One consequence worth knowing: `applyFix()` wants the phone's rolling packet
+counter and the receiver has none, so `pollGnssFix()` passes a counter of its
+own. The two can collide on one value in 256, which with both sources live costs
+at most one skipped BLE packet -- the same 5 s the phone's next packet arrives
+in.
+
+### What a hardware pass has to check, and what the ride actually covered
+
+**Three of the five are done, one is half done, one cannot be run today.** The
+ride of 2026-09-01 covered 1 and 2; a bench run on 2026-09-02 covered 3.
+
+1. **`CMD:SETTING mapGnssPosition 1` first.** The setting is 0 by default and 0
+   means the old BLE path: a run that forgets this line tests the code that was
+   already there and looks like a pass. `CMD:SETTING mapGnssPosition` with no
+   value reads it back, so the run can prove it was set rather than assume it.
+   **Done** -- the ride drew from the receiver, which a 0 setting cannot do.
+2. Enter the map **with no phone connected**. The waiting banner should clear
+   and the dot should land where the device is. **Done** -- the marker followed
+   the rider and `gnss.csv` recorded the fixes behind it. The banner still says
+   "Waiting for BLE position" while the fix comes from the device, which is
+   wrong text rather than a wrong dot (T-589).
+3. The same build with `mapGnssPosition 0` still draws from the phone.
+   **Done 2026-09-02**, on the T5 S3 Pro, no reflash -- the build the ride ran.
+   See "The BLE path still works with the setting off" below.
+4. **The tile-read counters get read, with the rail up.** **Cannot be run from
+   a ride with today's instrumentation**, and looking at the panel is not the
+   check -- hatch says nothing about the cause. See below.
+5. `CMD:GNSS` after leaving the map reports `GNSS_OFF`, and a session started by
+   `CMD:GNSS ON` before entering the map is still running after leaving it.
+   **Half done.** `gnss: started` / `gnss: stopped` / `gnss: started` was seen
+   across two map entries on 2026-09-01
+   ([`map-header-status.md`](map-header-status.md)), which is the start/stop
+   half. Nobody read `GNSS_OFF` back after an exit, and nobody drove a
+   console-started session through the map screen.
+
+### The BLE path still works with the setting off
+
+**Verified 2026-09-02**, on the T5 S3 Pro, on the build the ride ran -- no
+reflash. This is the half of step 3's "done when" that the ride did not cover:
+adding a third `applyFix()` caller must not have cost the first one, and X4 and
+X4 Pro have no receiver, so the phone path is the only path they have.
+
+What was run: `CMD:SETTING mapGnssPosition 0`, read back as
+`SETTING_OK:mapGnssPosition=0`; `CMD:GOTO_MAP`; then `tools/blefakephone.py`
+standing in for the phone over BLE, sending a position 60 km from where the
+device sat. **The sender was the laptop stand-in, not the Android app.** It
+speaks the same characteristic and the same packet layout, so it exercises the
+device's side of the contract; it does not prove the app's side of it.
+
+```
+[904489] ble fix: seq 0, heading 2, speed 0 km/h, utc 1788339966, accuracy 255 m
+[904490] fix #0 re-anchors: at 8626,9262, heading 2 vs frame's 12, 0 moves in -- keep-in
+[904490] renderViewport start: lat=489250000 lon=174500000 heading=2 seq=0
+[905016] reset z13 col 4492..4493 row 2815..2816: 0 tiles ok, 4 missing (mask 0xf)
+```
+
+`489250000, 174500000` is exactly the 48.9250, 17.4500 the fake phone sent, so
+the frame is anchored on the phone's position and not on the persisted fix the
+screen opened with. Later fixes at the same coordinates log `skipped: 258,690 is
+under 10 px from the marker`, which is `MapFollow` behaving correctly for a
+stationary sender rather than a fix being ignored -- the marker had already
+moved. The viewport has no tile coverage there, so the frame is hatch with a
+marker on it; that is the card's coverage, not a read failure.
+
+**And the firmware never brought the receiver up.** No `gnss: started` on map
+entry, not one `gnss fix:` line in the whole session, and `CMD:GNSS` answered
+`GNSS_OFF` with the map still open.
+
+**That is a software gate, not a measured rail.** `GNSS_OFF` is what the driver
+believes, and step 2a established that `LORA_GPS_EN` is an expander latch which
+can be up with nothing in this firmware asking -- a map-exit crash is a named way
+for exactly that to happen ("The rail comes up with the map and goes down with
+it"). Nobody read `CONFIG0` during this run, so what is proven is that the
+setting decides whether the map starts and reads the receiver. Whether the rail
+was electrically down at the time is `[open]`, and `CMD:GNSS PROBE` is the
+one-line way to close it on the next run.
+
+**One thing this run cost, and it is a finding of its own.** Every `CMD:` sent
+by `tools/mapcmd.py` went unanswered until a line was sent with a **leading
+newline** (`\nCMD:...\n`), after which the same command answered every time.
+That is the command wedge the stuck-byte drain exists for -- and **no `serial
+head byte` line ever appeared**, across roughly ten minutes with the port open.
+The wedge is real and reproducible; whether the drain would have cleared it
+given longer is not known, since it removes one byte per pass and only warns
+once. `[open]` -- the head byte itself was never read, so the cause is inferred
+from the fix that worked, not observed.
+
+### The SPI check needs a counter the firmware does not carry out of the frame
+
+**Looking at the panel does not answer this, and an earlier version of this
+section said it did.** Hatch is drawn for a tile that is absent, truncated or
+crc32-mismatched alike (`MapHatch.h`: "absent, truncated or crc32-mismatched is
+drawn as hatch, never as white"), and on a ride a hatched tile almost always
+means what it usually means -- the card has no tile there. A rider cannot tell a
+corrupt read from missing coverage by eye, and neither can a screenshot.
+
+**The telemetry does not separate them either.** `tilesUnavailable_` is
+incremented by every cause at once: a tile that is absent or will not open
+(`MapTileSource.cpp:123`, `:151`, `:183`), a layer already known bad in this
+frame (`:205`), a `beginLayer()` failure (`:223`) **and** a crc32 verdict of
+`Failed` (`:77`). That single number is what `MapActivity.cpp:5864` prints as
+`N tiles ok, M missing`. `crc32Skipped_` is not a second opinion: it counts
+cache hits, incremented at `MapTileSource.cpp:213` under `if (alreadyValidated)`.
+
+**One counter does separate them, and it cannot survive the trip.**
+`corruptLayers_` is incremented only on `LayerCheck::Failed`
+(`MapTileSource.cpp:76`), so it counts crc32 corruption and nothing else, and
+`MapActivity.cpp:5785-5793` logs `N corrupt layer(s) drawn ... redrawing without
+them` when it fires. Three things stop it answering T-576 off a ride:
+
+- **Frame-scoped.** `startPass()` resets it (`MapTileSource.cpp:41`), so it
+  describes the frame being drawn and nothing accumulates across a ride.
+- **Serial only.** Its one surface is that `LOG_ERR`, which needs
+  `ENABLE_SERIAL_LOG` and a cable. `gnss.csv` does not carry it, and neither
+  does anything else written to the card.
+- **The header's own comment oversells it.** `MapTileSource.h:203-204` says the
+  counter exists so a bad card is "visible in `info`". `writeInfo()`
+  (`MapCommandConsole.cpp:368`) prints console state and no tile counters, so
+  `info` does not show it.
+
+**So T-576 cannot be run against a ride today**, and the 2026-09-01 ride does not
+count as a run: the rail was up while the map rendered for a whole trip, but
+nothing that could have told corruption from absence was recorded, and
+`gnss.csv` carries no tile counts at all -- so it is not even known whether the
+route had coverage. **T-576 is untested, and the missing piece is instrumentation
+rather than attention.**
+
+**And one counter is not enough, because the contention has two shapes.**
+Corrupted bytes inside a transaction fail the layer's crc32 and land on
+`corruptLayers_`. A transaction torn apart -- the card losing the bus mid-read --
+lands on a failed seek, which is the `beginLayer()` branch at
+`MapTileSource.cpp:223`, and that one increments `tilesUnavailable_` next to
+plain absence. So **carrying `corruptLayers_` out of the frame measures one shape
+and leaves the other invisible**, and a session that does only that will believe
+T-576 is covered when half of it is not. Whatever is built has to count the seek
+failures separately too -- the branch is already its own, it just shares a
+counter.
+
+Two ways to get it, and they are different sizes:
+
+**(a) Carry the counter out of the frame.** The branches are already separate in
+the code -- `MapTileSource.cpp:76` is crc32 corruption, `:223` is a
+`beginLayer()` failure, `:123`/`:151`/`:183` are absence -- so this is a
+per-pass total plus a way to read it, not new detection. With it the test is
+cheap and needs no ride: **the same viewport rendered with the rail up and with
+the rail down**, repeatedly. An identical viewport has an identical absent-tile
+count, so any delta is corruption. On a bench with a cable this is already
+half-possible today, because the `LOG_ERR` fires per frame -- what is missing
+there is only the tally.
+
+**(b) Bypass the map.** A dedicated task doing continuous CRC-checked card reads
+while full and partial refreshes loop, run with `LORA_RST` floating and then
+held low. Its own instrument, no dependency on the renderer, and it is the
+version already written down under "What a real test of check 2 looks like".
+
+**A comment that pointed the wrong way, fixed 2026-09-02.**
+`MapTileSource.cpp:214-222` used to say the `beginLayer()` failure there meant
+"present per the directory, but its own crc32 failed". It never did:
+`beginLayer()` (`MapTileReader.cpp:203-206`) checks no checksum -- the sum is
+folded out of the record stream and judged at the end -- and `hasLayer()` at
+`MapTileSource.cpp:156` has already ruled out a missing or empty layer entry, so
+the only way to reach that branch is a failed seek, a card read error. Anyone
+hunting corruption by reading that file would have counted the branch as
+corruption. `CLAUDE.md`, "Code comments answer WHY": a conclusion the code
+invites is the code's problem.
+
+## The parser
+
+`lib/Gnss/` -- `Gnss.h`, `Gnss.cpp`, `library.json`. Written to be moved
+upstream into `freeink-sdk/libs/hardware/` next to `Rtc` and `Imu`, so it obeys
+that neighbourhood's conventions:
+
+- **Board-agnostic.** Pins, baud and the power rail all arrive through
+  `GnssConfig`; the rail is a plain function pointer, because on this board it
+  lives behind an I2C expander the library has no business knowing about.
+- **It never logs.** No SDK hardware library does -- `Rtc` and `Imu` contain no
+  print of any kind. The caller reads the accessors and decides what to say.
+- **It never blocks and never allocates after `begin()`.** `poll()` consumes
+  what the UART already buffered and returns. Buffers are fixed members.
+
+Sentences understood: **GGA** (fix quality, satellites used, position,
+altitude, HDOP, time), **RMC** (date, ground speed, course), **GSV**
+(satellites in view and their C/N0). Everything else is checksum-verified,
+counted, offered to the raw sink and dropped.
+
+Three details worth knowing before changing it:
+
+- **Time and date arrive in different sentences.** GGA carries `hhmmss`, RMC
+  carries `ddmmyy`, and a cold receiver emits a valid GGA time long before it
+  has a date. `fix.utc` stays 0 until both exist, rather than reporting a
+  plausible wrong day.
+- **GSV is a cycle, not a sentence.** Each constellation sends `messageCount`
+  sentences per sweep. Signal figures accumulate across the cycle and are
+  committed only at its end, so a reader never sees a half-scanned sky. Talkers
+  are tracked separately (`GP`, `GL`, `GA`, `GB`, ...) because GSV field 3 is
+  per-constellation and summing it needs per-talker state.
+- **Position is `ddmm.mmmm`, and the field is not fixed-width.** The last two
+  digits before the decimal point are minutes; the split is found from the
+  decimal point rather than assumed, because latitude has two degree digits and
+  longitude has three.
+
+### Checked against the wire, for one fix
+
+`CMD:GNSS RAW ON` and a status query one second apart, so the same solution can
+be read raw and parsed. The degree-and-minute split, the N and E hemisphere
+handling, HDOP, satellites used and altitude all matched.
+
+**Weaker than the first version of this section claimed**, and the review was
+right to say so:
+
+- The status line's timestamp corresponds to a sentence that was **never
+  logged** -- `RAW OFF` cut the stream one second earlier. The "+1 s" was
+  inferred from the 1 Hz cadence, which is reasonable and is not a comparison
+  against the wire.
+- The coordinate agreement to 2e-6 degrees was attributed entirely to one second
+  of drift. That is circular: it also hides any error below roughly 0.2 m. What
+  the check really proves is the gross `ddmm.mmmmm` split and the sign for north
+  and east.
+- **Never exercised:** the S and W negation, a date rollover, a leap second, the
+  two-digit year window, and `quality=6` (dead reckoning) being committed as a
+  fix like any other.
+
+So: verified for **one fix, one hemisphere pair, one date**. Not "field by
+field" in the sense that phrase implies.
+
+Coordinates are deliberately not reproduced here. The board sat at the
+maintainer's address and `CLAUDE.md`'s screenshot rule treats an exact `lat lon`
+in a log the same as a rendered map of the same place. The arithmetic is
+`degrees + minutes / 60` on a `ddmm.mmmmm` field split at the decimal point;
+anyone can re-run the check against their own fix.
+
+One thing the check caught: **`CMD:GNSS RAW` was emitting lines that looked
+like NMEA and were not.** The sink was called after the parser had already
+terminated the string at `*`, so every logged sentence was missing its
+checksum -- unusable in any NMEA tool, while looking perfectly fine in a log.
+Fixed by calling the sink first.
+
+**Fixed and confirmed on the board**, same day: 85 logged sentences, every
+checksum recomputed by an XOR outside the firmware, **zero mismatches**. Worth
+noting how that was checked -- comparing the firmware's output against the
+firmware's own parser would have agreed with itself no matter what, so the
+verification was done with a separate implementation. The archived binary is
+`docs/firmware-builds/t5s3pro-b8276d9e-gnss-confirmed.bin` in the parent repo.
+
+### A blocking render starves the UART, and by more than first written
+
+Real, and the first version of this section under-reported it by a factor of
+three because it used a guessed byte rate and the wrong window. Here it is from
+the log arithmetic.
+
+The clean baseline, between two statuses with no screen work in between (millis
+107,341 to 119,809): **816 bytes/s and 14.9 sentences/s**. The earlier text said
+"roughly 600 bytes a second", which its own evidence contradicts by 35 %.
+
+Across the map entry (119,809 to 146,960, 27.15 s): expected about 22,160 bytes
+and 405 sentences at that baseline; observed 17,384 bytes and 320 sentences.
+**Lost: about 4,780 bytes and 85 sentences.**
+
+The blocking window is **6.07 s**, not the 4,017 ms render: the log's
+`New max loop duration: 6074 ms` covers the whole map `onEnter`. Its composition
+was also wrong in the first draft, which blamed `BlePositionServer::begin()` --
+that costs **48 ms**. The real breakdown is the 4,017 ms render, about 1.5 s of
+panel refresh after it, and roughly 0.5 s of setup. That matters for the fix:
+the second-largest blocker is the **refresh**, not BLE, so anything that moves
+the UART off this loop has to survive a refresh too. And that closes the arithmetic --
+6.074 s x 816 B/s minus the 256 bytes the buffer does hold is 4,701 bytes, against
+4,780 observed.
+
+The 256 bytes is **read off the pinned framework, not measured**:
+`framework-arduinoespressif32` `HardwareSerial.cpp:148` sets `_rxBufferSize(256)`
+and nothing in this firmware calls `setRxBufferSize()` on `Serial1`.
+
+One extra checksum error across that window is genuinely measured (1 to 2).
+
+Harmless for a bring-up console, not harmless for a position source. The fix is
+not "poll more often", because there is nowhere to poll from during a blocking
+render. It was settled 2026-09-01 -- next section.
+
+### The fix: an 8 KB ring, and why not a task
+
+Settled 2026-09-01, step 1 of [`gnss-to-map-plan.md`](gnss-to-map-plan.md).
+Three candidates were on the table: a bigger RX ring, the UART on its own task,
+or an event-driven read. The ring won, and two findings decided it -- one about
+what the product needs, one about how the measurement was being taken wrong.
+
+**What a position source needs is the newest sentence, not the stream.** That
+sounds obvious and it changes the sizing question completely. The maintainer's
+constraint, 2026-09-01: the phone sends a position **at most once every 7 s**,
+so anything that keeps the fix within about a second of current is more than
+enough.
+
+Follow what a ring too small for a block actually does. The driver does **not**
+evict old bytes to make room -- when the ring is full it refuses the incoming
+batch and switches the RX interrupts off until the app drains (ESP-IDF 5.5.2,
+`components/esp_driver_uart/src/uart.c:1302`). So what survives a block is the
+**oldest** part of it. Walk the clock: before a 15 s block the fix is from t=0,
+the ring holds t=0 to t=1.3, and when the caller returns it parses up to t=1.3
+and then reaches t=15 within a second. **1.3 is newer than 0.** The fix only
+ever moves forward; an undersized ring costs position *age*, never a wrong
+position. An earlier draft of this section claimed the opposite and it was
+wrong.
+
+That is why there is no task. A task removes an age penalty of about a second
+on a rare event, and charges a mutex around `fix()`, a copy instead of a
+reference, and a parser on a 2 KB stack at priority `configMAX_PRIORITIES-1`.
+Nothing in the product asks for that. A caller that logged a track from the
+receiver would ask for it; the ride recorder is in the phone.
+
+**And the measurement had to be redone, because the first three runs measured
+empty ground.** The device sat where its SD card had no tile coverage, so every
+render drew nothing. `CMD:GOTO_MAP` there reported `0 tiles ok, 4 missing` and
+the map console's `tiles` confirmed every tile missing at every zoom rung. The
+mirror was copied onto the card and the same run repeated.
+
+The gap is fourfold, so it is not a detail:
+
+| | no tile coverage | real tiles |
+|---|---|---|
+| redraw | 481 ms | **2,687 ms** |
+| map entry render | 478-712 ms | **2,696 ms** |
+| worst render, whole zoom ladder | 712 ms | **4,072 ms** (1,361 kB, 2,682 ways) |
+| worst main-loop block | 6,143 ms (mostly refresh and setup) | **5,760 ms** |
+
+Any sizing taken from the left column would have been wrong. Coordinates are
+deliberately not recorded here -- the run used the device's own persisted fix.
+
+**The result, `rxBufferBytes` = 8192 on this board, verified on hardware
+2026-09-01.** Baseline **810 B/s, 15.00 sentences/s** over 60 s by the device's
+own clock. Then the whole zoom ladder plus a redraw, each a 33 s window:
+
+| phase | sentences | expected | lost | rxfull | ovf | fifoovf |
+|---|---|---|---|---|---|---|
+| baseline, idle on map | 900 | 900 | 0 | 0 | 0 | 0 |
+| redraw | 496 | 495 | -1 | 0 | 0 | 0 |
+| zoom 0 | 496 | 496 | 0 | 0 | 0 | 0 |
+| zoom 1 | 495 | 496 | 1 | 0 | 0 | 0 |
+| zoom 2 | 495 | 495 | 0 | 0 | 0 | 0 |
+| zoom 3 | 482 | 481 | -1 | 0 | 0 | 0 |
+| zoom 4 | 495 | 495 | 0 | 0 | 0 | 0 |
+
+The noise floor is **+/-1 sentence** here, against +/-37 in an earlier run whose
+receiver rate drifted, so this "zero" is a much stronger statement than a zero
+measured against a noisy baseline. `rxbuf=8192` in the same reply confirms the
+driver granted what was asked -- `setRxBufferSize()` can return less.
+
+**8192 does not cover everything, on purpose.** The maintainer reports redraws
+reaching **15 s** in use, which is about 12.2 kB of arriving bytes. Per the
+paragraph above that costs roughly a second of fix age and nothing else, so
+buying 16 kB for it would spend RAM on something the product does not ask for.
+`Gnss::ringOverflows()` reports it when it happens.
+
+**What this is NOT: a controlled A/B.** The before figure (1024 bytes, 65
+sentences lost on a 6,143 ms map entry) was taken over empty ground and the
+after figure over real tiles. The two blocking windows are close, 6.1 s against
+5.8 s, so the comparison is reasonable -- but 1024 was never run against a
+loaded viewport, and nobody should quote this as one experiment. What is
+directly measured is the after: at 8192, real map work at every rung lost
+nothing.
+
+### Sentence loss is observable now, and by the driver rather than by a guess
+
+`rxNearlyFullEvents()` (`rxfull`) is this firmware's own inference: `poll()`
+finds the ring within 32 bytes of full on entry. It fires on a stall that lost
+nothing, and it reads 0 both when nothing was lost and when nothing was
+measured -- so "rxfull=0" on its own is a check that cannot fail.
+
+Two counters from the driver were added 2026-09-01:
+
+- **`ringOverflows()`** (`ovf`) counts `UART_BUFFER_FULL`: the ISR could not
+  push a batch into the ring and disabled the RX interrupts
+  (`esp_driver_uart/src/uart.c:1302`). The refused batch is stashed and
+  re-delivered, so this alone means "the ring filled", not yet lost data.
+- **`fifoOverflows()`** (`fifoovf`) counts `UART_FIFO_OVF`, which is the loss:
+  ring full, interrupts off, the hardware FIFO fills next and the rest is gone.
+
+Both come through `HardwareSerial::onReceiveError()`
+(`framework-arduinoespressif32` 3.3.7), which runs on the UART event task. The
+callback only increments an atomic -- parsing there would put the whole parser
+on that task's 2 KB stack at priority `configMAX_PRIORITIES-1`
+(`HardwareSerial.cpp:177`), which is a much bigger decision than counting.
+
+**Both undercount.** The driver's event queue is 20 entries deep
+(`esp32-hal-uart.c:793`) and the ISR drops an event it cannot enqueue. Non-zero
+means it happened; zero across a window whose sentence count also matches the
+baseline is what "nothing was lost" looks like.
+
+Two smaller reporting gaps were closed in the same pass, both because this
+measurement needed them and neither existed: **`uptime`** on `GNSS_FIX`, so a
+window is timed by the device's own clock instead of by the timestamps of
+whatever log lines happen to sit near it, and **`rxbuf`**, the ring the driver
+actually granted rather than the one that was requested.
+
+### The comprehension test, and what it changed
+
+Two more reviewers were given the code and **forbidden from reading this file**,
+then asked to explain how it works. The point was not defects: it was whether
+the code explains itself to a stranger, which is what the upstream PR will
+depend on. One capable reader and one weaker one, same ten questions, so the
+difference between them says which explanations are load-bearing and which need
+the reader to be sharp.
+
+Nine of the ten answers came back right and sourced to the code. The tenth is
+the finding.
+
+**Both failed on `ttff`, and the weaker one failed with high confidence.** Asked
+what `ttff=530` permits you to conclude, one answered "a very fast warm or hot
+start, the receiver retained ephemeris"; the other answered "the receiver's
+**cold-start** acquisition took 530 ms" and rated itself high-confidence,
+code-based. A 530 ms cold start is physically impossible. Neither spotted that on
+an already-tracking receiver the number is the phase between our UART open and
+the next sentence.
+
+That is the same mistake this file's own rail section had to withdraw, made
+twice more by readers who had the code in front of them and no way to know
+better. So the warning now lives on `timeToFirstFixMs()` in the header, not only
+here. **A conclusion the code invites is the code's problem.**
+
+**Both also converged on one structural criticism**, from opposite directions:
+the strongest claims in the library are asserted in comments with no way to check
+them from inside the code. The measured 816 B/s and the 0.3 s budget, the GPIO46
+behaviour, the `sizeof(long)` verification -- all of them true, none of them
+observable at runtime. One reviewer's single requested change was to make
+`poll()`'s contract an observable rather than a warning.
+
+Acted on:
+
+- **`rxNearlyFullEvents()`**, reported as `rxfull` in the serial reply. Sentence
+  loss was previously invisible: whole sentences vanish inside the driver, and
+  the 2026-08-31 measurement proves it -- 85 lost, `cserr` moved by exactly one,
+  so **84 disappeared with no counter moving at all**. A non-zero `rxfull` now
+  says every other count in the line is an undercount.
+- **`GnssConfig::rxBufferBytes`**, default 1024, applied before the UART opens.
+  Four times the Arduino default, about 1.2 s of caller inattention. It does not
+  survive a multi-second block and the comment says so.
+- **The 2038 comment now explains that the cast removes the width dependency**
+  rather than citing a verification the reader cannot repeat.
+- **"GGA leads RMC by nine sentences" is scoped to this receiver**, with the
+  point made explicit that the cure does not depend on the ordering at all -- a
+  reader was right to flag it as reading like an NMEA law.
+- **The reason GGA's time is unused moved to the top of `parseGga()`**, as a
+  regression guard, so nobody "fixes" it by adding the field back.
+- Three smaller things a reader named as slowing them down: the empty-field
+  contract of `nmeaField()`, why `talkerFor()` drops rather than evicts, and why
+  `parseGsv()` gets the same buffer twice.
+
+### The fixes, verified on hardware 2026-08-31
+
+Same run as the probe above, on the build carrying all of them.
+
+- **`rxfull` fired on the blocked render, and it reports proximity, not loss.**
+  Three statuses: `rxfull=0`, `rxfull=0`, then **`rxfull=1`** after
+  `CMD:GOTO_MAP` (19 s after, not "immediately"). Silent while nothing blocked,
+  which is the part that matters -- it is not simply always on.
+
+  Precisely what it means: the buffer was within 32 bytes of full when `poll()`
+  ran. At 816 B/s into 1024 bytes, a stall between about 1.22 s and 1.29 s trips
+  it having lost nothing at all. It is a proxy, and the header now says "almost
+  certainly" rather than "means". Loss itself is knowable only to the driver.
+  n=1 positive against n=2 negative.
+- **The first-sentence discard is verified, 2026-08-31.** A mid-stream open on an
+  already-talking receiver -- 1,633 bytes and 36 sentences parsed -- reported
+  **`cserr=0 ferr=0`**. Before the fix the identical situation put a 1 in one
+  counter or the other depending on where the first sentence tore. So `cserr` now
+  means what this file says it means.
+- **The `cserr` / `ferr` split did NOT achieve what it was for** on its own, and
+  the run before that proved it. One status showed `cserr=0 ferr=1`, which is what the split was
+  meant to deliver -- and the `PROBE` in the same session, also a mid-stream open,
+  showed `cserr=1 ferr=0`. Two mid-opens, one in each counter.
+
+  The mechanism, found by review: which counter takes the torn first line depends
+  on where the tear falls. Cut before the `*`, which is most of a sentence's
+  length, and the tail still carries a valid `*hh`, fails the checksum, and lands
+  in `cserr` -- exactly the pollution the split was supposed to remove. Only a cut
+  inside the `*hh` lands in `ferr`. So the split alone achieved the goal about one
+  time in ten.
+
+  **Fixed properly rather than re-documented:** `poll()` now discards everything
+  before the session's first `$`. The split stays, because the two failures really
+  are different, but it is the discard that makes `cserr` mean what this file says
+  it means. Unverified on hardware.
+- **`utc` produced a correct value. The check does not reach the path.** The
+  reported number was one second after the last logged ZDA, so the match is again
+  inferred from the 1 Hz cadence rather than read off the wire -- the same
+  weakness this file flags for its own coordinate check and failed to flag here.
+  Worse for attribution: RMC and ZDA both write `fix_.utc` every second, so a
+  correct value cannot say which parser produced it, and neither path is
+  individually verified. `$GNRMC,170236.000,V,,,,,,,310826,,,N,V` did appear, but
+  "its date was used" is not attributable with ZDA in the same stream, and
+  "speed and course correctly ignored" was never observable at all -- `GNSS_NOFIX`
+  prints neither field. That last one was read off the code and written as though
+  the run had shown it.
+
+  What settles it: host tests on recorded streams, one with ZDA stripped, one with
+  RMC stripped, one crossing midnight. T-580.
+- **Not exercised:** the midnight rollover itself, the 2038 arithmetic, the
+  dropped-GSV-message path, and the rail rollback. All four are why T-580 wants
+  host tests rather than another night on the bench.
+
+### Four defects review found in it, all fixed
+
+None of these showed up in the hardware pass, which is the point of reading code
+against a spec rather than only running it.
+
+- **`fix.utc` regressed 24 hours at every UTC midnight.** GGA carried the time
+  and RMC the date, stitched together -- and in this receiver's cycle GGA leads
+  RMC by nine sentences, so a 00:00:0x GGA recomputed the clock against
+  yesterday's date. Every day, guaranteed, for about 0.4 s at 816 B/s, and
+  longer whenever the loop is blocked. Fixed by taking date and time only from
+  sentences that carry both: RMC, and `ZDA` where the receiver sends it. `ZDA`
+  is the better source anyway -- it has a four-digit year, so the two-digit
+  century guess never runs. The GGA time path is gone.
+- **Signed 32-bit overflow on 2038-01-19.** `days * 86400L` in `toUnixSeconds`,
+  where `long` is 32 bits on this target -- verified by compiling a
+  `_Static_assert` with the pinned `xtensa-esp32s3-elf` toolchain rather than
+  assuming. The `days_from_civil` formula itself is correct; only the arithmetic
+  width was wrong, in a function returning `uint32_t`. Cast before the multiply.
+- **GSV counters double-counted after a dropped sentence.** The per-cycle
+  accumulator was cleared only when message 1 arrived, and never after a commit.
+  Lose message 1 to a checksum error and the survivors pile onto the previous
+  sweep's residue, so `satsWithSignal()` could report up to double. Now the
+  accumulator clears on commit and a cycle with a gap is skipped rather than
+  committed.
+- **A failed rail enable could leave the rail on.** `gnssPowerEnable()` is two
+  I2C writes and the first one is the one that powers the pair; if the second
+  failed, the function returned false with the receiver and the SX1262 live.
+  Both it and `begin()` now roll back.
+
+Two contract statements were also wrong rather than the code: `poll()` promised
+to report any change to the fix but only reported position, and the header said
+the library never blocks while `begin()` delays for the power settle. Both
+corrected, and `cserr` no longer counts framing errors -- those have their own
+counter, `ferr`, because mixing them makes the baud-rate diagnosis useless.
+
+Cost, measured off the two builds: flash went from 58.3 % to 58.5 % of the
+6.4 MB app partition, about 13 kB for the library plus the command. Zero
+compiler warnings.
+
+## What the hardware pass found, in the order it was run
+
+Run 2026-08-31 on a LilyGo T5 S3 Pro, indoors, three serial sessions. Read the
+caveats: two of the six checks did not test what they were written to test.
+
+1. **`CMD:GNSS ON` answers `GNSS_OK:on`.** Yes. The expander responds, the rail
+   write succeeds, and `OFF` plus a re-enable work -- the re-enable came back
+   `q=0` with every counter reset, which is what proves the rail controls the
+   module rather than the command merely returning success.
+2. **The SD card still reads with the rail up.** It read, and **the check could
+   not have failed.** `CMD:GOTO_MAP` read 1,393,825 bytes: `4 tiles ok, 0
+   missing`, `3194 ms in the card`, frame drawn. But the log's own ordering
+   shows card access and panel bus never overlapped -- `renderViewport start` at
+   122,550, `3194 ms in the card` finishing at 126,566, `displayBuffer` at
+   126,568. The hazard is a panel refresh toggling GPIO46 **while an SD
+   transaction is in flight**, and that window never opened. n=1 of the wrong
+   scenario. **The contention question is untested**, and so is the reset's
+   contribution to it.
+3. **`bytes` climbs.** Yes, monotonically: 11,644 to 21,820 to 39,204 in one
+   session. Pin direction as written is correct, no swap needed.
+4. **`cserr` stays at 0 while `sent` climbs.** Yes on a rail-cycled start. The
+   two errors in run 1 are both explained and neither is the wiring -- one was
+   the UART opening mid-sentence, which the code now counts as `ferr`, and one
+   was the buffer overrun during the blocked map entry.
+5. **Outdoors: tracked and bestsnr rise, then a fix.** A **3D fix indoors** made
+   the outdoor half unnecessary for proving the receiver works. **Cold-start
+   TTFF is still not measured**, and the number this pass produced does not
+   measure it -- see the rail section on why a sub-second TTFF only says
+   "already tracking".
+6. **The idle cost of the pair.** **Not measured.** Open, and its framing
+   depends on the CONFIG0 experiment above: whether it is the board's floor or a
+   feature's price is exactly what has not been established.
+
+**What a real test of check 2 looks like**, when someone runs it: a task doing
+continuous SD reads with CRC verification while full and partial refreshes loop,
+rail up, run twice -- `LORA_RST` floating, then held low. Anything less repeats
+the non-overlapping path.
+
+## The first fixes after a cold start carry a UTC that is wrong
+
+**Measured 2026-09-05**, on one 4 h 36 min walk logged to `gnss.csv` on a T5 S3
+Pro, build `0.2.0-t5s3pro`.
+
+`utc - uptime_s` is the boot epoch. It is a constant, and any change in it is
+the receiver's clock moving under us. Across 7,669 rows it moved exactly once:
+
+```
+uptime   669.9 s   utc 14:49:02   base = 1788619073
+uptime  1873.9 s   utc 15:09:47   base = 1788619073
+uptime  2217.5 s   utc 16:41:08   base = 1788624170   <- +5097.4 s, single step
+uptime 16554.6 s   utc 20:38:45   base = 1788624170
+```
+
+One step, **+5097.4 s -- 85 minutes** -- across a 343.6 s logging gap at uptime
+1873.9 s. After it the base holds to within +/-1 s for the remaining four hours.
+
+**The later value is the true one.** It puts that boot's death at 20:39:26 UTC,
+which matches an independent clock: the laptop's `journalctl` timestamps when
+the device was recovered twenty minutes later. So the earlier base is the wrong
+one, and **roughly the first twenty minutes of a cold-start track is stamped 85
+minutes early**.
+
+Why this matters more than an ordinary bug: the wrong time is *stable and
+plausible*. It does not jitter, it does not read as garbage, and every consumer
+downstream -- a ride export, a track merge, a tile freshness check, anything that
+sorts by time -- takes it at face value. Nothing can spot it from inside a single
+row. It is only visible by holding `utc` against `uptime_ms` across the run, and
+that is the check to run on any track before trusting its early timestamps.
+
+**Not settled: what seeds the wrong time.** The shape fits a warm-start time
+injection being reported back until real GPS time is decoded off the
+constellation, which would make it ours rather than the receiver's. Nobody has
+looked. See "Open".
+
+Two things from the same file that are **not** defects, recorded so nobody
+rediscovers them as bugs: a 7,564 s gap in `gnss.csv` at uptime 5255.5 s, and
+`tracked` falling to 0 in the last minute of the run. Both are the receiver
+correctly reporting no sky -- the maintainer was sitting in a restaurant, and
+then walked into a hotel. `power.csv` over the same spans reads `tracked` 1-2
+with `q` 0, which agrees.
+
+## Open
+
+- **What seeds the wrong UTC on the first fixes?** The 85-minute step above is
+  measured; the mechanism is not. Check whether an AID-INI style warm-start
+  injection hands the receiver a time it then reports back until it decodes real
+  GPS time. If it is ours, it is fixable here; if it is the L76K's, consumers
+  have to wait for the step before trusting a timestamp.
+
+- ~~Is the rail on by board default, or was it latched by an earlier session?~~
+  -- **settled 2026-09-01**: an uncleared expander latch, proven by `CMD:GNSS
+  RELEASE` twice. See "Settled 2026-09-01". A crash on map exit is a named way
+  for it to get stuck, see "The rail comes up with the map and goes down with
+  it".
+- **Idle current of the GNSS + LoRa pair**, against the BQ27220 or a meter in
+  series at the development board's battery connector. Name the instrument.
+  T-579.
+- ~~**A cold start cannot be produced today.**~~ -- **settled 2026-09-11, two
+  ways.** `CMD:GNSS SEND BACE040006020000010204000704` is `CFG-RST` with
+  `StartMode` 2, and one frame empties ephemeris and almanac both. A rail drop
+  of 300 s does the same and costs five minutes. So `power-management.md`'s G1
+  is executable and the command is the cheap route. **What does not work is the
+  mask**: `navBbrMask` is acknowledged and inert at every `ResetMode`, and this
+  file recommended it for a few hours on 2026-09-11 before the bench refuted it.
+  T-581 still owns the rest of that row.
+- **Cold-start TTFF**, outdoors, from a genuinely cold receiver -- longer than a
+  49.7 s outage, or a receiver command that clears the almanac.
+- **Is the SPI contention real at all?** Does GPIO46 go low during a refresh,
+  and does an SX126x in reset park MISO high-Z? Datasheet plus the overlapping
+  test above.
+- ~~The RX buffer under a blocking render~~ -- **settled 2026-09-01**, an 8 KB
+  ring on this board. See "The fix: an 8 KB ring, and why not a task". Still
+  open inside it: a redraw of the reported 15 s length has never been captured
+  with the counters running, so the age penalty it costs is arithmetic rather
+  than measurement.
+- **The unexercised parser paths**: southern and western hemispheres, a date
+  rollover, a leap second, the two-digit year window, `quality=6`. Cheap to
+  cover with host tests against recorded sentences, and worth doing before the
+  upstream PR.
+- Whether the receiver can stay powered during a ride or must be duty-cycled. A
+  power question, and given the shared rail a LoRa question too.
+- ~~**Does the module keep its RTC domain when the rail drops?**~~ -- **measured
+  2026-09-11**: ephemeris and almanac both survive 60 s and 180 s and are gone
+  by 300 s, read with `NAV-STATUS` rather than by a TTFF run. One trial per
+  point, so treat the boundary as this board on this day and not as a constant.
+  What is still open is what a start after a short drop actually costs in
+  seconds, because no fix was acquired anywhere in that session -- that is
+  T-287, and it is the number the hike-mode case turns on.
+- **What LilyGo says about the module's control pins.** Whether `WAKEUP`,
+  `RESET_N` and `V_BCKP` are routed on the plug-in board, and whether the
+  published schematic is simply missing the GNSS sheet. Four questions written
+  up for the next partner mail, T-590.

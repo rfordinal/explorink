@@ -99,6 +99,17 @@ opens for edge chevrons (`docs/map-data-spec.md`, "two tile ranges"), or the two
 device bytes for device claims and preview bytes for preview claims -- do not
 mix them in one table.
 
+### The rung also decides how often the map is redrawn at all
+
+Everything above is the cost of **one** reset. The rung also changes how many
+resets a ride needs, and that turns out to matter more: replayed at step 2
+(6 m/px, ride mode's own default) the same ride takes 30 re-anchors and 264
+marker moves, against 14 and 113 at step 4 (20 m/px) -- 2.3x the panel time.
+Measured off the device with `test/map_window`; the table, the confidence and
+what would settle it are in
+[`map-follow.md`](map-follow.md), "The default ride rung costs more than twice
+what was measured".
+
 ## Raising the tile cap broke a bitmap, silently
 
 `MapTileSource` memoises which `(tile, layer)` pairs have passed their crc32
@@ -128,11 +139,32 @@ fixed pixel object covers more ground the same way.
 `src/activities/map/MapMarkerMetrics.h` scales every marker length from the
 full-size numbers. Full size is a 54 px ring, which covers 54 m at rung 0 and
 2.4 km at rung 6 -- at that point the marker stops pointing at a place and
-starts hiding one. Rungs 5 and 6 draw 6/8 and 5/8 (40 px and 33 px rings).
+starts hiding one.
+
+The ladder tapers 8,8,8,7,7,6,5 eighths (54,54,54,47,47,40,33 px rings) --
+rungs 0-2 stay full size, 3-4 draw 7/8, 5-6 draw 6/8 and 5/8. It used to be a
+flat run of 8/8 through rung 4 and only then drop to 6/8: **judged on a real
+phone 2026-08-24** (`org.explorink.simulator` on a Samsung S10, see below),
+rungs 3-4 at full size read too big while every other rung already read fine,
+so the fix is the one step in between, not a change to a rung already
+confirmed.
 
 Strokes do not scale with the shape: the ring is 3 px at full size and 2 px
-below it, because 2 px is the thinnest line worth having on this panel at arm's
-length. `markerScaled()` clamps every length to at least 1 for the same reason.
+below it. **That is a choice nobody has judged on a panel, not a limit.**
+
+This paragraph used to say 2 px was "the thinnest line worth having on this
+panel at arm's length". Nothing ever measured that, and the map itself is the
+counter-evidence: the road style floors a visible class at **1 px**
+(`map-style.md`), tertiary and unclassified roads draw as 1 px hairlines, and a
+1 px line across a bend of the Morava was found on the panel on 2026-08-08. If
+1 px were under the panel's floor, half the road network would be invisible.
+The claim most likely slid in from `toneWayInterior`'s real 2 px floor, which is
+about dither fill and not about strokes.
+
+Corrected 2026-09-05. T-259 puts 1, 2 and 3 px rings side by side on the glass;
+a thinner ring at the coarse rungs would put less ink over the map exactly where
+the marker starts hiding what it points at. `markerScaled()` clamps every length
+to at least 1, which is a real bound: a stroke that rounds to 0 stops drawing.
 
 What it does **not** buy is a cheaper refresh. **Measured** on the X4
 2026-08-05: a windowed refresh costs the same ~500 ms whatever its area
@@ -156,6 +188,91 @@ scaling does not close it -- judging the marker size needs the panel.
 `zoom-rung4-dubova-20260812.png`, same fix, rungs 6 and 4. The 5/8 marker is
 still unmistakably the marker at 45 m/px, and the full-size one at rung 4 shows
 what it would have covered.
+
+**Judged on a real phone, not just the desktop simulator, 2026-08-24.**
+`firmware/explorink-simulator` also builds as an Android app
+(`org.explorink.simulator`, `ANDROID.md` in that repo) -- the firmware
+compiled to arm64 and hosted in an SDL activity, not an emulator and not the
+BLE bridge companion app. Installed on a Samsung S10, provisioned with real
+tiles (`tools/android/provision_sd.sh`), it renders the actual
+`MapActivity::drawPositionMarker` at the phone's own panel-equivalent size
+("Real size" mode: 55x92 mm scaled by the phone's own `xdpi`/`ydpi`). Driven
+over **real BLE**, not the desktop sim's TCP shim: `tools/mapcmd.py --ble zoom
+N` reaches the phone's own NimBLE stack directly, no `--sim host:port` needed.
+All seven rungs screenshotted with `adb exec-out screencap` and compared side
+by side is what found rungs 3-4 too big above -- the 2026-08-12 pass judged
+rung 4 in isolation against rung 6 and had no rung to compare it against in
+between.
+
+### 1b. Arrow shape -- generated from `marker-ride.svg`
+
+Cycle and Ride's heading arrow (`MapActivity::drawPositionMarker`,
+`MapActivity.cpp:516-533`) used to be a plain 3-point triangle: tip, and two
+base corners at a separate `baseHalfW` constant per mode. Since 2026-08-24 it
+is a 6-point polygon (tip, two shoulders, a concave tail notch, two base
+corners) matching `src/components/icons/marker-ride.svg`.
+
+`scripts/gen_marker_shape.py` reads that SVG's circle (the ring) and arrow
+path, expresses every path vertex as a (right, forward) offset from the
+circle's own centre in permille of the tip vertex's own reach, and writes
+`MapMarkerMetrics.h`'s `MapMarkerShape.generated.h` (gitignored, a `pre:` step
+in `platformio.ini` for both the firmware and simulator envs, same pattern as
+`gen_mapstyle.py`). `MapActivity::drawPositionMarker` scales those permille
+ratios by its runtime `tipLen` and rotates them with `kMarkerHeadingDir` --
+same transform the old 3-point triangle used, just looped over more vertices.
+Only `tipLen` is still a free per-mode knob (`kMarkerCycleTipLen`,
+`kMarkerRideTipLen`); `baseHalfW` is gone, since the whole shape's proportions
+now come from the SVG.
+
+This keeps the arrow hand-drawn rather than a baked icon, per
+`firmware/explorink/CLAUDE.md`'s icon rule: a glyph that rotates from a live
+heading (nav direction arrow, compass needle) stays vector, because a static
+bitmap cannot represent that without extra logic on top. `docs/icon-migration-plan.md`
+does not cover this marker for the same reason.
+
+`MapMarkerMetrics.h`'s `markerArrowFitsAtEveryRung()` static-asserts the
+shape's farthest vertex (`kMarkerArrowMaxReachPermille`, also generated) stays
+inside the marker's patch box at every rung -- same correctness bound
+`markerHandFitsAtEveryRung()` already held for Hike's heading hand. A future
+SVG edit that makes the arrow reach further than the ring's own halo now fails
+the build instead of silently smearing the marker across the map on a move.
+
+**Verified on the simulator, 2026-08-24** (no X4/X4 Pro/X3 on hand --
+`project_hardware_gap_2026_08_22`): `pio run -e simulator`, seeded a fix, and
+sent `tools/mapcmd.py --sim <host:port> pos <lat> <lon> heading <N>` (bare
+`heading N` does *not* work -- `MapCommandParser`'s "position unchanged"
+branch that updates `lastHeading_` only runs for a command that also carries
+a position, `MapActivity.cpp:2296-2305`). The rendered shape is a pixel-exact
+match to `marker-ride.svg`'s concave-notch chevron.
+
+**Rotation verified on the phone, 2026-08-24.** `drawPositionMarker` is called
+with `MapFollow::relativeHeadingStep(headingStep, anchorHeading_)`
+(`MapActivity.cpp:4750`), and `anchorHeading_` re-anchors to match the
+incoming heading on every full reset -- so a single console `pos ... heading
+N` command always redraws pointing up *by design*: `renderCurrent()`
+(`MapActivity.cpp:2306`) is a full reset every time, never the incremental
+path. That is why the earlier console-only test above could not show
+rotation, whatever heading it sent.
+
+The real fix path (`applyFix()`, the actual BLE position characteristic, not
+the console) is different: a fix close enough to the last one skips the reset
+and calls `moveMarker()` with the *held* `anchorHeading_`, so the arrow's
+screen angle changes while the map does not. Confirmed by loading a real
+route (`RouteSelectActivity`, `Trips` on Home -- picked up any `.tir` under
+`/explorink/trips/`, `build/trips/do-prace.tir` for this run) and sending a
+sequence of close-together fixes over real BLE, `tools/blepos.py <lat> <lon>
+--heading <N>` (not `mapcmd.py`, which only reaches the console): the arrow
+sat pointing up through headings 0, 2, 4 and 6, then rotated to point roughly
+west at heading 8 and stayed there through heading 10.
+
+That plateau is `MapFollow::kMinMovePx` (`map-follow.md`), not a marker bug:
+each fix in the sequence used the same ~11 m step from a fixed baseline, and
+at the zoom rung in play (`mpp` a few metres/px) that is under the 8 px move
+floor, so several fixes in a row were silently skipped and only the one that
+finally cleared the accumulated threshold triggered a redraw. The marker
+shape and rotation math are unaffected either way -- once a fix is accepted,
+the arrow really does point away from north, holding the map's own frame
+still.
 
 ### 2. Move floor -- `ZoomStep::minMovePx`
 

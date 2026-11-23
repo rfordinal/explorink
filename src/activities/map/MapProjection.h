@@ -60,8 +60,13 @@ class MapProjection {
   // the Mercator NW corner; local x grows east, local y grows south (see
   // mapbuilder/tiles.py and mapbuilder/render_from_tiles.py's
   // _global_points, which undoes the same offset).
+  // `coordShift` is the tile's own header byte: a stored unit is
+  // `1 << coordShift` Mercator metres, so a tile wider than 32,767 m can exist
+  // (docs/map-data-spec.md, "Version 4"). 0 on every tile written so far, and
+  // this is the one seam where tile-local becomes Mercator, so it is the only
+  // place the shift has to be applied.
   void projectTileLocal(int32_t originX, int32_t originY, int16_t localX, int16_t localY, int16_t& outScreenX,
-                        int16_t& outScreenY) const;
+                        int16_t& outScreenY, uint8_t coordShift = 0) const;
 
   // Inverse of projectMerc -- screen pixel back to Mercator metres. Used to
   // find which tiles a viewport needs (docs/map-data-spec.md, "Which tiles
@@ -69,6 +74,20 @@ class MapProjection {
   void screenToMerc(int16_t screenX, int16_t screenY, double& outMercX, double& outMercY) const;
 
   double mppMerc() const { return mppMerc_; }
+  // GROUND metres per pixel -- mppMerc * cos(anchorLat), the inverse of the
+  // conversion reset()'s caller already did. Here rather than at a call site
+  // because this class is the one place that knows both frames, and a caller
+  // re-deriving it would need the anchor latitude it no longer has.
+  double mppGround() const { return mppGround_; }
+
+  // A DIRECTION in tile-local units (x east, y south) turned into screen
+  // pixels. Rotation only: no translation, because a direction has no origin,
+  // and no scale, because the caller normalises.
+  //
+  // A street label's tangent needs this and projecting two points does not do
+  // it any better: two projected points of a short segment round to the same
+  // pixel and the direction collapses to zero.
+  void rotateTileLocalDir(double dx, double dy, double& outDx, double& outDy) const;
 
  private:
   double anchorMercX_ = 0.0;
@@ -76,6 +95,7 @@ class MapProjection {
   double cosTheta_ = 1.0;
   double sinTheta_ = 0.0;
   double mppMerc_ = 1.0;
+  double mppGround_ = 1.0;
   int16_t anchorScreenX_ = 0;
   int16_t anchorScreenY_ = 0;
 };

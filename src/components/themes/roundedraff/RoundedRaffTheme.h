@@ -66,6 +66,10 @@ constexpr ThemeMetrics values = {.batteryWidth = 15,
                                  .optionPopupDrawAllRows = true,
                                  .optionPopupDialogSideMargin = 20,
                                  .optionPopupTitleSeparator = true,
+                                 .optionPopupMenuWidthPercent = 70,
+                                 .optionPopupMenuHeightPercent = 40,
+                                 .optionPopupConfirmWidthPercent = 60,
+                                 .optionPopupConfirmHeightPercent = 30,
                                  .textFieldHorizontalPadding = 8,
                                  .textFieldNormalThickness = 2,
                                  .textFieldCursorThickness = 3,
@@ -101,5 +105,7 @@ class RoundedRaffTheme : public BaseTheme {
   // btn3FontId/btn4FontId (0 means "same as fontId").
   void drawButtonHints(GfxRenderer& renderer, const char* btn1, const char* btn2, const char* btn3,
                        const char* btn4, int fontId = 0, int btn3FontId = 0, int btn4FontId = 0) const override;
+  void drawTouchLockBox(GfxRenderer& renderer, Rect box) const override;
+  bool frontHintBox(int index, int portraitWidth, int portraitHeight, Rect& out) const override;
   bool homeMenuShowsContinueReading() const { return true; }
 };

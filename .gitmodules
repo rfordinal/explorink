@@ -1,4 +1,7 @@
 [submodule "freeink-sdk"]
 	path = freeink-sdk
-	url = https://github.com/Free-Ink/freeink-sdk.git
+	url = git@github.com:rfordinal/freeink-sdk.git
 	branch = main
+[submodule "meshcore"]
+	path = meshcore
+	url = https://github.com/meshcore-dev/MeshCore.git

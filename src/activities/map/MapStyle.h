@@ -27,7 +27,197 @@
 // casing and all, and lays short marks across it -- that is a railway, and it
 // reads as one continuous line that happens to be ticked. Every modern map
 // draws them that way round.
-enum class MapLinePattern : uint8_t { Solid = 0, Dashed, Ticked };
+// `None` is not "no pattern chosen", it is **draw no line at all**. Added
+// 2026-08-27 because `solid` had come to mean two different things on a water
+// class: a solid stroke when there is no tone, and nothing drawn when there is
+// one -- the tone being the whole mark. One word with two meanings is the same
+// defect as two words for one thing, so the second meaning got its own word.
+//
+// Only the water pass reads it. The generator refuses it on a road, where a class
+// that draws nothing is what `hidden: true` already says.
+enum class MapLinePattern : uint8_t { Solid = 0, Dashed, Ticked, None, DashMark, Hachured, Ladder };
+
+// **`Ladder` is `Hachured` with the tooth crossing the line instead of hanging
+// off it**, and it is the third railway mark, not a second one. Same arc-length
+// walk, same `tick_px` reach and `gap_px` spacing; the rung is simply drawn from
+// `-tick` to `+tick` about the line rather than from 0 to `+tick`, so it sticks
+// out on both sides. That is the standard topographic railway symbol -- a thin
+// axis with periodic cross-ticks -- as against `Ticked`, which keeps its marks
+// inside the stroke's own width.
+//
+// The point of having both is loudness, not taste. `Ticked` on a 4 px cased
+// stroke is what this style drew for `railway` until 2026-09-16, and on a ride
+// sheet that is a heavy black band announcing something a driver cannot act on:
+// a railway is not a road they may take and not a junction they may turn at.
+// `Ladder` on a hairline says the same thing quietly. Maintainer's call,
+// 2026-09-16: "upozornuje na seba a pritom pre mna ako jazdca nema absolutne
+// ziadnu informacnu hodnotu".
+//
+// `tick_side` has no meaning here and the generator refuses it: a mark that
+// reaches both ways has no side to choose.
+
+// **`Hachured` is the rock-face mark, and it is not `Ticked`.** Ticked lays its
+// marks *across* a whole line -- a railway's sleepers. Hachured leaves the line
+// whole and hangs short combs off **one** side of it, which is how every hiking
+// map in this part of the world draws a `natural=cliff`: a rock formation that
+// ends in a sudden drop, the combs pointing the way down. Maintainer's reference
+// 2026-08-27, the Prosiecka dolina sheet.
+//
+// The side is not a choice. OSM's convention puts the lower ground on the right
+// of the way's direction of travel, and the tile keeps the points in OSM order
+// exactly so a correct-side comb is possible without refetching
+// (docs/map-data-spec.md, "The relief layer's second class"; fetch_osm.py). Draw
+// them on the left and the map says the drop is uphill.
+
+// The mark a `DashMark` period carries between its dashes: dash, gap, mark, gap,
+// repeating. The classic way a paper map separates route classes without colour,
+// and on a 1-bit panel colour is exactly what there is none of -- a waymarked
+// trail and a farm track are both a 1 px hairline today, and 28.7 % of the
+// pedestrian ways around Vratna are on a waymarked route (measured 2026-08-27).
+//
+// Three shapes, not a vocabulary. Each one is a thing that has to survive on
+// glass at 3 px, and none of them has been looked at on a panel.
+//
+// **Screen-aligned, not turned to the line, and that is for sharpness rather than
+// for cheapness.** Maintainer's call 2026-08-27: a square with one fixed
+// orientation reads better. An axis-aligned square lands on the pixel grid
+// exactly, so all four edges are hard; rotate it and every edge becomes a
+// staircase the panel has no grey to soften. One orientation everywhere also
+// makes the mark recognisable as *the same mark* along a winding trail, which a
+// turning one is not. It costs nothing either -- no perpendicular, no square root
+// per mark -- but that is the smaller reason.
+// **Silhouettes only separate from 5 px.** Rasterised and counted: at 3 px a
+// circle and a square are the *same nine pixels* -- there is no room for a corner
+// to be missing -- and a diamond is a plus sign of 5. At 5 px they are 25 / 21 /
+// 13 and the outlines differ; at 7 px, 49 / 37 / 25. So the shape is a choice
+// about 5 px and up, and below that only `Cross` and `Diamond` say anything at
+// all. Which of them survives on glass nobody has asked yet.
+// `U` is the rock-face mark asked for 2026-08-27: a bracket on the line, its floor
+// **turned towards the drop**, which is how the reference sheet (Prosiecka dolina)
+// draws a rock face. It is the one shape here whose orientation is its meaning --
+// a square rotated is the same square, a U rotated is a different statement -- so
+// unlike the others it is turned, using the side the tile already carries: OSM
+// order puts the lower ground on the right of the way's direction.
+//
+// **Snapped to four directions, not turned freely.** Free rotation would put the
+// U's edges on diagonals, and on 1-bit there is no grey to soften a staircase --
+// the maintainer's own reason for keeping a square axis-aligned. Snapping to
+// up/down/left/right keeps every edge on the pixel grid and still says which way
+// the ground goes, which is all the mark has to say.
+// `Comb` is the cartographic one, and the maintainer's final call 2026-08-27: a
+// short bar laid along the line with **three** teeth hanging off the drop side,
+// where `U` has two. That is the escarpment hachure every topographic sheet uses,
+// and the reference (Prosiecka dolina) is full of them. `U` stays because it is
+// lighter at small sizes, but `Comb` is the correct symbol.
+enum class MapLineMark : uint8_t { None = 0, Dot, Square, Cross, Circle, Diamond, U, Comb };
+
+// Which side of the way a hachure's combs hang off, and which way an oriented mark
+// faces.
+//
+// `Downhill` is the default and means "right of the direction of travel", which is
+// OSM's own convention for `natural=cliff` and is why the tile keeps its points in
+// OSM order. `Uphill` is the mirror. It exists because the convention is a
+// convention: a feature that is not a cliff can want the other side (an embankment
+// seen from the other way), and a region whose mappers got it backwards is a real
+// thing that a style should be able to answer without a rebuild.
+enum class MapTickSide : uint8_t { Downhill = 0, Uphill };
+
+// A way record's `roughness` byte is three fields, not one number.
+//
+// Not in MapClassEnum.h, which is generated from tilegen's class_spec.py and
+// says "do not hand-edit" -- a constant added there is lost on the next
+// regeneration. The layout is docs/map-data-spec.md, "The rest of the flag
+// budget is allocated": bits 0-2 are roughness (0 unknown, 1 best .. 7 worst),
+// bits 3-5 are `sac_scale` and 6-7 `trail_visibility`.
+//
+// **The builder fills bits 3-7 since 2026-08-27** (tilegen `roughness.py`,
+// `roughness_byte_for_tags`). Until then it wrote zeros there, which is why
+// this mask existed before the fields did -- and why it now matters: an
+// unmasked compare against `roughness` reads an alpine path
+// (`sac_scale=alpine_hiking` -> 0x20) as surface grade 32, i.e. as worse than
+// impassable. Measured on the extracts the tiles are built from
+// (`mapbuilder/tools/osm_tag_census.py`, 2026-08-27): 13.1 % of High Tatras
+// pedestrian ways carry `sac_scale` and 6.1 % `trail_visibility`, against
+// 1.2 % and 0.2 % in Mala Fatra. Sparse, and densest exactly where a walker
+// needs it.
+static constexpr uint8_t kMapRoughnessValueMask = 0x07;
+
+// `sac_scale`, bits 3-5. 0 unknown, 1 hiking, 2 mountain_hiking,
+// 3 demanding_mountain_hiking, 4 alpine_hiking, 5 demanding_alpine_hiking,
+// 6 difficult_alpine_hiking. 7 is reserved and never written by the builder, so
+// a 7 read here is a corrupt byte and must be treated as unknown.
+static constexpr uint8_t kMapSacScaleShift = 3;
+static constexpr uint8_t kMapSacScaleMask = 0x07;
+
+// `trail_visibility`, bits 6-7. 0 unknown, 1 obvious (OSM excellent/good),
+// 2 patchy (intermediate), 3 absent (bad/horrible/no).
+//
+// 0 is not "fine". On a Slovak forest track a missing tag is the normal case --
+// 99.8 % of Mala Fatra pedestrian ways -- so a style that draws state 0 like
+// state 1 is asserting something nobody surveyed.
+static constexpr uint8_t kMapTrailVisibilityShift = 6;
+static constexpr uint8_t kMapTrailVisibilityMask = 0x03;
+
+static constexpr uint8_t mapSacScale(uint8_t roughness) { return (roughness >> kMapSacScaleShift) & kMapSacScaleMask; }
+
+static constexpr uint8_t mapTrailVisibility(uint8_t roughness) {
+  return (roughness >> kMapTrailVisibilityShift) & kMapTrailVisibilityMask;
+}
+
+// A stroke that replaces a road class's own, for a way whose `flags` or
+// `roughness` says so (docs/map-data-spec.md, "Flag bits"; MapWayFlag in
+// MapClassEnum.h).
+//
+// **Why this exists at all.** Every .tib tile ever written carries `flags` and
+// `roughness` per way, and until 2026-08-27 the renderer read neither. So a
+// track tagged `access=no` was drawn as the same hairline as an open path: the
+// map told a hiker a closed track was open. Measured in the local mirror,
+// 24,000 ways carry no_motor, 21,342 no_bicycle and 20,264 no_foot -- 5.1 %,
+// 4.5 % and 4.3 % of 474,178 road ways, and 6.7 / 6.0 / 5.7 % at the detail LOD
+// where a walker is actually reading the map.
+//
+// **It replaces, it does not patch.** A matched way is drawn with this rule's
+// width, casing and pattern instead of its class's -- there is no per-field
+// "inherit", because a flag rule spans classes and there is no single class
+// width for it to inherit from. Consequence, and it is the trap to remember: a
+// rule matching `bridge` flattens a motorway to whatever width it names. Match
+// on bits whose classes you actually mean to restyle, or restrict the rule with
+// `when` (docs/map-style.md, "Matching a way's flag bits").
+//
+// **No tone.** `fill: tone` is deliberately outside this grammar: the generator
+// validates a tone against its class's casing and interior width, and a rule
+// that spans classes has no one interior to check. Open -- add it when a panel
+// pass says a shaded flag treatment is wanted.
+struct MapRoadFlagRule {
+  // Bits that make this rule match, OR'd together -- any one of them set on the
+  // way is a match. 0 with `roughnessMin` 0 means the slot is unused.
+  uint16_t flagMask = 0;
+  // Lowest `roughness & kMapRoughnessValueMask` that matches. 0 means the rule
+  // does not look at roughness at all; 1 upward excludes roughness 0, which is
+  // "unknown" and not "smooth".
+  uint8_t roughnessMin = 0;
+  // Full stroke width in device pixels. Never 0 in a used slot that is not
+  // `hidden`, because 0 would read as "hidden" and there is already a word for
+  // hidden -- but the generator gets there by flooring, not by refusing: a width
+  // that rounds to zero becomes 1 (gen_mapstyle.py, `width = max(width, 1)`).
+  // What it refuses is a *missing* width on a rule any variant can draw.
+  uint8_t widthPx = 0;
+  uint8_t casingPx = 0;
+  uint8_t dashPx = 0;
+  uint8_t gapPx = 0;
+  MapLinePattern pattern = MapLinePattern::Solid;
+  // Matched and not drawn. Distinct from width 0 on a class, which also keeps
+  // the class out of that rung's tile read (gen_mode_masks.py); this one is a
+  // draw-time decision, so the bytes are still read.
+  bool hidden = false;
+};
+
+// How many flag rules one style may carry. Four, and the number is a flash
+// budget rather than a taste judgement: data/mapstyle.json compiles to 14
+// distinct MapStyle variants plus the base, so each slot costs 15 copies of
+// sizeof(MapRoadFlagRule) -- 10 bytes -- i.e. 150 bytes of flash per slot.
+// Raise it when a style needs a fifth, and say what it bought.
+static constexpr uint8_t kMapRoadFlagRuleSlots = 4;
 
 struct MapStyle {
   // Road line width per class_id -- index with MapClassId, whose slot count
@@ -55,10 +245,52 @@ struct MapStyle {
   // start and read by nothing at all.
   MapLinePattern roadPattern[kClassEnumSlots];
   uint8_t roadDashPx[kClassEnumSlots];
+
   // Gap between dashes. Separate from the dash so a railway can be long runs
   // with short ticks (the modern-map look) while a watercourse is short marks
   // with real space -- one number for both would force the same rhythm.
   uint8_t roadGapPx[kClassEnumSlots];
+  // The mark and its size for a `DashMark` class. The generator refuses that
+  // pattern without a mark rather than quietly drawing a plain dash: a pattern
+  // that needs a mark and has none is a typo, not a choice.
+  MapLineMark roadMark[kClassEnumSlots];
+  uint8_t roadMarkPx[kClassEnumSlots];
+  // Same two knobs on a road class, for the same reason.
+  MapTickSide roadTickSide[kClassEnumSlots];
+  uint8_t roadTickWidthPx[kClassEnumSlots];
+
+  // Dither tone for the inside of a cased road, layers.roads.rules[]'s
+  // `fill: "tone"` plus `tone`. `None` leaves the interior white, which is what
+  // every cased road did until 2026-08-25.
+  //
+  // What it is for: a wide road drawn as two black edges with white between
+  // them is a heavy mark, and at the coarse rungs a lot of them is most of the
+  // ink. Paper maps draw a motorway as a thin outline with a *shaded* middle
+  // instead, so it reads as a wide ribbon rather than a black band. On 1-bit
+  // the shading is the same screen-anchored dither an area fill uses
+  // (MapAreaTone), so a road and a built-up area cannot disagree about what
+  // grey means.
+  //
+  // Needs `casing > 0` and an interior at least 2 px wide: a 1 px interior
+  // cannot carry a period-2 pattern, let alone the period-3 stipple.
+  MapAreaTone roadFillTone[kClassEnumSlots];
+
+  // Flag/roughness overrides, applied in file order with the **first match
+  // winning** -- so an earlier rule in data/mapstyle.json has priority, and a
+  // way matched by one rule is never also restyled by the next.
+  //
+  // Empty in every style shipped today (an all-zero slot is unused), so the
+  // renderer's flag path is dead code until a style file asks for it and the
+  // render is byte-identical to the one before this field existed. That is
+  // deliberate: a mark on the map is judged on the panel, and there is no
+  // device to judge it on yet.
+  //
+  // A rule is not consulted at all for a class the style hides
+  // (roadWidthPx == 0). A hidden class is intersected out of the rung's tile
+  // class mask (gen_mode_masks.py), so its ways never reach the renderer -- a
+  // flag rule that appeared to un-hide it would draw nothing and read as a bug
+  // in the rule.
+  MapRoadFlagRule roadFlagRules[kMapRoadFlagRuleSlots];
 
   // layers.buildings. A ring is drawn as an optional outline plus a hatch --
   // never a solid fill, which on 1-bit swallows the roads around it
@@ -89,13 +321,38 @@ struct MapStyle {
   // `waterEnabled` gates the read, not the draw -- see buildings above.
   bool waterEnabled;
   uint8_t waterLinePx[kWaterClassSlots];
+  // Border thickness for a water *area* -- a lake's ring -- per class.
+  //
+  // Separate from waterLinePx since 2026-08-26. The two were one number, so a
+  // lake's border and a river's stroke width could not be set apart: widen the
+  // river and the lake outline widened with it. Defaults to the class's line
+  // width when a style says nothing, so an existing style draws the same.
+  uint8_t waterOutlinePx[kWaterClassSlots];
   // Dash length per water class, 0 for a solid stroke. Same reason as
   // roadDashPx: a solid black line is a road, and a stream drawn as one sends
   // the eye down the river instead of the road beside it.
   MapLinePattern waterPattern[kWaterClassSlots];
   uint8_t waterDashPx[kWaterClassSlots];
   uint8_t waterGapPx[kWaterClassSlots];
-  MapAreaTone waterTone;
+
+  // Casing per water class, exactly a road's: above 0 the stroke is drawn black
+  // at the full width with a white stroke `2 * casing` narrower inside it. Added
+  // 2026-08-27 so a *line* can carry a surface.
+  //
+  // **Why a stream wanted one.** The Danube reads as an obstacle because it
+  // arrives as a closed ring and the ring branch tones it. A stream arrives as an
+  // open way -- `mapWayIsClosedRing` is the only thing that tells the two apart --
+  // so it could only ever be a stroke, and `fill: tone` on a stream rule drew
+  // nothing at all: `toneRing` is called in the ring branch and nowhere else. A
+  // walker crossing a stream cares as much as a rider crossing the Danube, and
+  // the mark has to say so.
+  uint8_t waterCasingPx[kWaterClassSlots];
+
+  // Tone per water class rather than one for the layer. It was a single
+  // `waterTone` until 2026-08-27, which meant a lake and a river had to agree
+  // about what water looks like, and a *toned stroke* had no tone of its own to
+  // read at all. The ring branch and the stroke branch both index this.
+  MapAreaTone waterTone[kWaterClassSlots];
   MapAreaFill::Pattern waterHatch;
   uint8_t waterHatchSpacingPx;
   // White waves on a dark surface is the whole point of the water fill: a tone
@@ -116,6 +373,99 @@ struct MapStyle {
   MapAreaTone landuseTone[kLanduseClassSlots];
   MapAreaFill::Pattern landuseHatch[kLanduseClassSlots];
   uint8_t landuseHatchSpacingPx[kLanduseClassSlots];
+  // A dashed boundary, per landuse class. 0 in either field means solid.
+  //
+  // Dashes on an area outline exist for one reason: a forest edge on foot is a
+  // real thing to navigate by, and a dot tone ending is not an edge -- nothing
+  // says whether the wood stops there or the mapping does. A boundary line
+  // settles it (docs/map-style.md, "Borders").
+  uint8_t landuseOutlineDashPx[kLanduseClassSlots];
+  uint8_t landuseOutlineGapPx[kLanduseClassSlots];
+
+  // layers.contours. Stroke width per contour class (MapContourClass: minor,
+  // index), 0 for a class this rung does not draw -- which is how rung 1 shows
+  // only the 100 m lines and rungs 5-6 only the 500 m ones
+  // (docs/contours-plan.md, "Interval per LOD").
+  //
+  // No tone, no hatch and no dash: a contour is a line, and "a 1 px line under
+  // a checkerboard becomes a dashed line" (docs/map-render-spec.md, "1-bit
+  // rules"), which reads as a footpath. Weight is the only separator there is.
+  //
+  // `contoursEnabled` gates the read, not the draw -- see buildings above. Ride
+  // and cycle resolve it false, so those modes never open the layer at all.
+  bool contoursEnabled;
+  uint8_t contourWidthPx[kContourClassSlots];
+
+  // Per relief class, so a cliff is not the same line as an index contour. It was
+  // width alone until 2026-08-27, which made them identical marks at 2 px -- and
+  // on a hike map those two must never be confused: one says "a hundred metres of
+  // height", the other says "you fall here".
+  //
+  // `contourTickPx` is how far a `Hachured` comb reaches off the line and
+  // `contourGapPx` how often one is hung; both are ignored by every other
+  // pattern.
+  MapLinePattern contourPattern[kContourClassSlots];
+  uint8_t contourTickPx[kContourClassSlots];
+  uint8_t contourGapPx[kContourClassSlots];
+  // A `DashMark` relief class needs a real dash length. It briefly borrowed the
+  // gap, which is a number nobody chose for it.
+  uint8_t contourDashPx[kContourClassSlots];
+  MapLineMark contourMark[kContourClassSlots];
+  uint8_t contourMarkPx[kContourClassSlots];
+  // A hachure's comb: which side it hangs off, and how thick each tooth is. Both
+  // were hardcoded (right of travel, 1 px) until 2026-08-28, which is a decision
+  // the renderer should not be making for the style.
+  MapTickSide contourTickSide[kContourClassSlots];
+  uint8_t contourTickWidthPx[kContourClassSlots];
+
+  // Height numbers on the index contours. Two or three on a frame is the whole
+  // design: the rest of the ladder is countable from them, and a number per
+  // line would bury the map it is describing.
+  //
+  // 0 px switches them off. The number is drawn into a white knockout box
+  // rather than a halo, because a gap in the line is what a paper contour map
+  // does and it reads better than letters floating on the line they belong to.
+  // Rotated to follow the contour, at that line's own bearing with the digits'
+  // top toward the higher ground (MapRenderer.cpp, drawContourLabels). This
+  // comment said the opposite until 2026-11-01 -- "the canvas has no rotated
+  // text" -- which was false from the day the numbers shipped and is what sent
+  // the street-name design to a horizontal label beside an anchor for two
+  // months (docs/street-labels-plan.md).
+  uint8_t contourLabelPx;
+  bool contourLabelBold;
+  // White outline around the digits, in pixels. 0 draws none, which on a dotted
+  // area fill makes a number hard work: the dots sit inside the counters.
+  uint8_t contourLabelHaloPx;
+  // How many may land on one frame. Held small on purpose.
+  uint8_t contourLabelMax;
+  // Minimum spacing between two numbers, so they spread instead of clustering
+  // wherever the stream happened to offer straight contour first.
+  uint8_t contourLabelMinGapPx;
+
+  // layers.road_labels: street names, drawn along their own street (T-558).
+  //
+  // The same shape as the contour numbers above, for the same reason: both lie
+  // on a line rather than beside a point. 0 px switches them off, and that is
+  // how every mode but tourist and every rung but 0 and 1 is served -- the tile
+  // layer is then never opened at all, so a hiker pays no card read for a
+  // feature they cannot see.
+  uint8_t roadLabelPx;
+  bool roadLabelBold;
+  // White outline around the glyphs, from the same rotated mask, so it follows
+  // the name's angle. A knockout box is wrong here even more than it is for a
+  // height: the box would wipe the street the name belongs to.
+  uint8_t roadLabelHaloPx;
+  // How many names on one frame. Two or three at rung 0 (maintainer,
+  // 2026-11-01, against a reference map of real ground) -- the tile offers a
+  // median of thirteen on a city-centre panel, so this cap is doing real work
+  // rather than trimming an edge case.
+  uint8_t roadLabelMax;
+  // Minimum spacing between two street names, so they spread instead of
+  // clustering wherever the layer happened to be read first.
+  uint8_t roadLabelMinGapPx;
+  // A longer name is cut with an ellipsis. Separate from the places' cap: a
+  // street name runs longer than a village's.
+  uint16_t roadLabelMaxWidthPx;
 
   // Village/town dot, layers.places.dot_radius_px doubled. 0 means places are
   // not drawn.
@@ -171,9 +521,121 @@ struct MapStyle {
   // `placeLabelMaxWidthPx` caps a label's text width; a longer name is
   // truncated with an ellipsis. 0 means no cap.
   uint8_t placeMaxLabels;
+  // Per-tier caps, `max_labels_major` and `max_labels_minor`. Major is city and
+  // town (place rank <= 1), minor is everything smaller.
+  //
+  // Why a cap per tier and not just the total: the total is a cost backstop and
+  // says nothing about what a frame should look like. "Six towns and two
+  // villages" and "two towns and six villages" are the same total and different
+  // maps, and which one is right changes with the rung -- at 45 m/px the towns
+  // are the skeleton and the villages are texture, at 6 m/px it is the other
+  // way round.
+  //
+  // Absent from the style file means "the total, i.e. no extra restriction", so
+  // a style that never mentions them behaves exactly as before. 0 means none of
+  // that tier, which is a real thing to ask for: a rung that names towns only.
+  // `placeMaxLabels` still applies on top of both.
+  uint8_t placeMaxLabelsMajor;
+  uint8_t placeMaxLabelsMinor;
   uint8_t placeLabelGapPx;
   uint8_t placeLabelRouteOverlapPct;
   uint16_t placeLabelMaxWidthPx;
+
+  // layers.points -- the POI marks from the .tip point layer
+  // (../../../docs/point-file-spec.md). A square outline with a category glyph
+  // inside it and one corner flag when the point carries a condition
+  // (docs/map-render-spec.md, "Point mark vocabulary"; MapPointMarks.h for why
+  // the glyphs are primitives and not icons).
+  //
+  // Device pixels and they do not scale with mpp: like the route arrow, a mark
+  // is a screen decoration and has to stay legible at every zoom rung. A square
+  // that shrank with the zoom would be a dot at the coarse rungs, which is
+  // already what a place is.
+  //
+  // `pointSquarePx == 0` hides the layer, and hidden means the shards are never
+  // opened -- the same performance decision as `buildingsEnabled`, and it
+  // matters more here because a shard is a separate file per 39 km.
+  //
+  // The two `*Enabled` flags are per kind rather than per category, which is
+  // exactly what the `kind` byte was for: "safety without landmarks" is a byte
+  // test and not a category allowlist (docs/map-data-spec.md, "Two kinds of
+  // point, one file"). Category filtering is a render-time mask the UI sets
+  // (MapPointSource::Config::categoryMask), not a style field -- `Nearby ->
+  // Show on map` is a temporary view, not a style edit.
+  bool pointsSafetyEnabled;
+  bool pointsLandmarkEnabled;
+  // Landmarks ranked above this are not drawn. 0 draws only rank 0 (a
+  // defensive castle, a pass, a cave, a waterfall), 3 draws everything down to
+  // guideposts and locality names.
+  //
+  // Per rung and per mode through the style's own `when` clauses, because the
+  // density is not one number: 2.7 rank-2 marks per z11 tile in Mala Fatra
+  // against 16.2 in Bratislava (docs/map-landmarks.md, "The density problem").
+  // A ridge walker wants peaks; the same cutoff over a city at an overview
+  // rung is a wall of squares.
+  //
+  // Read ONLY for kind == Landmark. A safety record carries rank 0 meaning
+  // "no rank", and the zoom that would hide a spring is the zoom a walker
+  // needs it at.
+  uint8_t pointLandmarkRankMax;
+  // Landmark names, drawn by the same placer as the place names and capped
+  // separately so a ridge full of peaks cannot spend the villages' budget.
+  // 0 px or 0 labels draws none, which is what every mode but hike does today.
+  // `pointLabelPx` is a LINE-HEIGHT CAP, not a type size: the canvas picks the
+  // largest registered face whose line height does not exceed it, and falls
+  // back to the smallest face when nothing fits. The faces are 12, 23, 24, 29
+  // and 34 px tall, so every value from 0 to 22 renders identically -- which
+  // is how `label_px: 8` drew the 12 px contour-number face for half a day
+  // (GfxRendererCanvas::fontIdForSize, test/map_preview/PreviewFont.cpp).
+  uint8_t pointLabelPx;
+  bool pointLabelBold;
+  uint8_t pointMaxLabels;
+  // Line-height cap for a summit's height line, under its name. 0 draws it at
+  // the name's own size. Same face ladder as pointLabelPx.
+  uint8_t pointLabelElePx;
+  // Landmarks get their own width cap rather than the places' one: a landmark
+  // name is routinely longer than a village's ("Kostol sv. Michala
+  // archanjela") and the ellipsis is what the reader pays.
+  uint16_t pointLabelMaxWidthPx;
+  // Diameter of the dot EVERY landmark draws instead of a square. 0 draws no
+  // mark at all, which is a legitimate setting once names are on: a landmark
+  // is a name and the dot only pins it to its ground.
+  //
+  // Why no square: there is no landmark glyph sheet, so a square came out
+  // empty on the first real render, and an empty square costs a mark's ink to
+  // deliver no information (maintainer, 2026-10-27).
+  uint8_t pointLandmarkDotPx;
+  // White knocked out around the dot, per side. The dot is 4 px and the map
+  // under it is a dither or a cliff hachure as often as it is white, so this
+  // is what decides whether the mark is findable at all -- raised from 1 to 2
+  // on the maintainer's call 2026-10-28, after the panel showed the dots
+  // readable on white ground and lost on everything else. It widens the mark's
+  // footprint without widening the mark.
+  uint8_t pointLandmarkDotHaloPx;
+  // Base width of the filled triangle a peak draws instead of the dot. 0 falls
+  // back to the dot.
+  //
+  // This is the one landmark symbol that is a cartographic PRIMITIVE rather
+  // than artwork: a summit triangle is the same mark on every paper map ever
+  // printed, and drawing it needs no sheet. The rest of the categories wait
+  // for one (T-2033) and draw the dot meanwhile.
+  uint8_t pointLandmarkPeakPx;
+  uint8_t pointSquarePx;
+  uint8_t pointBorderPx;
+  uint8_t pointGlyphPx;
+  // Leg of the corner triangle. 0 draws no flag at all, which makes a flagged
+  // point look confirmed -- so it is a debug setting, never a style choice.
+  uint8_t pointFlagPx;
+
+  // Clustering (docs/map-render-spec.md, "POI clustering"): points whose
+  // screen positions land within pointClusterRadiusPx of each other merge
+  // into one tile before drawing. A tile with more than one distinct category
+  // lays each out in a pointClusterCellPx square grid (ceil(sqrt(n)) side),
+  // same-category points collapsing to one mark. Screen pixels, so the same
+  // two points that merge at a coarse zoom pull apart at a fine one with no
+  // per-rung tuning. 0 disables clustering: every point draws its own mark.
+  uint8_t pointClusterRadiusPx;
+  uint8_t pointClusterCellPx;
 
   // layers.route. The route is distinguished from the roads by width alone --
   // there is no colour on 1-bit e-ink -- so this is deliberately wider than any
@@ -197,6 +659,19 @@ struct MapStyle {
   // ring of `puckRingPx`, with a black heading arrow `puckArrowPx` long inside
   // it. Radius 0 draws the bare arrow and no disc -- a bare triangle vanishes
   // into a thick route, so that is a debug shape rather than the spec's.
+  // How big the DEVICE's position marker is, as a percentage of its full size.
+  // 100 changes nothing.
+  //
+  // **This is the knob that moves the marker on the panel, and `puckRadiusPx`
+  // below is not.** The device draws the mode marker
+  // (MapActivity::drawPositionMarker, sized by MapMarkerMetrics.h) and the host
+  // preview draws the style's puck (MapRenderer::drawMarker). Two paths, one
+  // name, and the obvious-looking one is the preview's.
+  //
+  // Per mode, because the two modes read the marker differently: on a ride it
+  // has to be findable at a glance on a moving panel, and a walker standing
+  // still wants the ground around the dot rather than the dot.
+  uint8_t markerScalePct;
   uint8_t puckRadiusPx;
   uint8_t puckRingPx;
   uint8_t puckArrowPx;
@@ -228,5 +703,8 @@ inline uint8_t mapStyleMaxStrokePx(const MapStyle& style) {
   for (uint8_t i = 0; i < kLanduseClassSlots; ++i) take(style.landuseOutlinePx[i]);
   take(style.buildingOutlinePx);
   take(style.routeWidthPx);
+  // A flag rule can name a width no class has, and the reject margin has to
+  // allow for it or a flag-widened way just off the panel loses its ink.
+  for (uint8_t i = 0; i < kMapRoadFlagRuleSlots; ++i) take(style.roadFlagRules[i].widthPx);
   return widest;
 }

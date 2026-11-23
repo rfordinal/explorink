@@ -66,6 +66,10 @@ constexpr ThemeMetrics values = {.batteryWidth = 16,
                                  .optionPopupDrawAllRows = false,
                                  .optionPopupDialogSideMargin = 20,
                                  .optionPopupTitleSeparator = true,
+                                 .optionPopupMenuWidthPercent = 70,
+                                 .optionPopupMenuHeightPercent = 40,
+                                 .optionPopupConfirmWidthPercent = 60,
+                                 .optionPopupConfirmHeightPercent = 30,
                                  .textFieldHorizontalPadding = 6,
                                  .textFieldNormalThickness = 1,
                                  .textFieldCursorThickness = 3,
@@ -93,10 +97,15 @@ class LyraTheme : public BaseTheme {
   // 0 means "use this theme's own font" -- see BaseTheme.h's declaration for
   // why this can't just be a normal per-class default argument. Same for
   // btn3FontId/btn4FontId (0 means "same as fontId").
-  void drawButtonHints(GfxRenderer& renderer, const char* btn1, const char* btn2, const char* btn3,
-                       const char* btn4, int fontId = 0, int btn3FontId = 0, int btn4FontId = 0) const override;
+  void drawButtonHints(GfxRenderer& renderer, const char* btn1, const char* btn2, const char* btn3, const char* btn4,
+                       int fontId = 0, int btn3FontId = 0, int btn4FontId = 0) const override;
   void drawSideButtonHints(const GfxRenderer& renderer, const char* topBtn, const char* bottomBtn,
-                           int fontId = SMALL_FONT_ID) const override;
+                           int fontId = SMALL_FONT_ID, bool topDisabled = false, bool bottomDisabled = false,
+                           bool bold = false, const freeink::Icon* topIcon = nullptr,
+                           const freeink::Icon* bottomIcon = nullptr) const override;
+  void drawTouchLockBox(GfxRenderer& renderer, Rect box) const override;
+  bool frontHintBox(int index, int portraitWidth, int portraitHeight, Rect& out) const override;
+  bool sideHintBox(int index, int portraitWidth, int portraitHeight, Rect& out) const override;
   void drawButtonMenu(GfxRenderer& renderer, Rect rect, int buttonCount, int selectedIndex,
                       const std::function<std::string(int index)>& buttonLabel,
                       const std::function<UIIcon(int index)>& rowIcon) const override;

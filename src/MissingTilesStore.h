@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "MissingTilePriority.h"
+#include "MissingTileRetry.h"
 
 // One tile the device tried to open and could not -- absent, truncated or
 // crc32-mismatched, same "unavailable" definition MapTileSource uses.
@@ -95,7 +96,9 @@ class MissingTilesStore : public PersistableStore<MissingTilesStore> {
   // rider can still see the square. 60 min cap so a tile that will never exist
   // costs one ask an hour rather than one every 90 s on the rider's own data.
   static constexpr uint32_t kRefusalBaseMs = 90u * 1000u;
-  static constexpr uint32_t kRefusalMaxMs = 60u * 60u * 1000u;
+  // The same number MissingTileRetry.h uses to tell an expired deadline from
+  // a wrapped clock, and it has to stay the same number for that to hold.
+  static constexpr uint32_t kRefusalMaxMs = kMissingTileRetryCeilingMs;
 
   static const char* getFilePath() { return "/.crosspoint/missing_tiles.json"; }
   void toJson(JsonDocument& doc) const;
@@ -139,6 +142,26 @@ class MissingTilesStore : public PersistableStore<MissingTilesStore> {
   // nowMs is passed in rather than read here so the store stays free of Arduino
   // and the schedule is testable without waiting for real time to pass.
   bool isRefused(uint8_t z, uint32_t col, uint32_t row, uint32_t nowMs) const;
+
+  // How long until the soonest refused tile may be asked for again, in
+  // milliseconds from nowMs, or 0 when nothing is waiting on a refusal.
+  //
+  // The map's "no map data here" notice reads this so it can tell the rider a
+  // real number instead of a reassuring guess: a refused tile is the CDN
+  // saying "not built yet", and the retry really is scheduled
+  // (docs/missing-tiles.md). Same signed-difference wrap handling as
+  // isRefused(), and for the same reason.
+  // How long until the soonest refused tile inside one tile rectangle may be
+  // asked for again, in milliseconds from nowMs, or 0 when nothing there is
+  // waiting on a refusal.
+  //
+  // Rectangle-scoped, never store-wide: the store
+  // accumulates across a whole ride, so the soonest retry anywhere in it can
+  // belong to a tile 40 km behind the rider while the hatch they are looking
+  // at was never asked for at all. A countdown printed under "no map data
+  // here" has to be about *here*.
+  uint32_t msUntilNextRetryIn(uint8_t z, uint32_t col0, uint32_t row0, uint32_t col1, uint32_t row1,
+                              uint32_t nowMs) const;
 
   // The delay a tile gets after its `refusals`-th refusal: kRefusalBaseMs
   // doubled per refusal, capped at kRefusalMaxMs. Public because the schedule is

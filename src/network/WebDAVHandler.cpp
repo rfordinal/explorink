@@ -324,12 +324,44 @@ void WebDAVHandler::handleGet(WebServer& s) {
   }
 
   String contentType = getMimeType(path);
-  s.setContentLength(file.size());
+  const size_t fileSize = file.size();
+  file.close();
+
+  s.setContentLength(fileSize);
   s.send(200, contentType.c_str(), "");
 
+  // **This was `client.write(file)`, and it sent exactly one byte.**
+  //
+  // It used to work. `Storage.open()` returned an SdFat `FsFile`, which derives
+  // from `Stream`, so the call matched `NetworkClient::write(Stream&)` and
+  // streamed the file. Upstream's `6ff5fcd9` (2026-02-28, "make file system
+  // operations thread-safe (HalFile)") wrapped `FsFile` in `HalFile` to put a
+  // mutex around it -- and `HalFile` derives from `Print`, not `Stream`
+  // (lib/hal/HalStorage.h). The `Stream&` overload stopped matching, the
+  // compiler took `HalFile::operator bool()` instead, promoted the `true` to
+  // `uint8_t`, and wrote a single `0x01`. **The call site never changed; its
+  // meaning did.**
+  //
+  // Nothing warned, because every step is a legal conversion. The reply still
+  // carried the real Content-Length, so a client waited for a body that never
+  // arrived and reported a truncated transfer rather than an error -- which is
+  // why it read as a flaky network for six months.
+  //
+  // Found 2026-09-05 pulling a 545 kB gnss.csv off the device: HTTP 200,
+  // `Content-Length: 54822`, one byte on the wire. curl, curl --http1.0, a
+  // Range request and wget behaved identically, which is what moved suspicion
+  // from the client to the server. This is the only site in the tree that fed a
+  // `HalFile` to a `Stream&` parameter.
+  //
+  // **Upstream's bug, and it is still in CrossPoint.** Report it there rather
+  // than only fixing it here.
+  //
+  // readFileToStream() takes a `Print&`, which `NetworkClient` is, and reads in
+  // 256-byte chunks so a large file never needs a buffer of its own.
   NetworkClient client = s.client();
-  client.write(file);
-  file.close();
+  if (!Storage.readFileToStream(path.c_str(), client)) {
+    LOG_ERR("DAV", "GET %s: stream failed after headers were sent", path.c_str());
+  }
 }
 
 // ── HEAD ─────────────────────────────────────────────────────────────────────
