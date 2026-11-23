@@ -6,7 +6,7 @@
 #include "StreamingJsonParser.h"
 #include "WalletAsset.h"
 
-// Reads /trailink/wallet/manifest.json without ever holding it in RAM.
+// Reads /explorink/wallet/manifest.json without ever holding it in RAM.
 //
 // The manifest is fed through StreamingJsonParser (lib/JsonParser) in small
 // chunks, exactly like ReleaseJsonParser reads a GitHub release. Nothing is

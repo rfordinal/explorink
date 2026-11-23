@@ -44,6 +44,10 @@
 #ifdef ENABLE_LORA_CMD
 #include <LoraRadio.h>
 #endif
+
+// relPathIsSafe: one rule for every host-supplied card path, shared with
+// CMD:WALLETBENCH. Unconditional -- the wallet bench is not a LoRa build.
+#include "activities/map/MapTransferReceiver.h"
 #ifdef ENABLE_LORA_MESH
 #include "activities/map/PinGeo.h"
 #include "lora/BeaconPolicy.h"
@@ -3294,7 +3298,7 @@ void setup() {
 // file (opened once, outside the timing, which is what design B would do too),
 // more than one file, or more than one card.
 //
-// Usage: CMD:WALLETBENCH <path-under-/trailink> <stride> <x> <y> <iters>
+// Usage: CMD:WALLETBENCH <path-under-/explorink> <stride> <x> <y> <iters>
 //   stride  bytes per row of the source image (not the panel's rowBytes)
 //   x, y    window origin in native pixels; x must be a multiple of 8, because
 //           an 8-aligned window is the whole reason B needs no bit rotation
@@ -3370,8 +3374,19 @@ void walletBenchRun(const char* relPath, const uint32_t stride, const uint32_t o
     return;
   }
 
+  // The same rule the BLE receiver applies to a sender's path, not a second copy
+  // of it: `..` is how a relative path walks out of the card root, and this
+  // command opens whatever it is handed. A benchmark is still a file-read
+  // primitive on a device somebody else may be holding
+  // (parent repo CLAUDE.md, "Security: think about a stolen or physically-accessed
+  // device").
+  if (!MapTransferReceiver::relPathIsSafe(relPath, strlen(relPath))) {
+    logSerial.printf("WALLETBENCH_ERR path must be relative, with no .. component\n");
+    return;
+  }
+
   char path[128];
-  if (snprintf(path, sizeof(path), "/trailink/%s", relPath) >= static_cast<int>(sizeof(path))) {
+  if (snprintf(path, sizeof(path), "/explorink/%s", relPath) >= static_cast<int>(sizeof(path))) {
     logSerial.printf("WALLETBENCH_ERR path too long\n");
     return;
   }
@@ -4067,6 +4082,15 @@ void loop() {
         }
         LOG_DBG("MAIN", "goToMap() returned");
         logSerial.printf("GOTO_MAP_OK\n");
+#if defined(ENABLE_WALLET_TEST_CMDS) && ENABLE_WALLET_TEST_CMDS
+      // Both of these are bench instruments and neither is read-only in the sense
+      // the security rule means. WALLETBENCH opens any file under the card root and
+      // reports its read timings; GOTO_WALLET puts the wallet on the panel, and
+      // CMD:SCREENSHOT is ungated -- so on a release build a cable would read an
+      // unlocked rider's documents off the glass. Devel-only is the default a new
+      // command gets until widening it is a deliberate decision (parent repo
+      // CLAUDE.md, "Security: think about a stolen or physically-accessed device";
+      // docs/security-model.md).
       } else if (cmd.startsWith("WALLETBENCH ")) {
         // Card-read benchmark for the wallet's pan design. powerManager
         // .setPowerSaving(false) already ran for every CMD above -- at 10 MHz
@@ -4077,7 +4101,7 @@ void loop() {
         unsigned long yArg = 0;
         int itersArg = 0;
         if (sscanf(cmd.c_str(), "WALLETBENCH %95s %lu %lu %lu %d", relPath, &strideArg, &xArg, &yArg, &itersArg) != 5) {
-          logSerial.printf("WALLETBENCH_ERR usage: CMD:WALLETBENCH <path-under-/trailink> <stride> <x> <y> <iters>\n");
+          logSerial.printf("WALLETBENCH_ERR usage: CMD:WALLETBENCH <path-under-/explorink> <stride> <x> <y> <iters>\n");
         } else {
           walletBenchRun(relPath, static_cast<uint32_t>(strideArg), static_cast<uint32_t>(xArg),
                          static_cast<uint32_t>(yArg), itersArg);
@@ -4114,7 +4138,6 @@ void loop() {
           // its route path exists either.
           logSerial.printf("GOTO_WALLET_OK item=%d code=%d\n", itemArg, codeArg);
         }
-#if defined(ENABLE_WALLET_TEST_CMDS) && ENABLE_WALLET_TEST_CMDS
       } else if (cmd.startsWith("WALLETPROVISION ")) {
         // ## TEST PATH. Not how a device gets provisioned in the end.
         //

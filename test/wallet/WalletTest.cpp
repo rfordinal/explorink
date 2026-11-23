@@ -146,7 +146,7 @@ TEST(WalletAssetHeader, EncryptedFlagIsVisible) {
 TEST(WalletAssetPath, MapsAssetIdToTwoLevelPath) {
   char path[kAssetPathBufBytes];
   ASSERT_TRUE(buildAssetPath("0123456789abcdef", path, sizeof(path)));
-  EXPECT_STREQ(path, "/trailink/wallet/01/0123456789abcdef.dat");
+  EXPECT_STREQ(path, "/explorink/wallet/01/0123456789abcdef.dat");
 }
 
 TEST(WalletAssetPath, RejectsAnythingThatIsNotSixteenHex) {
@@ -442,7 +442,7 @@ TEST(WalletAssetPath, RootIsAParameterSoTheHostToolWalksTheSameMapping) {
   // And the card root is the same function with one argument bound.
   char card[kAssetPathBufBytes];
   ASSERT_TRUE(buildAssetPath("3acec0373d3c4ba0", card, sizeof(card)));
-  EXPECT_STREQ(card, "/trailink/wallet/3a/3acec0373d3c4ba0.dat");
+  EXPECT_STREQ(card, "/explorink/wallet/3a/3acec0373d3c4ba0.dat");
 }
 
 // ---------------------------------------------------------------------------

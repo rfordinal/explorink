@@ -32,8 +32,8 @@ inline constexpr uint8_t kAssetMagic[4] = {'E', 'W', 'A', '1'};
 inline constexpr size_t kAssetIdLen = 16;
 inline constexpr size_t kAssetIdBufBytes = kAssetIdLen + 1;
 
-inline constexpr const char* kWalletDir = "/trailink/wallet";
-// "/trailink/wallet/" + 2 + "/" + 16 + ".dat" + NUL
+inline constexpr const char* kWalletDir = "/explorink/wallet";
+// "/explorink/wallet/" + 2 + "/" + 16 + ".dat" + NUL
 inline constexpr size_t kAssetPathBufBytes = 64;
 
 enum class AssetType : uint8_t {
@@ -264,7 +264,7 @@ inline bool buildAssetPathIn(const char* root, const char* assetId, char* out, s
   return true;
 }
 
-// On the card: "/trailink/wallet/<first 2 of id>/<id>.dat".
+// On the card: "/explorink/wallet/<first 2 of id>/<id>.dat".
 inline bool buildAssetPath(const char* assetId, char* out, size_t outLen) {
   return buildAssetPathIn(kWalletDir, assetId, out, outLen);
 }

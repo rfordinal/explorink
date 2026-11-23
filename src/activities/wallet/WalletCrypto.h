@@ -157,7 +157,7 @@ inline constexpr size_t kGcmTagLen = 16;
 inline constexpr size_t kManifestEnvelopeLenV1 = 22;
 inline constexpr size_t kManifestEnvelopeLen = 26;
 
-inline constexpr const char* kManifestEncPath = "/trailink/wallet/manifest.enc";
+inline constexpr const char* kManifestEncPath = "/explorink/wallet/manifest.enc";
 
 // The whole encrypted manifest has to be in RAM before a single byte of it is
 // parsed, because GCM only authenticates once it has seen everything. So the size

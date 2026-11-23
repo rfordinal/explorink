@@ -189,6 +189,16 @@ class MapTransferReceiver {
   // active_ re-checks are what make the exceeded case safe.
   static constexpr uint32_t kDetachWaitMs = 500;
 
+  // True if `path` is a safe relative path under the root: no leading slash,
+  // no `..` component, no empty component, printable ASCII only. This is what
+  // stops a sender writing outside /explorink.
+  //
+  // **Public because the rule has two callers, not because this class is a
+  // utility.** CMD:WALLETBENCH builds a card path from a host-supplied relative
+  // path too, and a second copy of this rule is a second place for it to drift
+  // (firmware CLAUDE.md, "Docs" -- content lives in exactly one place).
+  static bool relPathIsSafe(const char* path, size_t len);
+
  private:
   // BLE hook trampolines -- plain functions, so no std::function anywhere on
   // this path (firmware CLAUDE.md).
@@ -205,11 +215,6 @@ class MapTransferReceiver {
   void abandon(const char* reason);
   // Refuses a frame without touching a transfer in flight.
   void refuse(const char* reason);
-
-  // True if `path` is a safe relative path under the root: no leading slash,
-  // no `..` component, no empty component, printable ASCII only. This is what
-  // stops a sender writing outside /explorink.
-  static bool relPathIsSafe(const char* path, size_t len);
 
   // Reads the finished .part file back and returns its CRC32, or false if it
   // could not be read.

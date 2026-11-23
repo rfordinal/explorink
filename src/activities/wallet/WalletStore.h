@@ -19,11 +19,11 @@ class GfxRenderer;
 // (../../../docs/wallet-viewer.md).
 namespace wallet {
 
-inline constexpr const char* kManifestPath = "/trailink/wallet/manifest.json";
+inline constexpr const char* kManifestPath = "/explorink/wallet/manifest.json";
 // The encrypted tree's manifest, and its one backup. A tree is either fully
 // encrypted or fully cleartext, never mixed, and which one it is, is stated by
 // which of these two files exists (parent repo docs/wallet-format.md, section 3).
-inline constexpr const char* kManifestBakPath = "/trailink/wallet/manifest.bak";
+inline constexpr const char* kManifestBakPath = "/explorink/wallet/manifest.bak";
 // Bumped when the on-card layout changes shape. A manifest from the future is
 // refused with a message, never half-read.
 inline constexpr uint32_t kSupportedFormatVersion = 1;
@@ -67,7 +67,7 @@ PanelGeometry livePanel(const GfxRenderer& renderer);
 // either).
 bool treeIsEncrypted();
 
-// Walks /trailink/wallet's shard directories and counts the assets whose 32-byte
+// Walks /explorink/wallet's shard directories and counts the assets whose 32-byte
 // header parses, plus how many of those are machine codes. No key needed and no
 // manifest consulted -- headers are cleartext.
 //

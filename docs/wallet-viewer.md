@@ -43,17 +43,17 @@ marked open is open for a different reason -- design, not plumbing.
 ## On the card
 
 ```
-/trailink/wallet/manifest.json          cleartext tree only
-/trailink/wallet/manifest.enc           encrypted tree only (wallet-crypto.md)
-/trailink/wallet/manifest.bak           previous good manifest.enc -- not read yet
-/trailink/wallet/<2 hex>/<16 hex>.dat   one asset = one full screen
+/explorink/wallet/manifest.json          cleartext tree only
+/explorink/wallet/manifest.enc           encrypted tree only (wallet-crypto.md)
+/explorink/wallet/manifest.bak           previous good manifest.enc -- not read yet
+/explorink/wallet/<2 hex>/<16 hex>.dat   one asset = one full screen
 ```
 
 A tree is either fully encrypted or fully cleartext, never mixed, and which one it
 is, is stated by which manifest file exists (`treeIsEncrypted()`). **Both must keep
 working**: a card in the field may be either.
 
-Paths relative to `/trailink`, same root as the map
+Paths relative to `/explorink`, same root as the map
 (`src/activities/map/MapActivity.cpp:54`). The manifest path and the wallet
 directory are `src/activities/wallet/WalletStore.h:19` and
 `src/activities/wallet/WalletAsset.h:32`.
@@ -450,8 +450,14 @@ is why nothing a rider does at FIT changed.
 (which all drop power saving first -- at 10 MHz every timing on this device is a
 lie, `docs/power-management.md`).
 
+**Devel-only, `ENABLE_WALLET_TEST_CMDS`** (2026-11-23). It opens whatever file it
+is handed under the card root and reports how long reading it took, which is a
+file-read primitive on a device somebody else may be holding. The path is checked
+with `MapTransferReceiver::relPathIsSafe` -- the same rule the BLE receiver
+applies -- so `..` cannot walk out of `/explorink`.
+
 ```
-CMD:WALLETBENCH <path-under-/trailink> <stride> <x> <y> <iters>
+CMD:WALLETBENCH <path-under-/explorink> <stride> <x> <y> <iters>
 ```
 
 `stride` is the source image's bytes per row, not the panel's. `x` must be a
@@ -843,6 +849,12 @@ generator's. **It closes on a PNG, not on the panel.**
 `src/main.cpp`, in the same dispatch as `CMD:GOTO_MAP` and `CMD:GOTO_TILESYNC`
 (which all drop power saving first -- at 10 MHz every timing on this device is a
 lie, `docs/power-management.md`).
+
+**Devel-only, `ENABLE_WALLET_TEST_CMDS`** (2026-11-23). It shipped ungated until
+then, which paired badly with an ungated `CMD:SCREENSHOT`: a cable on a release
+build could put the wallet on the panel and read the frame back, and while the
+wallet is unlocked that frame is the rider's document. A rider still reaches the
+wallet from Home; only the host-driven shortcut is gated.
 
 ```
 CMD:GOTO_WALLET              the browse list
