@@ -108,11 +108,15 @@ the browse list came back. That is the rider's own path end to end: no serial
 command took part in it except the button injector standing in for a thumb
 (`docs/device-shots/2026-11-23-x4pro-wallet-pin-screen-480x800.png`).
 
-**The T5 S3 Pro cannot hold a wallet at all today.** The same tree refused on it
-with `manifest panel x4 800x480/48000, device 960x540/64800`: a wallet is built
-for one panel and `walletgen.py` only knows `x3` and `x4`. The manifest still
-decrypted there, so the GCM half is verified on both boards; only the assets are
-x4-only.
+**The T5 S3 Pro needed a generator row, not a firmware change.** The first tree
+pushed to it was refused -- `manifest panel x4 800x480/48000, device
+960x540/64800` -- because `tools/walletgen.py` knew only the `x3` and `x4`
+panels. That is the manifest's panel gate doing its job: one asset set per
+wallet, so a set cut for another screen is refused whole
+(`WalletAsset.h`, `panelMatches()`). A `PanelProfile("t5s3", 960, 540)` row in
+the generator was the whole fix, and the same chain then ran on that board too:
+BLE push, PIN screen, list, page at 960x540. The manifest had already decrypted
+there before the fix, so the GCM half was verified on both boards either way.
 
 Found by review on 2026-11-23, while bringing the wallet branch up to `develop`.
 Fixed on all three implementations at once (device, phone, `tools/walletgen.py`)
