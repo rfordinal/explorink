@@ -211,6 +211,8 @@ read back over `CMD:SCREENSHOT`). What a frame actually showed:
 | CONFIRM on a wrong path | bold "Wrong pattern", entry reset to the start cell |
 | Auto-submit | the last point unlocked with no CONFIRM, on a 4-point and a 6-point pattern |
 | A speculative miss | serial said `PATTERNLOCK_TRY:auto:wrong`; the panel still read "4 of 8 points" and said nothing |
+| A candidate abandoned with BACK | one `PATTERNLOCK_ENTRY_ENDED`, and the next candidate's BACK another -- the backtracking hole, confirmed closed on both boards 2026-11-23 |
+| A wrong walk reaching the eighth point | one `PATTERNLOCK_ENTRY_ENDED`, "Wrong pattern" on the panel, meter back to the start |
 | Side hints | "Up"/"Down" tabs clipped by the panel edge exactly as the map's own "+"/"--" are, so house style and not a defect |
 
 Three things that frame changed, all of them layout:
