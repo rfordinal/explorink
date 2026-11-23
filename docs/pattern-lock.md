@@ -29,6 +29,20 @@ band.
 A press into a wall changes nothing and does not redraw. A refresh per refused
 press reads as a stutter and says nothing.
 
+**On a touch board in `TOUCH_ANYWHERE` the screen draws and drives its own
+controls.** The theme's hint boxes exist only in `TOUCH_BUTTONS_ONLY`
+(`TouchPolicy::hintsVisible()`), and the stored default is `TOUCH_ANYWHERE`
+(`CrossPointSettings.h`, `touchMode`), so on a factory-default X4 Pro -- two
+hardware keys, everything else touch -- the first cut of this screen could move
+the cursor left and right and do nothing else. No UP, no DOWN, no CONFIRM, no
+BACK. In that mode the gate now takes a tap on a cell orthogonally next to the
+cursor as that step, and draws its own BACK and OK boxes at the foot of the
+screen.
+
+A tap on a cell that is **not** next to the cursor does nothing on purpose. The
+alternative -- walk the cursor to wherever the finger landed -- would invent
+points the rider never entered, and the path is the secret.
+
 ## What a pattern is
 
 A start cell plus 3 to 7 right-angle steps -- 4 to 8 points counting the start.
@@ -47,9 +61,10 @@ compares -- hashing or wrapping it is the caller's job.
 
 ## How large the space is
 
-Enumerated, not estimated (`test/pattern_lock/PatternLockTest.cpp`, the two
+Enumerated, not estimated (`test/pattern_lock/PatternLockTest.cpp`, the three
 `TheSpaceIs...` tests, which is where these figures come from and what fails if a
-bound moves):
+bound moves -- the edge row had no test behind it until a review noticed this
+sentence claimed otherwise):
 
 | Start | Distinct patterns, 4 to 8 points | Bits |
 |---|---|---|
@@ -100,13 +115,38 @@ pushActivity(std::make_unique<PatternLockActivity>(
 
 Three things the caller keeps: the stored pattern, the failure counter, the rate
 limiter. Three things the screen keeps: the cursor, the path in RAM, and the
-discipline of wiping it on exit and after every attempt.
+discipline of wiping it on exit and after every attempt -- through
+`patternlock::secureWipe()`, because a plain loop over a buffer that is dead on
+the next statement is a store a release build may drop.
+
+**`Config::startCell` is part of the stored secret, not a cosmetic default.**
+The start is the one point no button press produces, so it has to match the
+stored pattern's first character or nothing a rider enters can ever match it --
+a permanent lockout. Read it off the pattern with
+`patternlock::startCellOf(stored)` and pass the two together;
+`patternlock::isWellFormed(path, startCell)` takes the start for the same reason
+and refuses a pattern that begins anywhere else.
 
 `isLockedOut` is asked once on entry, so a limiter the caller is already enforcing
 shows up before the first press instead of after a wasted attempt -- a power cycle
 must not buy a fresh set of guesses. It is its own callback rather than an
 empty-path call into the verifier, because a verifier that counts failures would
 count that call.
+
+### Counting attempts: `onEntryEnded`
+
+A walk that does not unlock costs the caller exactly one attempt, and the screen
+says when: `Config::onEntryEnded` fires once per walk, whether it ended at the
+eighth point, at BACK, or by the screen leaving. A CONFIRM is its own counted
+attempt and does not fire it.
+
+**This is not a nicety, it closes a hole.** The first cut said a speculative
+probe must count nothing, and with auto-submit on *every* guess is speculative --
+so the counted path was never taken at all and an attacker could walk all 7,350
+patterns with the failure counter at zero. The doc then claimed auto-submit was
+"five times weaker", which understated an unreachable limiter as a factor. Found
+in review, 2026-11-23. With `onEntryEnded` the factor is real: one walk yields up
+to five candidates and costs one attempt.
 
 ### `speculative`, and why auto-submit is off by default
 
@@ -123,9 +163,10 @@ verifier is then called with `speculative = true`, and both sides of that matter
   them out of their own device on the way in. So a speculative miss says nothing
   on screen and must count nothing.
 - **What it costs in guesses.** One walk of 8 points yields up to five candidates
-  for seven presses. A limiter that counts entries rather than candidates is
-  therefore five times weaker under auto-submit than under CONFIRM. Decide that
-  per caller; it is why the default is off.
+  for seven presses and one counted attempt, so a limiter is five times weaker
+  under auto-submit than under CONFIRM. Decide that per caller; it is why the
+  default is off. **A caller that enables auto-submit and ignores
+  `onEntryEnded` has no limiter at all.**
 
 ## Verified, and not
 
@@ -180,15 +221,26 @@ six-point walk plus CONFIRM unlocked. That board is the one T-265 is about --
 BACK and CONFIRM there are touch only, and this screen wants six buttons -- so
 the question was whether a rider can enter a vertical step at all.
 
-**They can, confirmed by thumb, not by code reading.** The side hint tabs are
-touch targets like the bottom boxes are: `MappedInputManager::hintBoxAt()` maps
-`sideHintBox(0)` to `BTN_UP` and `sideHintBox(1)` to `BTN_DOWN` wherever
-`TouchPolicy::touchHintBoxes()` holds. The maintainer tapped "Down" and kept
-tapping, and the frame afterwards shows six points in and the cursor where the
-taps put it --
-`../../docs/device-shots/2026-11-23-x4pro-pattern-gate-480x800.png`. So **T-265
-does not block this screen**: all four directions, BACK and CONFIRM are reachable
-on a board with two hardware keys.
+**They can on that board, confirmed by thumb**: the side hint tabs are touch
+targets like the bottom boxes are, `MappedInputManager::hintBoxAt()` mapping
+`sideHintBox(0)` to `BTN_UP` and `sideHintBox(1)` to `BTN_DOWN`. The maintainer
+tapped "Down" and kept tapping, and the frame afterwards shows six points in and
+the cursor where the taps put it --
+`../../docs/device-shots/2026-11-23-x4pro-pattern-gate-480x800.png`.
+
+**But that board is in `TOUCH_BUTTONS_ONLY`, and the stored default is
+`TOUCH_ANYWHERE`** (`CrossPointSettings.h`, `touchMode`), where
+`TouchPolicy::hintsVisible()` is false, no boxes are drawn, and
+`pumpHintTouch()` returns immediately. So the pass above says nothing about a
+factory-default X4 Pro, and the first version of this paragraph -- "T-265 does
+not block this screen" -- was true only of the mode that board happened to be
+in. Caught in review the same evening.
+
+That is what the screen's own touch controls are for (see "Controls" above). The
+claim now is narrower and testable: **on a board with two hardware keys the gate
+is usable in both touch modes** -- through the theme's hint boxes in
+`BUTTONS_ONLY`, through its own cell taps and boxes in `ANYWHERE`. The second
+half has not been on a panel yet.
 
 **Still not checked, and T-2079 is where it is tracked:**
 

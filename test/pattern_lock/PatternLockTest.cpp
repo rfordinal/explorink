@@ -121,6 +121,12 @@ TEST(PatternLock, EncodingIsOneCharPerPointInOrder) {
   EXPECT_EQ(encoded(e), "048cdef");
 }
 
+TEST(PatternLock, SecureWipeZeroesTheBuffer) {
+  char buf[patternlock::kPathBufBytes] = "5674";
+  patternlock::secureWipe(buf, sizeof(buf));
+  for (size_t i = 0; i < sizeof(buf); ++i) EXPECT_EQ(buf[i], '\0') << i;
+}
+
 TEST(PatternLock, WipeLeavesNothingButTheStart) {
   Entry e(0);
   ASSERT_TRUE(e.step(Step::Right));
@@ -131,16 +137,31 @@ TEST(PatternLock, WipeLeavesNothingButTheStart) {
 }
 
 TEST(PatternLock, WellFormedAcceptsWhatTheScreenCanProduce) {
-  EXPECT_TRUE(patternlock::isWellFormed("0156"));
-  EXPECT_TRUE(patternlock::isWellFormed("048cdef"));
+  EXPECT_TRUE(patternlock::isWellFormed("0156", 0));
+  EXPECT_TRUE(patternlock::isWellFormed("048cdef", 0));
   // Too short, too long, a diagonal, a jump, a bad char, empty, null.
-  EXPECT_FALSE(patternlock::isWellFormed("014"));
-  EXPECT_FALSE(patternlock::isWellFormed("010101010"));
-  EXPECT_FALSE(patternlock::isWellFormed("0509"));
-  EXPECT_FALSE(patternlock::isWellFormed("08cd"));
-  EXPECT_FALSE(patternlock::isWellFormed("01z4"));
-  EXPECT_FALSE(patternlock::isWellFormed(""));
-  EXPECT_FALSE(patternlock::isWellFormed(nullptr));
+  EXPECT_FALSE(patternlock::isWellFormed("014", 0));
+  EXPECT_FALSE(patternlock::isWellFormed("010101010", 0));
+  EXPECT_FALSE(patternlock::isWellFormed("0509", 0));
+  EXPECT_FALSE(patternlock::isWellFormed("08cd", 0));
+  EXPECT_FALSE(patternlock::isWellFormed("01z4", 0));
+  EXPECT_FALSE(patternlock::isWellFormed("", 0));
+  EXPECT_FALSE(patternlock::isWellFormed(nullptr, 0));
+}
+
+// The permanent-lockout case the validator exists to catch: a stored pattern that
+// is a legal walk, against a gate whose cursor starts somewhere else. Every path
+// the screen can produce begins with the start cell, so nothing can ever match.
+TEST(PatternLock, WellFormedRejectsAPatternThatStartsElsewhere) {
+  EXPECT_TRUE(patternlock::isWellFormed("0156", 0));
+  EXPECT_FALSE(patternlock::isWellFormed("0156", patternlock::kDefaultStart));
+  EXPECT_EQ(patternlock::startCellOf("0156"), 0);
+  EXPECT_EQ(patternlock::startCellOf("5674"), 5);
+  EXPECT_EQ(patternlock::startCellOf(""), patternlock::kCells);
+  EXPECT_EQ(patternlock::startCellOf(nullptr), patternlock::kCells);
+  // What a caller is meant to do: read the start off the pattern it stored.
+  const char* stored = "0156";
+  EXPECT_TRUE(patternlock::isWellFormed(stored, patternlock::startCellOf(stored)));
 }
 
 TEST(PatternLock, EveryPathTheScreenCanProduceIsWellFormed) {
@@ -157,7 +178,7 @@ TEST(PatternLock, EveryPathTheScreenCanProduceIsWellFormed) {
         if (child.longEnough()) {
           char buf[patternlock::kPathBufBytes] = {0};
           child.encode(buf);
-          EXPECT_TRUE(patternlock::isWellFormed(buf)) << buf;
+          EXPECT_TRUE(patternlock::isWellFormed(buf, patternlock::kDefaultStart)) << buf;
           ++checked;
         }
         if (!child.full()) next.push_back(child);
@@ -173,6 +194,12 @@ TEST(PatternLock, EveryPathTheScreenCanProduceIsWellFormed) {
 // length bound moves, this test is what says so.
 TEST(PatternLock, TheSpaceIsTwoThousandEightHundredFromACorner) {
   EXPECT_EQ(countPaths(0), 2810u);
+}
+
+TEST(PatternLock, TheSpaceIsFourThousandFiveHundredFortyFiveFromAnEdge) {
+  // The third figure docs/pattern-lock.md quotes. It had no test behind it until
+  // a review pointed out the doc claimed all three were covered.
+  EXPECT_EQ(countPaths(1), 4545u);
 }
 
 TEST(PatternLock, TheSpaceIsSevenThousandThreeHundredFiftyFromTheMiddle) {

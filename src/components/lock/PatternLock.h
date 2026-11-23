@@ -42,6 +42,16 @@
 
 namespace patternlock {
 
+// Zeroes a buffer in a way a release build may not drop. A plain loop over a
+// buffer that is dead on the next statement is a dead store, and the optimiser is
+// entitled to remove it -- which is exactly how a secret survives its own
+// zeroing. The wallet's crypto header carries the same primitive for the same
+// reason; this one is local so a gate pulls in no wallet code.
+inline void secureWipe(char* buffer, const size_t length) {
+  volatile char* p = buffer;
+  for (size_t i = 0; i < length; ++i) p[i] = 0;
+}
+
 inline constexpr uint8_t kCols = 4;
 inline constexpr uint8_t kRows = 4;
 inline constexpr uint8_t kCells = kCols * kRows;
@@ -63,11 +73,16 @@ enum class Step : uint8_t { Left, Right, Up, Down };
 class Entry {
  public:
   explicit Entry(const uint8_t startCell = kDefaultStart) : start_(startCell < kCells ? startCell : kDefaultStart) {
-    clear();
+    wipe();
   }
 
-  void clear() {
-    for (size_t i = 0; i < kMaxPoints; ++i) path_[i] = 0;
+  // The only way back to an empty entry, and it goes through secureWipe -- there
+  // is no non-secure reset, so no call site can pick the wrong one. The first cut
+  // had a `clear()` and a `wipe()` with identical bodies and different comments,
+  // which told a reader nothing about which one mattered.
+  void wipe() {
+    volatile uint8_t* p = path_;
+    for (size_t i = 0; i < kMaxPoints; ++i) p[i] = 0;
     path_[0] = start_;
     count_ = 1;
   }
@@ -129,15 +144,6 @@ class Entry {
     out[count_] = '\0';
   }
 
-  // Overwrites the path and resets. A path is a secret while it is in RAM, so the
-  // screen calls this on the way out and after every attempt, the same discipline
-  // WalletUnlockActivity applies to its entry buffer.
-  void wipe() {
-    for (size_t i = 0; i < kMaxPoints; ++i) path_[i] = 0;
-    path_[0] = start_;
-    count_ = 1;
-  }
-
  private:
   uint8_t start_;
   uint8_t path_[kMaxPoints] = {0};
@@ -152,11 +158,24 @@ inline uint8_t cellFromChar(const char c) {
   return kCells;
 }
 
-// True when `path` is a pattern this screen could actually have produced: right
-// length, legal cells, every consecutive pair one orthogonal step apart. A stored
-// pattern that fails this can never be entered, so provisioning checks it instead
-// of locking a rider out of their own device.
-inline bool isWellFormed(const char* path) {
+// The cell a stored pattern starts on, or kCells when the string is not one. The
+// start is the one point no button produces, so a caller that stores a pattern
+// has to configure the screen with this -- `Config::startCell`.
+inline uint8_t startCellOf(const char* path) {
+  if (path == nullptr || path[0] == '\0') return kCells;
+  return cellFromChar(path[0]);
+}
+
+// True when `path` is a pattern this screen could actually have produced **from
+// `startCell`**: right length, legal cells, starts where the cursor starts, every
+// consecutive pair one orthogonal step apart.
+//
+// The start cell is a parameter and not optional on purpose. Without it this
+// function certified patterns nobody could ever enter -- store "0145", open the
+// gate on the default start of 5, and every path a rider can produce begins '5'
+// while the stored one begins '0'. That is a permanent lockout, and it is the
+// exact failure this check exists to prevent (found in review, 2026-11-23).
+inline bool isWellFormed(const char* path, const uint8_t startCell) {
   if (path == nullptr) return false;
   size_t n = 0;
   while (path[n] != '\0') {
@@ -166,6 +185,7 @@ inline bool isWellFormed(const char* path) {
   for (size_t i = 0; i < n; ++i) {
     if (cellFromChar(path[i]) >= kCells) return false;
   }
+  if (cellFromChar(path[0]) != startCell) return false;
   for (size_t i = 1; i < n; ++i) {
     const uint8_t a = cellFromChar(path[i - 1]);
     const uint8_t b = cellFromChar(path[i]);

@@ -6,6 +6,7 @@
 #include <cstdio>
 
 #include "MappedInputManager.h"
+#include "TouchPolicy.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
 
@@ -49,6 +50,10 @@ constexpr int kMeterHeightMul = 3;      // meter height = node radius * 3
 constexpr int kMeterBorder = 2;
 constexpr int kMeterInsetDiv = 3;       // a filled segment's inset = height / 3
 
+bool inside(const int x, const int y, const int left, const int top, const int width, const int height) {
+  return x >= left && x < left + width && y >= top && y < top + height;
+}
+
 }  // namespace
 
 PatternLockActivity::PatternLockActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, Config config,
@@ -60,34 +65,47 @@ PatternLockActivity::PatternLockActivity(GfxRenderer& renderer, MappedInputManag
 
 void PatternLockActivity::onEnter() {
   Activity::onEnter();
-  entry_.clear();
+  entry_.wipe();
   lastAttemptWrong_ = false;
+  speculativeOutstanding_ = false;
   lockedOut_ = config_.isLockedOut && config_.isLockedOut();
   if (lockedOut_) LOG_ERR(kLogTag, "entered locked out: the caller is refusing attempts");
-  render(HalDisplay::HALF_REFRESH);
+  redraw(HalDisplay::HALF_REFRESH);
 }
 
 void PatternLockActivity::onExit() {
   Activity::onExit();
+  // A walk that is still owed to the caller's counter is settled before the
+  // screen dies, so leaving mid-entry is not a free set of guesses.
+  settleEntry();
   // The path dies with the screen, whichever way the screen ended.
   entry_.wipe();
+}
+
+bool PatternLockActivity::handleHomeGesture() {
+  // Consumed, deliberately: the alternative is ActivityManager::goHome() tearing
+  // down this screen and the caller behind it on one bottom-edge swipe.
+  return true;
+}
+
+void PatternLockActivity::render(RenderLock&& lock) {
+  // The manager already holds the lock; draw into the frame it is offering.
+  draw(HalDisplay::FAST_REFRESH);
+}
+
+void PatternLockActivity::redraw(const HalDisplay::RefreshMode mode) {
+  RenderLock lock;
+  draw(mode);
 }
 
 void PatternLockActivity::loop() {
   Activity::loop();
   if (finished_) return;
 
+  if (handleTouch()) return;
+
   if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
-    if (entry_.undo()) {
-      lastAttemptWrong_ = false;
-      render(HalDisplay::FAST_REFRESH);
-      return;
-    }
-    // Nothing entered and BACK: leave, cancelled. A gate the caller pushed is the
-    // caller's to re-push; this screen does not decide that nobody may go back.
-    finished_ = true;
-    setResult(ActivityResult{PatternLockResult{false}});
-    finish();
+    onBack();
     return;
   }
 
@@ -119,6 +137,60 @@ void PatternLockActivity::loop() {
   }
 }
 
+bool PatternLockActivity::handleTouch() {
+  const Layout l = layout();
+  if (!l.ownTouch) return false;
+
+  int x = 0;
+  int y = 0;
+  if (!mappedInput.wasScreenTapped(x, y)) return false;
+
+  if (inside(x, y, l.backLeft, l.boxTop, l.boxWidth, l.boxHeight)) {
+    onBack();
+    return true;
+  }
+  if (lockedOut_) return true;  // the tap landed on the screen and means nothing here
+  if (inside(x, y, l.okLeft, l.boxTop, l.boxWidth, l.boxHeight)) {
+    if (entry_.longEnough()) submit(false);
+    return true;
+  }
+
+  // A tap on a cell orthogonally next to the cursor is that step. Not "walk to
+  // wherever I tapped": a path is a sequence of steps the rider chose, and
+  // inferring the route between two cells would invent points they never entered.
+  const int cursorRow = entry_.cursorRow();
+  const int cursorCol = entry_.cursorCol();
+  for (uint8_t cell = 0; cell < patternlock::kCells; ++cell) {
+    const int row = cell / patternlock::kCols;
+    const int col = cell % patternlock::kCols;
+    const int cx = l.gridLeft + col * l.pitch;
+    const int cy = l.gridTop + row * l.pitch;
+    if (!inside(x, y, cx - l.pitch / 2, cy - l.pitch / 2, l.pitch, l.pitch)) continue;
+    const int dr = row - cursorRow;
+    const int dc = col - cursorCol;
+    if (dr == 0 && dc == 1) onStep(patternlock::Step::Right);
+    else if (dr == 0 && dc == -1) onStep(patternlock::Step::Left);
+    else if (dr == 1 && dc == 0) onStep(patternlock::Step::Down);
+    else if (dr == -1 && dc == 0) onStep(patternlock::Step::Up);
+    return true;
+  }
+  return true;
+}
+
+void PatternLockActivity::onBack() {
+  if (entry_.undo()) {
+    lastAttemptWrong_ = false;
+    redraw(HalDisplay::FAST_REFRESH);
+    return;
+  }
+  // Nothing entered and BACK: leave, cancelled. A gate the caller pushed is the
+  // caller's to re-push; this screen does not decide that nobody may go back.
+  finished_ = true;
+  settleEntry();
+  setResult(ActivityResult{PatternLockResult{false}});
+  finish();
+}
+
 void PatternLockActivity::onStep(const patternlock::Step step) {
   // A refused step is a wall or a full path. Nothing changed, so nothing is
   // redrawn: a refresh per refused press reads as a stutter and says nothing.
@@ -130,15 +202,24 @@ void PatternLockActivity::onStep(const patternlock::Step step) {
     // A hit already finished the screen; drawing the grid again here would be a
     // refresh of a frame nobody will look at.
     if (finished_) return;
+    // The walk is over at the last point: the rider cannot step further, so the
+    // caller is told now rather than waiting for them to back out.
+    if (entry_.full()) settleEntry();
     if (lockedOut_) {
-      render(HalDisplay::HALF_REFRESH);
+      redraw(HalDisplay::HALF_REFRESH);
       return;
     }
   }
 
   // FAST: one cursor move is a small differential change, and a 1.7 s wait per
   // press would make the screen unusable (the same call the wallet PIN makes).
-  render(HalDisplay::FAST_REFRESH);
+  redraw(HalDisplay::FAST_REFRESH);
+}
+
+void PatternLockActivity::settleEntry() {
+  if (!speculativeOutstanding_) return;
+  speculativeOutstanding_ = false;
+  if (config_.onEntryEnded) config_.onEntryEnded();
 }
 
 void PatternLockActivity::submit(const bool speculative) {
@@ -146,12 +227,20 @@ void PatternLockActivity::submit(const bool speculative) {
   entry_.encode(path);
 
   const Verdict verdict = verifier_ ? verifier_(path, speculative) : Verdict::Wrong;
-  // Whatever it answered, the typed path has served its purpose.
-  for (size_t i = 0; i < sizeof(path); ++i) path[i] = 0;
+  // Whatever it answered, the typed path has served its purpose. Through
+  // secureWipe, not a plain loop: `path` is dead on the next statement and a
+  // release build is entitled to drop stores to it, which is exactly how a secret
+  // survives its own zeroing.
+  patternlock::secureWipe(path, sizeof(path));
 
   if (verdict == Verdict::Ok) {
-    LOG_INF(kLogTag, "unlocked on %u points%s", static_cast<unsigned>(entry_.points()),
+    // No point count here: LOG_INF compiles into gh_release (LOG_LEVEL=1), and
+    // the length of the pattern cuts the space an attacker has to search from
+    // "4 to 8 points" to exactly N. The detail is a debug line.
+    LOG_INF(kLogTag, "unlocked");
+    LOG_DBG(kLogTag, "unlocked on %u points%s", static_cast<unsigned>(entry_.points()),
             speculative ? " (auto)" : "");
+    speculativeOutstanding_ = false;  // a walk that unlocked costs the caller nothing
     finishUnlocked();
     return;
   }
@@ -161,15 +250,19 @@ void PatternLockActivity::submit(const bool speculative) {
   if (speculative) {
     // A probe that missed says nothing on screen. A rider walking toward an
     // 8-point pattern passes through four wrong prefixes, and flashing "wrong" at
-    // each of them would be a lie about what they did.
+    // each of them would be a lie about what they did. The caller hears about the
+    // walk once, through settleEntry().
+    speculativeOutstanding_ = true;
     return;
   }
 
+  // A CONFIRM is itself the counted attempt, so nothing is owed on top of it.
+  speculativeOutstanding_ = false;
   lastAttemptWrong_ = verdict == Verdict::Wrong;
   entry_.wipe();
   LOG_ERR(kLogTag, "attempt refused: %s", lockedOut_ ? "locked out" : "wrong pattern");
   // A real refusal replaces the whole message, so it earns a clean refresh.
-  render(HalDisplay::HALF_REFRESH);
+  redraw(HalDisplay::HALF_REFRESH);
 }
 
 void PatternLockActivity::finishUnlocked() {
@@ -179,97 +272,122 @@ void PatternLockActivity::finishUnlocked() {
   finish();
 }
 
-void PatternLockActivity::render(const HalDisplay::RefreshMode mode) {
+PatternLockActivity::Layout PatternLockActivity::layout() const {
+  Layout l;
   const auto& metrics = UITheme::getInstance().getMetrics();
   const int pageWidth = renderer.getScreenWidth();
   const int pageHeight = renderer.getScreenHeight();
   const int lineHeight = renderer.getLineHeight(UI_10_FONT_ID);
 
-  RenderLock lock;
+  // The theme draws its hint boxes only where TouchPolicy::hintsVisible() holds --
+  // a board with no digitizer, or a touch board in TOUCH_BUTTONS_ONLY. In
+  // TOUCH_ANYWHERE, the default, this screen supplies its own.
+  l.ownTouch = TouchPolicy::touchAnywhere();
+  l.boxHeight = l.ownTouch ? lineHeight * 2 : 0;
+
+  const int bandTop = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing * 2;
+  const Rect hints = GUI.buttonHintsRect(renderer);
+  const int hintsTop = hints.height > 0 ? hints.y : pageHeight;
+  const int bandBottom =
+      (l.ownTouch ? pageHeight - l.boxHeight - metrics.verticalSpacing * 2 : hintsTop) - metrics.verticalSpacing;
+  const int band = bandBottom - bandTop;
+
+  // An allowance, not the real content height: the pitch is not known yet and the
+  // meter's size depends on it. The exact height is computed below and the
+  // centring uses that, so an allowance that is a little off moves nothing.
+  const int allowance = lineHeight * 5;
+  const int availableWidth = pageWidth - metrics.contentSidePadding * 2;
+  const int availableHeight = band - allowance;
+  const int span = availableWidth < availableHeight ? availableWidth : availableHeight;
+  // A panel too short for the grid would otherwise derive a negative pitch and
+  // draw the whole screen inside out. The floor is deliberately ugly rather than
+  // clever: if a board ever hits it, the grid looks cramped and says so.
+  l.pitch = span > kPitchSpanDiv * 8 ? span / kPitchSpanDiv : 8;
+
+  l.nodeRadius = l.pitch / kNodeRadiusDiv;
+  if (l.nodeRadius < kMinNodeRadius) l.nodeRadius = kMinNodeRadius;
+  l.ringRadius = l.nodeRadius * kCursorRingMul / kCursorRingDiv;
+  // The ring has to clear the dot it surrounds by more than its own width, or the
+  // two merge into a blob at the first FAST refresh.
+  if (l.ringRadius < l.nodeRadius + kCursorRingWidth * 2) l.ringRadius = l.nodeRadius + kCursorRingWidth * 2;
+
+  l.meterHeight = l.nodeRadius * kMeterHeightMul;
+  l.meterWidth = l.pitch * (patternlock::kCols - 1);
+  l.meterLeft = (pageWidth - l.meterWidth) / 2;
+
+  // What actually sits under the last grid row: a full pitch of air, the meter,
+  // and the status line. Measured rather than assumed, so the block is centred on
+  // its real height -- the first cut centred on the allowance and sat low.
+  const int belowGrid = l.pitch + l.meterHeight + lineHeight * 2;
+  const int contentHeight = l.pitch * (patternlock::kRows - 1) + belowGrid;
+  const int slack = band - contentHeight;
+  l.gridTop = bandTop + (slack > 0 ? slack / 2 : 0);
+  l.gridLeft = (pageWidth - l.pitch * (patternlock::kCols - 1)) / 2;
+
+  // A full pitch of air under the last grid row, not half of one. At half, the
+  // meter read as a fifth row of the lattice rather than as a scale beside it --
+  // the maintainer's call off the panel, 2026-11-23.
+  l.meterTop = l.gridTop + l.pitch * (patternlock::kRows - 1) + l.pitch - l.meterHeight / 2;
+  l.statusY = l.meterTop + l.meterHeight + lineHeight * 2;
+
+  if (l.ownTouch) {
+    l.boxTop = pageHeight - l.boxHeight - metrics.verticalSpacing;
+    l.boxWidth = (pageWidth - metrics.contentSidePadding * 3) / 2;
+    l.backLeft = metrics.contentSidePadding;
+    l.okLeft = pageWidth - metrics.contentSidePadding - l.boxWidth;
+  }
+  return l;
+}
+
+void PatternLockActivity::draw(const HalDisplay::RefreshMode mode) {
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  const int pageWidth = renderer.getScreenWidth();
+  const Layout l = layout();
+
   renderer.clearScreen();
   GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight},
                  config_.title != nullptr ? config_.title : tr(STR_PATTERN_LOCK),
                  config_.hint != nullptr ? config_.hint : tr(STR_PATTERN_LOCK_HINT));
 
-  // The band the screen owns: below the header, above the hint boxes. Asking the
-  // theme for the hint band rather than guessing it is the cheap half of a lesson
-  // the map screen paid for (BaseTheme.h, sideButtonHintsRect()).
-  const int bandTop = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing * 2;
-  const Rect hints = GUI.buttonHintsRect(renderer);
-  const int bandBottom = (hints.height > 0 ? hints.y : pageHeight) - metrics.verticalSpacing;
-  const int band = bandBottom - bandTop;
-  // What the grid does not get: the dots and the status line under it. The dot
-  // row's own size depends on the pitch, which is not known yet, so the reserve
-  // uses the line height alone and the row is laid out inside it below.
-  const int reserved = lineHeight * 5;
-  const int availableWidth = pageWidth - metrics.contentSidePadding * 2;
-  const int availableHeight = band - reserved;
-  const int span = availableWidth < availableHeight ? availableWidth : availableHeight;
-  // A panel too short for the grid would otherwise derive a negative pitch and
-  // draw the whole screen inside out. The floor is deliberately ugly rather than
-  // clever: if a board ever hits it, the grid looks cramped and says so.
-  const int pitch = span > kPitchSpanDiv * 8 ? span / kPitchSpanDiv : 8;
-
-  // Centred in the band rather than hung from the header. On a 540x960 panel the
-  // grid is limited by the width, which left ~250 px of white under the status
-  // line when the block was top-aligned -- seen on the T5 S3 Pro, 2026-11-23.
-  const int contentHeight = pitch * (patternlock::kRows - 1) + reserved;
-  const int slack = band - contentHeight;
-  const int gridTop = bandTop + (slack > 0 ? slack / 2 : 0);
-
-  int nodeRadius = pitch / kNodeRadiusDiv;
-  if (nodeRadius < kMinNodeRadius) nodeRadius = kMinNodeRadius;
-  int ringRadius = nodeRadius * kCursorRingMul / kCursorRingDiv;
-  // The ring has to clear the dot it surrounds by more than its own width, or the
-  // two merge into a blob at the first FAST refresh.
-  if (ringRadius < nodeRadius + kCursorRingWidth * 2) ringRadius = nodeRadius + kCursorRingWidth * 2;
-
-  // Half a pitch of inset, so the grid's ink is centred rather than its cell boxes.
-  const int gridLeft = (pageWidth - pitch * (patternlock::kCols - 1)) / 2;
   for (uint8_t cell = 0; cell < patternlock::kCells; ++cell) {
-    const int cx = gridLeft + (cell % patternlock::kCols) * pitch;
-    const int cy = gridTop + (cell / patternlock::kCols) * pitch;
+    const int cx = l.gridLeft + (cell % patternlock::kCols) * l.pitch;
+    const int cy = l.gridTop + (cell / patternlock::kCols) * l.pitch;
     // Every cell draws its dot, the cursor's included -- the cursor is a position,
     // not a seventeenth kind of point.
-    renderer.fillRoundedRect(cx - nodeRadius, cy - nodeRadius, nodeRadius * 2, nodeRadius * 2, nodeRadius,
+    renderer.fillRoundedRect(cx - l.nodeRadius, cy - l.nodeRadius, l.nodeRadius * 2, l.nodeRadius * 2, l.nodeRadius,
                              Color::Black);
     if (cell == entry_.cursor()) {
-      renderer.drawRoundedRect(cx - ringRadius, cy - ringRadius, ringRadius * 2, ringRadius * 2, kCursorRingWidth,
-                               ringRadius, true);
+      renderer.drawRoundedRect(cx - l.ringRadius, cy - l.ringRadius, l.ringRadius * 2, l.ringRadius * 2,
+                               kCursorRingWidth, l.ringRadius, true);
     }
   }
 
   // The meter: how many points are in, and nothing about which ones.
-  const int meterWidth = pitch * (patternlock::kCols - 1);
-  const int meterHeight = nodeRadius * kMeterHeightMul;
-  const int meterLeft = (pageWidth - meterWidth) / 2;
-  // A full pitch of air under the last grid row, not half of one. At half, the row
-  // read as a fifth row of the lattice rather than as a scale beside it -- the
-  // maintainer's call off the panel, 2026-11-23.
-  int y = gridTop + pitch * (patternlock::kRows - 1) + pitch;
-  const int meterTop = y - meterHeight / 2;
-  renderer.drawRoundedRect(meterLeft, meterTop, meterWidth, meterHeight, kMeterBorder, meterHeight / 2, true);
-
-  const int segInset = meterHeight / kMeterInsetDiv;
-  const int innerLeft = meterLeft + kMeterBorder + segInset / 2;
-  const int innerWidth = meterWidth - (kMeterBorder + segInset / 2) * 2;
+  renderer.drawRoundedRect(l.meterLeft, l.meterTop, l.meterWidth, l.meterHeight, kMeterBorder, l.meterHeight / 2,
+                           true);
+  const int segInset = l.meterHeight / kMeterInsetDiv;
+  const int innerLeft = l.meterLeft + kMeterBorder + segInset / 2;
+  const int innerWidth = l.meterWidth - (kMeterBorder + segInset / 2) * 2;
   for (size_t i = 0; i < patternlock::kMaxPoints; ++i) {
     const int x0 = innerLeft + static_cast<int>(i) * innerWidth / static_cast<int>(patternlock::kMaxPoints);
     const int x1 = innerLeft + static_cast<int>(i + 1) * innerWidth / static_cast<int>(patternlock::kMaxPoints);
     if (i < entry_.points()) {
-      renderer.fillRect(x0, meterTop + segInset, x1 - x0 - kMeterBorder, meterHeight - segInset * 2, true);
+      renderer.fillRect(x0, l.meterTop + segInset, x1 - x0 - kMeterBorder, l.meterHeight - segInset * 2, true);
     } else if (i + 1 < patternlock::kMaxPoints) {
       // A hairline between the slots still to come, so the scale is readable when
       // it is nearly empty. No tick after the last one: that is the border.
-      renderer.drawLine(x1, meterTop + segInset, x1, meterTop + meterHeight - segInset, true);
+      renderer.drawLine(x1, l.meterTop + segInset, x1, l.meterTop + l.meterHeight - segInset, true);
     }
   }
-  y = meterTop + meterHeight;
-  y += lineHeight * 2;
 
   char line[96];
+  const uint32_t wait = config_.waitSecondsLeft ? config_.waitSecondsLeft() : 0;
   if (lockedOut_) {
     snprintf(line, sizeof(line), "%s", tr(STR_PATTERN_LOCK_LOCKED_OUT));
+  } else if (wait > 0) {
+    // Read on every draw, so a backoff counts down instead of showing the number
+    // it had when the screen opened.
+    snprintf(line, sizeof(line), tr(STR_PATTERN_LOCK_WAIT), static_cast<int>(wait));
   } else if (lastAttemptWrong_) {
     snprintf(line, sizeof(line), "%s", tr(STR_PATTERN_LOCK_WRONG));
   } else if (!entry_.longEnough()) {
@@ -278,13 +396,26 @@ void PatternLockActivity::render(const HalDisplay::RefreshMode mode) {
     snprintf(line, sizeof(line), tr(STR_PATTERN_LOCK_PROMPT), static_cast<int>(entry_.points()),
              static_cast<int>(patternlock::kMaxPoints));
   }
-  renderer.drawCenteredText(UI_10_FONT_ID, y, line, true,
+  renderer.drawCenteredText(UI_10_FONT_ID, l.statusY, line, true,
                             (lockedOut_ || lastAttemptWrong_) ? EpdFontFamily::BOLD : EpdFontFamily::REGULAR);
 
-  // UP/DOWN are the side buttons and they are fixed there, so they get labels --
-  // the two directions a rider cannot find by looking at the bottom band.
-  GUI.drawSideButtonHints(renderer, tr(STR_DIR_UP), tr(STR_DIR_DOWN));
-  const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_OK_BUTTON), tr(STR_DIR_LEFT), tr(STR_DIR_RIGHT));
-  GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+  if (l.ownTouch) {
+    // This screen's own BACK and OK, drawn only where the theme draws none.
+    renderer.drawRoundedRect(l.backLeft, l.boxTop, l.boxWidth, l.boxHeight, 2, l.boxHeight / 4, true);
+    renderer.drawRoundedRect(l.okLeft, l.boxTop, l.boxWidth, l.boxHeight, 2, l.boxHeight / 4, true);
+    const int textY = l.boxTop + (l.boxHeight - renderer.getLineHeight(UI_10_FONT_ID)) / 2;
+    const char* backLabel = tr(STR_BACK);
+    const char* okLabel = tr(STR_OK_BUTTON);
+    renderer.drawText(UI_10_FONT_ID, l.backLeft + (l.boxWidth - renderer.getTextWidth(UI_10_FONT_ID, backLabel)) / 2,
+                      textY, backLabel);
+    renderer.drawText(UI_10_FONT_ID, l.okLeft + (l.boxWidth - renderer.getTextWidth(UI_10_FONT_ID, okLabel)) / 2,
+                      textY, okLabel);
+  } else {
+    // UP/DOWN are the side buttons and they are fixed there, so they get labels --
+    // the two directions a rider cannot find by looking at the bottom band.
+    GUI.drawSideButtonHints(renderer, tr(STR_DIR_UP), tr(STR_DIR_DOWN));
+    const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_OK_BUTTON), tr(STR_DIR_LEFT), tr(STR_DIR_RIGHT));
+    GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+  }
   renderer.displayBuffer(mode);
 }

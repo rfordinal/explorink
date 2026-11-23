@@ -3622,7 +3622,7 @@ void loop() {
         String mode = space < 0 ? String("") : rest.substring(space + 1);
         expected.trim();
         mode.trim();
-        if (!patternlock::isWellFormed(expected.c_str())) {
+        if (!patternlock::isWellFormed(expected.c_str(), patternlock::startCellOf(expected.c_str()))) {
           // Refusing here rather than on the panel: a pattern the screen cannot
           // produce would be a gate nobody can pass, and that reads on hardware as
           // a broken screen rather than as a typo in the command.
@@ -3631,7 +3631,12 @@ void loop() {
           const std::string want = expected.c_str();
           PatternLockActivity::Config config;
           config.autoSubmit = mode == "auto";
-          config.startCell = patternlock::cellFromChar(want[0]);
+          // The gate must start where the stored pattern starts, or nothing a
+          // rider enters can match it (patternlock::startCellOf).
+          config.startCell = patternlock::startCellOf(want.c_str());
+          // The harness has no rate limiter, so it only reports the walk the way
+          // a real caller would have to count it.
+          config.onEntryEnded = [] { logSerial.printf("PATTERNLOCK_ENTRY_ENDED\n"); };
           activityManager.pushActivity(std::make_unique<PatternLockActivity>(
               renderer, mappedInputManager, config,
               [want](const char* path, bool speculative) {
