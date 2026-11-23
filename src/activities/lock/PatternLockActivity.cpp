@@ -195,7 +195,7 @@ void PatternLockActivity::render(const HalDisplay::RefreshMode mode) {
   // What the grid does not get: the dots and the status line under it. The dot
   // row's own size depends on the pitch, which is not known yet, so the reserve
   // uses the line height alone and the row is laid out inside it below.
-  const int reserved = lineHeight * 4;
+  const int reserved = lineHeight * 5;
   const int availableWidth = pageWidth - metrics.contentSidePadding * 2;
   const int availableHeight = band - reserved;
   const int span = availableWidth < availableHeight ? availableWidth : availableHeight;
@@ -239,7 +239,10 @@ void PatternLockActivity::render(const HalDisplay::RefreshMode mode) {
   int dotRadius = dotGap / kDotRadiusDiv;
   if (dotRadius > nodeRadius) dotRadius = nodeRadius;  // never louder than the grid itself
   const int dotsLeft = (pageWidth - dotsWidth) / 2;
-  int y = gridTop + pitch * (patternlock::kRows - 1) + pitch / 2 + dotRadius * 2;
+  // A full pitch of air under the last grid row, not half of one. At half, the row
+  // read as a fifth row of the lattice rather than as a scale beside it -- the
+  // maintainer's call off the panel, 2026-11-23.
+  int y = gridTop + pitch * (patternlock::kRows - 1) + pitch + dotRadius * 2;
   for (size_t i = 0; i < patternlock::kMaxPoints; ++i) {
     const int cx = dotsLeft + static_cast<int>(i) * dotGap;
     // A slot not reached yet is a smaller dot of the same shape, not an outline:
