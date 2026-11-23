@@ -65,7 +65,6 @@ class HomeActivity final : public Activity {
   bool headerDrawn_ = false;
   int drawnBatteryStep_ = -1;
   uint16_t drawnBatteryPercent_ = 0;
-  bool drawnCharging_ = false;
   uint32_t nextBatteryPollMs_ = 0;
   uint32_t nextLevelRepaintMs_ = 0;
   void recordDrawnBattery();

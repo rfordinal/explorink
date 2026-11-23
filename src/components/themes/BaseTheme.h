@@ -256,7 +256,8 @@ class BaseTheme {
   // Whether drawHeader() puts anything on the panel when `title` is nullptr --
   // which is how the Home screen calls it, to get the battery and no heading.
   // False in RoundedRaff, whose drawHeader() returns immediately in that case
-  // because Home's header is drawn inside drawRecentBookCover() instead.
+  // -- which on this firmware's Home screen means no battery is drawn there at
+  // all.
   //
   // Exists so a caller that repaints the band on its own
   // (HomeActivity::updateBatteryStatus()) can tell a band with a battery in it

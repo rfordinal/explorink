@@ -29,19 +29,24 @@ constexpr int kHeaderGap = 8;
 // At 60 the list ends at 716 with 44 px of air, and a 32 px glyph still has room.
 constexpr int kRowHeight = 60;
 
-// How often the header's battery state is looked at
+// How often the header's battery level is looked at
 // (HomeActivity::updateBatteryStatus()). Same figure as the map's
-// kHeaderPollMs, and for the same reason: it bounds how often an ADC read and
-// an I2C charge-line read are asked for, and two seconds is still prompt for a
-// cable that was just plugged in.
+// kHeaderPollMs. What it bounds is one thing: getBatteryPercentage() on a
+// board with no fuel gauge, where every call is an ADC read **and** a step of
+// an EMA filter (HalPowerManager.cpp). It bounds nothing about the charge
+// line -- HalGPIO::update() already asks that once per main-loop iteration.
 constexpr uint32_t kBatteryPollMs = 2000;
 
-// And the floor between two repaints caused by nothing but the battery level
-// moving. A plug or an unplug ignores it -- that one is caused by the rider
-// and is never cosmetic. Same figure as the map's kHeaderBarsRepaintMs, and
-// the same reason: the quantity can dither (a gaugeless board's percentage is
-// a truncated EMA with no hysteresis) and every flip is a real waveform pass,
-// a whole-panel one on a driver with no scoped window.
+// And the floor between two repaints. Same figure as the map's
+// kHeaderBarsRepaintMs, and the same reason: the level can dither -- a
+// gaugeless board's percentage is a truncated EMA with no hysteresis -- and
+// every flip is a real waveform pass, a whole-panel one on a driver with no
+// scoped window. The first change after a quiet period is never held: the
+// floor is armed on repaint, not on the change.
+//
+// It covers every repaint this function makes, because the level is every
+// repaint this function makes. The charging bolt is main.cpp's, see
+// updateBatteryStatus().
 constexpr uint32_t kLevelRepaintFloorMs = 30 * 1000;
 
 constexpr const char* kLogTag = "Home";
@@ -130,7 +135,6 @@ void HomeActivity::onEnter() {
   headerDrawn_ = false;
   drawnBatteryStep_ = -1;
   drawnBatteryPercent_ = 0;
-  drawnCharging_ = false;
   nextBatteryPollMs_ = 0;
   nextLevelRepaintMs_ = 0;
 
@@ -253,7 +257,11 @@ void HomeActivity::recordDrawnBattery() {
   const auto& metrics = UITheme::getInstance().getMetrics();
   const BaseTheme::BatteryReading drawn = GUI.lastBatteryDrawn();
   drawnBatteryPercent_ = drawn.percentage;
-  drawnCharging_ = drawn.charging;
+  // The charging flag is not stored. It is needed here, because the glyph's
+  // step depends on it -- both themes draw a fixed shape while charging -- but
+  // nothing compares against it any more: the bolt is main.cpp's repaint, see
+  // updateBatteryStatus(). A field kept "for symmetry" would read as live
+  // machinery to the next person grepping for it.
   drawnBatteryStep_ = GUI.batteryIconStep(drawn.percentage, metrics.batteryWidth, drawn.charging);
 }
 
@@ -306,8 +314,15 @@ void HomeActivity::updateBatteryStatus() {
   const auto levelDiffers = [&]() { return textShown ? percentage != drawnBatteryPercent_ : step != drawnBatteryStep_; };
   if (!levelDiffers()) return;
 
-  // **The charging bolt is deliberately not a condition here.** It looks like
-  // the obvious second trigger and it is already somebody else's job:
+  // **The charging bolt is deliberately not a condition of its own here**, and
+  // with the percentage hidden it still reaches this test through `step`:
+  // batteryIconStep() answers a different number while charging, because both
+  // themes draw a fixed shape then. That is why `charging` is passed to it and
+  // why dropping that argument as unused would put the recorded step and the
+  // drawn glyph back out of step with each other.
+  //
+  // What is not here is a comparison against the charging state, because that
+  // repaint is already somebody else's job:
   // HalGPIO::update() raises a one-iteration usbStateChanged on every plug and
   // unplug, and main.cpp asks for a full frame on it -- "Refresh the battery
   // icon when USB is plugged or unplugged" -- before activityManager.loop()
@@ -358,10 +373,14 @@ void HomeActivity::updateBatteryStatus() {
   RenderLock lock;
   HalPowerManager::Lock powerLock;
   // Taking the lock can wait out a whole frame, and that frame redraws this
-  // band and records what it drew. Re-ask against the refreshed state -- in
-  // the same terms the decision above used, the printed number or the glyph
-  // step, never both -- instead of trusting a decision taken before the wait.
-  if (!levelDiffers()) return;
+  // band and records what it drew. So re-ask -- and re-read, because the
+  // reading above is from before the wait and the frame may have drawn a newer
+  // one. Compared in the same terms the decision used, the printed number or
+  // the glyph step, never both.
+  const uint16_t fresh = powerManager.getBatteryPercentage();
+  const bool freshCharging = gpio.isUsbConnected();
+  const int freshStep = GUI.batteryIconStep(fresh, metrics.batteryWidth, freshCharging);
+  if (textShown ? fresh == drawnBatteryPercent_ : freshStep == drawnBatteryStep_) return;
 
   // Armed here and not at the gate above, so a pass that turns out to be
   // unnecessary -- the re-check just took that exit -- does not hold a real
