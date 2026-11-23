@@ -98,6 +98,16 @@ rendered at all is the proof: a wrong IV is noise, not a document
 (`docs/device-shots/2026-11-23-x4pro-wallet-page-contentiv-480x800.png` in the
 parent repo).
 
+**And once more with no test command anywhere in the binary.** Both boards were
+re-flashed from the branch itself -- `CMD:WALLETSTATUS` answers nothing on it,
+which is what a build without `ENABLE_WALLET_TEST_CMDS` has to do. A cold boot
+then put the X4 Pro's Home > Wallet row on the PIN screen, because the tree is
+encrypted and a reboot takes the session key with it; six button presses
+(`up down left right up down`, which is `UDLRUD`) and `confirm` unlocked it and
+the browse list came back. That is the rider's own path end to end: no serial
+command took part in it except the button injector standing in for a thumb
+(`docs/device-shots/2026-11-23-x4pro-wallet-pin-screen-480x800.png`).
+
 **The T5 S3 Pro cannot hold a wallet at all today.** The same tree refused on it
 with `manifest panel x4 800x480/48000, device 960x540/64800`: a wallet is built
 for one panel and `walletgen.py` only knows `x3` and `x4`. The manifest still
