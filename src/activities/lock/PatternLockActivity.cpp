@@ -22,17 +22,25 @@ constexpr const char* kLogTag = "PATTERNLOCK";
 // cursor; on the T5 S3 Pro, 2026-11-23, that read as sixteen empty holes with one
 // of them swallowed. A ring says "you are here" without making the cursor a
 // different kind of point from the one it is standing on.
-constexpr int kNodeRadiusDiv = 12;      // node dot radius = pitch / 12
+constexpr int kNodeRadiusDiv = 9;       // node dot radius = pitch / 9
 constexpr int kMinNodeRadius = 4;
+// The grid takes a pitch of span/(cols+2) rather than span/cols, so its ink is
+// about half the panel's width instead of seven tenths. A lock grid is a thing to
+// aim at, not a wall: the first cut filled the screen with it and read as heavy
+// (T5 S3 Pro, 2026-11-23). Two extra pitches of air is the whole difference.
+constexpr int kPitchSpanDiv = patternlock::kCols + 2;
 constexpr int kCursorRingMul = 26;      // ring radius = node radius * 2.6
 constexpr int kCursorRingDiv = 10;
 constexpr int kCursorRingWidth = 3;     // thin enough to read, thick enough to survive a FAST refresh
 
 // One dot per entered point, under the grid. Same role as the wallet PIN's dots:
-// a rider counts how far they are without the path being on screen. The gap comes
-// off the panel width rather than a pixel count, for the same reason the grid does.
-constexpr int kDotGapDiv = 24;
-constexpr int kDotRadiusDiv = 4;        // filled dot radius = gap / 4
+// a rider counts how far they are without the path being on screen.
+//
+// The row is exactly as wide as the grid above it and its spacing falls out of
+// that, so the two read as one object instead of two things that happen to be
+// stacked. Nothing here is a pixel count: the grid's pitch is already derived
+// from the panel, and this inherits it.
+constexpr int kDotRadiusDiv = 3;        // filled dot radius = gap / 3
 constexpr int kEmptyDotRadius = 2;
 
 }  // namespace
@@ -184,17 +192,17 @@ void PatternLockActivity::render(const HalDisplay::RefreshMode mode) {
   const Rect hints = GUI.buttonHintsRect(renderer);
   const int bandBottom = (hints.height > 0 ? hints.y : pageHeight) - metrics.verticalSpacing;
   const int band = bandBottom - bandTop;
-  // What the grid does not get: the dots and the status line under it.
-  const int dotGap = pageWidth / kDotGapDiv;
-  const int dotRadius = dotGap / kDotRadiusDiv;
-  const int reserved = lineHeight * 3 + dotRadius * 3;
+  // What the grid does not get: the dots and the status line under it. The dot
+  // row's own size depends on the pitch, which is not known yet, so the reserve
+  // uses the line height alone and the row is laid out inside it below.
+  const int reserved = lineHeight * 4;
   const int availableWidth = pageWidth - metrics.contentSidePadding * 2;
   const int availableHeight = band - reserved;
   const int span = availableWidth < availableHeight ? availableWidth : availableHeight;
   // A panel too short for the grid would otherwise derive a negative pitch and
   // draw the whole screen inside out. The floor is deliberately ugly rather than
   // clever: if a board ever hits it, the grid looks cramped and says so.
-  const int pitch = span > patternlock::kCols * 8 ? span / patternlock::kCols : 8;
+  const int pitch = span > kPitchSpanDiv * 8 ? span / kPitchSpanDiv : 8;
 
   // Centred in the band rather than hung from the header. On a 540x960 panel the
   // grid is limited by the width, which left ~250 px of white under the status
@@ -225,11 +233,13 @@ void PatternLockActivity::render(const HalDisplay::RefreshMode mode) {
     }
   }
 
-  int y = gridTop + pitch * (patternlock::kRows - 1) + pitch / 2 + dotRadius * 2;
-
   // The dots: how many points are in, and nothing about which ones.
-  const int dotsWidth = static_cast<int>(patternlock::kMaxPoints - 1) * dotGap;
+  const int dotsWidth = pitch * (patternlock::kCols - 1);
+  const int dotGap = dotsWidth / static_cast<int>(patternlock::kMaxPoints - 1);
+  int dotRadius = dotGap / kDotRadiusDiv;
+  if (dotRadius > nodeRadius) dotRadius = nodeRadius;  // never louder than the grid itself
   const int dotsLeft = (pageWidth - dotsWidth) / 2;
+  int y = gridTop + pitch * (patternlock::kRows - 1) + pitch / 2 + dotRadius * 2;
   for (size_t i = 0; i < patternlock::kMaxPoints; ++i) {
     const int cx = dotsLeft + static_cast<int>(i) * dotGap;
     // A slot not reached yet is a smaller dot of the same shape, not an outline:
