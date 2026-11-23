@@ -20,9 +20,13 @@ Status: the seven-row layout was **verified on the X4 2026-08-21** -- flashed,
 screenshotted off the panel (`tools/screenshot_gate.py`), heap read off serial.
 The five-row layout (Pins and Wallet removed) is **unverified** as of
 2026-10-25 -- builds clean, not yet flashed. The six-row layout (Wallet back)
-is **unverified** as of 2026-11-23 -- builds clean on `default` and `t5s3pro`,
-not yet flashed, and the row geometry below is arithmetic rather than a
-screenshot. See the end.
+was **verified on two boards 2026-11-23**: flashed to an X4 Pro (`env:x4pro`,
+six rows, no LoRa) and to a LilyGo T5 S3 Pro (`env:t5s3pro`, seven rows, LoRa
+third), screenshotted off both panels, and the Wallet row opened its activity
+from the row on both -- `Wallet / your papers, offline / No wallet on the card`,
+which is the right answer for a card with no wallet tree on it. Shots in the
+parent repo: `docs/device-shots/2026-11-23-x4pro-home-wallet-row-480x800.png`
+and `...-t5s3pro-home-wallet-row-540x960.png`. See the end.
 
 ## Layout, in device pixels
 
@@ -268,3 +272,26 @@ real device:
   no gap between rows.
 * Heap, against the 2026-08-21 seven-row baseline above -- expect a small drop
   (two fewer icons drawn, two fewer `tr()` lookups per frame), not a jump.
+
+## Six-row layout, 2026-11-23 (Wallet back, verified)
+
+Flashed and driven on two boards, both from `4228693c`:
+
+* **X4 Pro** (`env:x4pro`, no LoRa): six rows -- Explore, Trips, Wallet, Sync,
+  File Transfer, Settings. The brand block, the row band and the button hints
+  land where the table above predicts, and the extra air falls below Settings
+  rather than into the rows.
+* **LilyGo T5 S3 Pro** (`env:t5s3pro`, LoRa): seven rows, Group third with its
+  `(LoRa` antenna `)` badge and Wallet fourth, which is the order this document
+  states.
+* **The row opens its screen.** Three `CMD:BUTTON down` then `confirm` on the
+  T5 S3 Pro, two then `confirm` on the X4 Pro, and both landed on
+  `Wallet / your papers, offline / No wallet on the card` -- the right answer
+  for a card with no wallet tree. `Back` returned to Home with no crash and the
+  log kept its ordinary `[PWR]` cadence afterwards.
+
+Shots live in the parent repo's `docs/device-shots/`, dated 2026-11-23.
+
+**Not checked in this pass**, and still open from the five-row list above: the
+heap against the 2026-08-21 baseline, and a touch tap landing on the row it
+looks like it lands on. Both boards were driven over serial, not by thumb.
