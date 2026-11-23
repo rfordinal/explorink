@@ -70,6 +70,13 @@ void PatternLockActivity::onEnter() {
   speculativeOutstanding_ = false;
   lockedOut_ = config_.isLockedOut && config_.isLockedOut();
   if (lockedOut_) LOG_ERR(kLogTag, "entered locked out: the caller is refusing attempts");
+  // A rule that is load-bearing at runtime and invisible when broken is a wish
+  // (CLAUDE.md, "Code comments answer WHY"). This one is the whole rate limiter:
+  // with auto-submit on, every guess arrives speculative and onEntryEnded is the
+  // only thing a caller can count.
+  if (config_.autoSubmit && !config_.onEntryEnded) {
+    LOG_ERR(kLogTag, "auto-submit with no onEntryEnded: this caller cannot count a failed attempt");
+  }
   redraw(HalDisplay::HALF_REFRESH);
 }
 
@@ -138,12 +145,16 @@ void PatternLockActivity::loop() {
 }
 
 bool PatternLockActivity::handleTouch() {
-  const Layout l = layout();
-  if (!l.ownTouch) return false;
-
+  // The tap is read before the layout is derived, so a frame with no tap costs
+  // nothing: layout() reaches UITheme::getMetrics(), which mutates a shared cache,
+  // and running that from the main task on every loop iteration widens a window
+  // the render task is also in.
   int x = 0;
   int y = 0;
   if (!mappedInput.wasScreenTapped(x, y)) return false;
+
+  const Layout l = layout();
+  if (!l.ownTouch) return false;
 
   if (inside(x, y, l.backLeft, l.boxTop, l.boxWidth, l.boxHeight)) {
     onBack();
@@ -174,11 +185,21 @@ bool PatternLockActivity::handleTouch() {
     else if (dr == -1 && dc == 0) onStep(patternlock::Step::Up);
     return true;
   }
-  return true;
+  // A tap on dead space is not this screen's business. Reporting it as handled
+  // would swallow whatever hardware button released in the same frame.
+  return false;
 }
 
 void PatternLockActivity::onBack() {
   if (entry_.undo()) {
+    // Undo abandons a candidate that has already been put to the verifier, so the
+    // walk is over for accounting even though the screen stays up. Without this
+    // an attacker walks to four points (one real check), backs off, walks a
+    // different candidate, and repeats for ever -- every guess reaching the real
+    // comparison and the caller billed once, when they finally leave. Found in
+    // the second review, 2026-11-23: the first one closed the forward walk and
+    // this door was still open.
+    settleEntry();
     lastAttemptWrong_ = false;
     redraw(HalDisplay::FAST_REFRESH);
     return;
@@ -202,9 +223,17 @@ void PatternLockActivity::onStep(const patternlock::Step step) {
     // A hit already finished the screen; drawing the grid again here would be a
     // refresh of a frame nobody will look at.
     if (finished_) return;
-    // The walk is over at the last point: the rider cannot step further, so the
-    // caller is told now rather than waiting for them to back out.
-    if (entry_.full()) settleEntry();
+    if (entry_.full()) {
+      // The eighth point is the end of the walk: the rider cannot step further,
+      // so the caller is billed and the screen says what happened. Silence here
+      // left a rider staring at "8 of 8 points" with no way to tell that the
+      // pattern had already been refused (second review, 2026-11-23).
+      settleEntry();
+      lastAttemptWrong_ = !lockedOut_;
+      entry_.wipe();
+      redraw(HalDisplay::HALF_REFRESH);
+      return;
+    }
     if (lockedOut_) {
       redraw(HalDisplay::HALF_REFRESH);
       return;

@@ -33,11 +33,21 @@
 // controls**, because the theme's hint boxes exist only in TOUCH_BUTTONS_ONLY
 // (`TouchPolicy::hintsVisible()`) and the stored default is ANYWHERE
 // (`CrossPointSettings.h`, `touchMode`). Without this a factory-default X4 Pro --
-// two hardware keys, everything else touch -- could move the cursor left and
-// right and nothing else: no UP, no DOWN, no CONFIRM, no BACK. A tap on a cell
-// orthogonally next to the cursor steps there, and two boxes at the foot of the
-// screen carry BACK and OK. That is this screen's own input model, not the
+// two hardware keys, everything else touch -- could move the cursor **up and
+// down** and nothing else: no LEFT, no RIGHT, no CONFIRM, no BACK. That board's
+// two keys are `up`=GPIO0 and `down`=GPIO7 with back/confirm/left/right all
+// `PIN_UNASSIGNED` (`BoardConfig.h`, XTEINK_X4_PRO), which is the opposite of
+// what this comment said until the second review read the pin table. A tap on a
+// cell orthogonally next to the cursor steps there, and two boxes at the foot of
+// the screen carry BACK and OK. That is this screen's own input model, not the
 // theme's, and it exists only in the mode where the theme offers none.
+//
+// **With touch switched off entirely (`TOUCH_DISABLED`, or the panel lock) that
+// board has no way to drive this screen at all** -- no hint boxes, no own boxes,
+// and two keys that only move the cursor. The gate is then a dead end until the
+// capacitive home key's double tap releases the lock, which `main.cpp` handles
+// outside any activity. That is the device-wide question T-265 already asks, and
+// this screen inherits rather than causes it (T-2084).
 //
 // ## What is on screen, and what that does and does not protect
 //
@@ -108,6 +118,13 @@ class PatternLockActivity final : public Activity {
     // attempt when auto-submit is on -- see `Verifier` above for why it cannot be
     // counted per probe. Never called for a walk that unlocked, and never twice
     // for one walk.
+    //
+    // **It can run while the ActivityManager holds the render mutex** -- the exit
+    // path calls it from onExit(), and the manager's Pop branch takes a
+    // `RenderLock` before destroying an activity (`ActivityManager.cpp`). That
+    // mutex is not recursive, so a callback that repaints -- `requestUpdateAndWait()`,
+    // or taking its own RenderLock -- deadlocks the device. Count, persist, and
+    // return; draw on the next frame.
     std::function<void()> onEntryEnded = nullptr;
   };
 

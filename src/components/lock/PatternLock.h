@@ -47,8 +47,9 @@ namespace patternlock {
 // entitled to remove it -- which is exactly how a secret survives its own
 // zeroing. The wallet's crypto header carries the same primitive for the same
 // reason; this one is local so a gate pulls in no wallet code.
-inline void secureWipe(char* buffer, const size_t length) {
-  volatile char* p = buffer;
+template <typename Byte>
+inline void secureWipe(Byte* buffer, const size_t length) {
+  volatile Byte* p = buffer;
   for (size_t i = 0; i < length; ++i) p[i] = 0;
 }
 
@@ -81,8 +82,7 @@ class Entry {
   // had a `clear()` and a `wipe()` with identical bodies and different comments,
   // which told a reader nothing about which one mattered.
   void wipe() {
-    volatile uint8_t* p = path_;
-    for (size_t i = 0; i < kMaxPoints; ++i) p[i] = 0;
+    secureWipe(path_, kMaxPoints);
     path_[0] = start_;
     count_ = 1;
   }

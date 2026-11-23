@@ -127,6 +127,12 @@ a permanent lockout. Read it off the pattern with
 `patternlock::isWellFormed(path, startCell)` takes the start for the same reason
 and refuses a pattern that begins anywhere else.
 
+**`onEntryEnded` can run under the render mutex.** The exit path calls it from
+`onExit()`, and the manager takes a `RenderLock` before destroying an activity;
+that mutex is not recursive, so a callback that repaints -- `requestUpdateAndWait()`
+or its own `RenderLock` -- deadlocks the device. Count, persist, return. Found in
+review before any caller existed to hit it.
+
 `isLockedOut` is asked once on entry, so a limiter the caller is already enforcing
 shows up before the first press instead of after a wasted attempt -- a power cycle
 must not buy a fresh set of guesses. It is its own callback rather than an
@@ -136,9 +142,17 @@ count that call.
 ### Counting attempts: `onEntryEnded`
 
 A walk that does not unlock costs the caller exactly one attempt, and the screen
-says when: `Config::onEntryEnded` fires once per walk, whether it ended at the
-eighth point, at BACK, or by the screen leaving. A CONFIRM is its own counted
-attempt and does not fire it.
+says when: `Config::onEntryEnded` fires once per walk. A walk ends when the
+candidate that was put to the verifier is abandoned or exhausted -- **a BACK that
+undoes a step**, the eighth point, or the screen leaving. A CONFIRM is its own
+counted attempt and does not fire it.
+
+**The BACK case is the one that is easy to miss, and shipping without it made the
+limiter unreachable a second time.** Settle only on the forward walk and an
+attacker walks to four points (one real check against the verifier), backs off,
+walks a different candidate, and repeats indefinitely for a single counted
+failure. Found in the second review, 2026-11-23, after the first had closed the
+forward path and declared the accounting sound.
 
 **This is not a nicety, it closes a hole.** The first cut said a speculative
 probe must count nothing, and with auto-submit on *every* guess is speculative --
@@ -170,11 +184,19 @@ verifier is then called with `speculative = true`, and both sides of that matter
 
 ## Verified, and not
 
-**Host-tested, 2026-11-23**: 14 tests in `test/pattern_lock/`, all green -- the
+**Host-tested, 2026-11-23**: 17 tests in `test/pattern_lock/`, all green -- the
 grid walk, walls, revisits, the 8-point cap, undo down to the start, the encoding,
 the wipe, `isWellFormed` against both its accept and its reject cases, every path
 the screen can produce validating, the two space counts, and no encoding collision
 across all 7,350 paths.
+
+**And a gap worth stating rather than hiding: none of them touch the screen.**
+`test/pattern_lock/` exercises `PatternLock.h`, which is grid arithmetic. The
+attempt accounting, the auto-submit path and the lifecycle live in
+`PatternLockActivity` and have no automated coverage at all -- they are reachable
+only by hand over `CMD:PATTERNLOCK` plus `CMD:BUTTON` on a board. That is exactly
+where both reviews found their worst defects, and it is why they were found by
+reading rather than by a red test. T-2083.
 
 **On the panel, 2026-11-23, T5 S3 Pro** (board `7c:2c:67:8a:4c:b4`, 540x960,
 `env:t5s3pro`, driven by `CMD:PATTERNLOCK` + `CMD:BUTTON` with the framebuffer
