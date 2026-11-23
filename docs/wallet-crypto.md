@@ -87,6 +87,23 @@ device has it before it has decrypted anything, and it changes exactly when the
 bytes change. Identical payloads still produce identical ciphertext -- no new leak,
 the plaintext hash is in the clear either way.
 
+**Proved end to end on an X4 Pro, 2026-11-23.** `tools/walletgen.py --demo
+--new-key --pin UDLRUD` wrote an encrypted tree whose three assets all carry
+`flags=0x03`; the files went to the card over BLE (`tools/blepush.py`, paths
+relative to `/explorink`), `CMD:WALLETPROVISION` stored the wrap, 18,000 PBKDF2
+iterations in 1,047 ms, `CMD:WALLETUNLOCK` unwrapped it in 1,027 ms, and the
+browse list and the page both drew -- one 48,000-byte FIT asset, 165 ms off the
+card, decrypted with the payload-hash IV before it reached the panel. A page that
+rendered at all is the proof: a wrong IV is noise, not a document
+(`docs/device-shots/2026-11-23-x4pro-wallet-page-contentiv-480x800.png` in the
+parent repo).
+
+**The T5 S3 Pro cannot hold a wallet at all today.** The same tree refused on it
+with `manifest panel x4 800x480/48000, device 960x540/64800`: a wallet is built
+for one panel and `walletgen.py` only knows `x3` and `x4`. The manifest still
+decrypted there, so the GCM half is verified on both boards; only the assets are
+x4-only.
+
 Found by review on 2026-11-23, while bringing the wallet branch up to `develop`.
 Fixed on all three implementations at once (device, phone, `tools/walletgen.py`)
 behind the flag bit, and the parity fixtures were regenerated, which is what proves
