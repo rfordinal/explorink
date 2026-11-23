@@ -4986,10 +4986,26 @@ void loop() {
                   ok = false;
                   stage = "exit";
                 }
+                // **Poll the verify instead of reading it once.** The first
+                // version read both registers the moment EXIT_CFG_UPDATE's own
+                // status bit cleared and reported `dc=1500 fcc=3000
+                // verify=bad` on a write that had fully succeeded: the data
+                // memory held 1500 at both addresses and FullChargeCapacity()
+                // caught up a moment later. FCC is loaded from data memory "on
+                // initialization" (SLUUBD4A 1.1.2) and the re-initialisation
+                // outlasts the bit, so a single read here is a false negative
+                // on the one command whose whole job is to be believed.
                 uint16_t dcAfter = 0, fccAfter = 0;
-                const bool dcOk = powerbus::read16(g.gaugeAddr, 0x3C, dcAfter);
-                const bool fccOk = powerbus::read16(g.gaugeAddr, 0x12, fccAfter);
-                const bool verified = ok && dcOk && fccOk && dcAfter == kCellMah && fccAfter == kCellMah;
+                bool verified = false;
+                for (int i = 0; i < 50 && ok; ++i) {
+                  const bool dcOk = powerbus::read16(g.gaugeAddr, 0x3C, dcAfter);
+                  const bool fccOk = powerbus::read16(g.gaugeAddr, 0x12, fccAfter);
+                  if (dcOk && fccOk && dcAfter == kCellMah && fccAfter == kCellMah) {
+                    verified = true;
+                    break;
+                  }
+                  delay(100);
+                }
                 if (wasSealed) gaugedm::seal(g.gaugeAddr);
                 uint8_t secAfter = 0;
                 gaugedm::security(g.gaugeAddr, secAfter);
