@@ -95,6 +95,21 @@ struct AssetHeader {
 // rather than drawn, because the bytes would be noise on the panel.
 inline constexpr uint8_t kFlagEncrypted = 0x01;
 
+// flags bit 1: the CTR IV is derived from this payload's own sha256 prefix
+// rather than from the assetId. Set by every generator since 2026-11-23, and
+// read here rather than assumed, so an encrypted card written before that still
+// decrypts (../../../docs/wallet-crypto.md, "The IV follows the bytes").
+//
+// **Why it had to change.** An assetId is a hash of the recipe -- panel, item,
+// page, type, index, version -- and carries **no content**, which is what makes
+// delta sync fall out of the arithmetic (android WalletStore.addItem). The IV
+// was that same id plus a version nothing incremented, so re-rendering a
+// document whose title and source filenames had not changed produced new bytes
+// under the **same keystream**. Two such cards, and C1 xor C2 is P1 xor P2.
+// The payload's hash is already in this header, in clear, so the IV costs
+// nothing new and changes whenever the bytes do.
+inline constexpr uint8_t kFlagContentIv = 0x02;
+
 // 1 bpp is every document tile and every 1bpp page image. bitDepth 2 means the
 // asset describes the panel's four grey levels -- assetType 6 stores them 2 bits
 // to a pixel, assetType 7 stores them as three 1bpp planes, and both say 2,

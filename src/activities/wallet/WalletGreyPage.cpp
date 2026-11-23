@@ -104,7 +104,8 @@ GreyOutcome GreyPageReader::open(const PageImageSpec& page, const GfxRenderer& r
   }
 
   encrypted_ = (header_.flags & kFlagEncrypted) != 0;
-  if (encrypted_ && !buildAssetIv(page.assetId, header_.version, iv_)) {
+  if (encrypted_ && !buildAssetIvForAsset(header_.flags, page.assetId, header_.sha256Prefix,
+                                          sizeof(header_.sha256Prefix), header_.version, iv_)) {
     LOG_ERR(kLogTag, "grey asset %s has no usable IV", page.assetId);
     file_.close();
     return GreyOutcome::BadAsset;

@@ -458,7 +458,8 @@ bool PageReader::open(const PageImageSpec& page, const GfxRenderer& renderer, Er
   }
 
   encrypted_ = (header_.flags & kFlagEncrypted) != 0;
-  if (encrypted_ && !buildAssetIv(page.assetId, header_.version, iv_)) {
+  if (encrypted_ && !buildAssetIvForAsset(header_.flags, page.assetId, header_.sha256Prefix,
+                                          sizeof(header_.sha256Prefix), header_.version, iv_)) {
     LOG_ERR(kLogTag, "page image %s has no usable IV", page.assetId);
     file_.close();
     error = Error::BadAsset;
@@ -640,7 +641,8 @@ bool readWholeScreen(const char* assetId, const Gate gate, GfxRenderer& renderer
     // one screen, offset 0, one pass.
     uint8_t iv[kAssetIvLen];
     const uint8_t* key = Session::instance().key();
-    if (key == nullptr || !buildAssetIv(assetId, header.version, iv)) {
+    if (key == nullptr || !buildAssetIvForAsset(header.flags, assetId, header.sha256Prefix,
+                                                sizeof(header.sha256Prefix), header.version, iv)) {
       error = Error::Locked;
       return false;
     }

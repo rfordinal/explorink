@@ -76,6 +76,40 @@ inline bool buildAssetIv(const char* assetId, uint32_t version, uint8_t iv[kAsse
   return true;
 }
 
+// IV = sha256(payload)[0:8] || u32 version little endian || u32 zero.
+//
+// **The content-derived form, flags bit 1 (`kFlagContentIv`).** Same shape as
+// the assetId form above and the same trailing counter word; only the first
+// eight bytes change, from "which asset is this" to "which bytes are these".
+// That is the whole fix: an assetId repeats across a re-render, the payload's
+// hash does not, so one key can never run the same keystream over two different
+// plaintexts. The hash is the one already in the asset's cleartext header, so
+// the device reads it from bytes it has in hand before the first decrypted byte
+// exists.
+//
+// Two assets with identical bytes do get identical ciphertext. That is not a new
+// leak: the plaintext hash sits in the cleartext header either way.
+inline bool buildAssetIvFromHash(const uint8_t* sha256Prefix, size_t prefixLen, uint32_t version,
+                                 uint8_t iv[kAssetIvLen]) {
+  if (iv == nullptr || sha256Prefix == nullptr || prefixLen < 8) return false;
+  std::memset(iv, 0, kAssetIvLen);
+  std::memcpy(iv, sha256Prefix, 8);
+  iv[8] = static_cast<uint8_t>(version & 0xFF);
+  iv[9] = static_cast<uint8_t>((version >> 8) & 0xFF);
+  iv[10] = static_cast<uint8_t>((version >> 16) & 0xFF);
+  iv[11] = static_cast<uint8_t>((version >> 24) & 0xFF);
+  return true;
+}
+
+// Picks the IV form the asset's own flags ask for. Every call site goes through
+// this rather than choosing for itself -- a call site that picked the legacy form
+// for a content-IV asset would decrypt to noise, with no error anywhere.
+inline bool buildAssetIvForAsset(uint8_t flags, const char* assetId, const uint8_t* sha256Prefix, size_t prefixLen,
+                                 uint32_t version, uint8_t iv[kAssetIvLen]) {
+  if ((flags & kFlagContentIv) != 0) return buildAssetIvFromHash(sha256Prefix, prefixLen, version, iv);
+  return buildAssetIv(assetId, version, iv);
+}
+
 // Where a decrypt has to start to reach payload byte `offset`.
 //
 // **This is the property design B depends on.** A windowed read seeks to a row at

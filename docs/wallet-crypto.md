@@ -44,8 +44,12 @@ AES and SHA-256 run on the hardware accelerators.
 
 ## Assets: CTR, because a window has to be seekable
 
-`IV = assetId raw bytes (8) || u32 version little endian || u32 zero`
-(`buildAssetIv()`, `src/activities/wallet/WalletCrypto.h`).
+`IV = sha256(payload)[0:8] || u32 version little endian || u32 zero`
+(`buildAssetIvFromHash()`, `src/activities/wallet/WalletCrypto.h`), chosen by
+`flags` bit 1 (`kFlagContentIv`). An asset written before 2026-11-23 has that bit
+clear and keeps the old `assetId || version` form (`buildAssetIv()`);
+`buildAssetIvForAsset()` is the one place that decides, so no call site can pick
+the wrong form and decrypt to silent noise.
 
 To reach payload byte `o`: start the counter at block `o / 16` and throw away
 `o % 16` bytes of keystream (`ctrStartForOffset()`, `ctrXorInPlace()`).
@@ -65,8 +69,28 @@ second 48 KB buffer does not exist to land in -- with BLE up the largest contigu
 block is about 43 KB (`map-memory.md:57`). CTR makes that free: it is an XOR over
 the bytes where they lie, needing 16 bytes of keystream and nothing else.
 
-One keystream per (asset, version), used once. A version bump changes the IV, which
-is what stops one keystream covering two plaintexts.
+### The IV follows the bytes
+
+One keystream per (payload, version), used once.
+
+**It used to be per (assetId, version), and that was not unique.** An assetId is a
+hash of the recipe -- panel, item, page, type, index, version -- with no content in
+it, which is deliberate: it is what makes the phone's delta sync fall out of the
+ledger arithmetic instead of being computed (android `WalletStore.addItem`).
+Nothing ever incremented the version either. So re-importing a document under the
+same title and the same source filenames wrote **different bytes under the same
+keystream**, and an attacker holding both cards gets `P1 xor P2`. The belief that
+"a version bump changes the IV" was true and useless: no bump existed.
+
+The payload's sha256 prefix is already in the asset's cleartext header, so the
+device has it before it has decrypted anything, and it changes exactly when the
+bytes change. Identical payloads still produce identical ciphertext -- no new leak,
+the plaintext hash is in the clear either way.
+
+Found by review on 2026-11-23, while bringing the wallet branch up to `develop`.
+Fixed on all three implementations at once (device, phone, `tools/walletgen.py`)
+behind the flag bit, and the parity fixtures were regenerated, which is what proves
+the three agree.
 
 ## The plaintext hash is not a MAC
 

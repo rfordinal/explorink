@@ -1520,9 +1520,10 @@ TEST(WalletCryptoIv, AssetIvIsTheIdThenTheVersionThenZero) {
                                      0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
   EXPECT_EQ(std::memcmp(iv, want, sizeof(iv)), 0);
 
-  // The version is little endian, and it is the only thing that changes between two
-  // versions of the same asset -- which is what stops one keystream covering two
-  // plaintexts.
+  // The version is little endian. It was believed to be what stops one keystream
+  // covering two plaintexts, and it is not: nothing ever incremented it, and an
+  // assetId carries no content, so a re-render reused both. The content-IV form
+  // below is what actually settles that -- see kFlagContentIv.
   ASSERT_TRUE(buildAssetIv(kEncCodeAssetId, 0x01020304u, iv));
   EXPECT_EQ(iv[8], 0x04);
   EXPECT_EQ(iv[9], 0x03);
@@ -1535,6 +1536,49 @@ TEST(WalletCryptoIv, AssetIvIsTheIdThenTheVersionThenZero) {
   EXPECT_FALSE(buildAssetIv("../../etc/passwd", 1, iv));
   EXPECT_FALSE(buildAssetIv("f3e7250a407c088", 1, iv));
   EXPECT_FALSE(buildAssetIv(nullptr, 1, iv));
+}
+
+TEST(WalletCryptoIv, ContentIvFollowsThePayloadHashNotTheId) {
+  const uint8_t hashA[kSha256PrefixBytes] = {0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88};
+  const uint8_t hashB[kSha256PrefixBytes] = {0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x89};
+
+  uint8_t ivA[kAssetIvLen];
+  uint8_t ivB[kAssetIvLen];
+  ASSERT_TRUE(buildAssetIvFromHash(hashA, sizeof(hashA), 1, ivA));
+  ASSERT_TRUE(buildAssetIvFromHash(hashB, sizeof(hashB), 1, ivB));
+
+  // The shape is the legacy one with the first eight bytes replaced.
+  const uint8_t want[kAssetIvLen] = {0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88,
+                                     0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
+  EXPECT_EQ(std::memcmp(ivA, want, sizeof(ivA)), 0);
+
+  // The whole point: one byte of payload difference is one different keystream,
+  // with the assetId and the version both unchanged.
+  EXPECT_NE(std::memcmp(ivA, ivB, sizeof(ivA)), 0);
+
+  // A truncated hash is refused rather than zero-padded into an IV that half works.
+  EXPECT_FALSE(buildAssetIvFromHash(hashA, 7, 1, ivA));
+  EXPECT_FALSE(buildAssetIvFromHash(nullptr, 8, 1, ivA));
+}
+
+TEST(WalletCryptoIv, TheFlagPicksTheForm) {
+  const uint8_t hash[kSha256PrefixBytes] = {0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff, 0x00, 0x11};
+
+  uint8_t legacy[kAssetIvLen];
+  uint8_t content[kAssetIvLen];
+  uint8_t expectLegacy[kAssetIvLen];
+  uint8_t expectContent[kAssetIvLen];
+  ASSERT_TRUE(buildAssetIv(kEncCodeAssetId, 7, expectLegacy));
+  ASSERT_TRUE(buildAssetIvFromHash(hash, sizeof(hash), 7, expectContent));
+
+  // An encrypted card written before 2026-11-23 carries bit 0 and not bit 1, and
+  // has to keep decrypting: the id form is still the right answer for it.
+  ASSERT_TRUE(buildAssetIvForAsset(kFlagEncrypted, kEncCodeAssetId, hash, sizeof(hash), 7, legacy));
+  EXPECT_EQ(std::memcmp(legacy, expectLegacy, sizeof(legacy)), 0);
+
+  ASSERT_TRUE(buildAssetIvForAsset(static_cast<uint8_t>(kFlagEncrypted | kFlagContentIv), kEncCodeAssetId, hash,
+                                   sizeof(hash), 7, content));
+  EXPECT_EQ(std::memcmp(content, expectContent, sizeof(content)), 0);
 }
 
 TEST(WalletCryptoCtr, OffsetSplitsIntoABlockAndARemainder) {
@@ -1629,6 +1673,46 @@ TEST(WalletCryptoCtr, DecryptsRealGeneratorCiphertextToTheRightPlaintext) {
   EXPECT_GT(inked, kPanelX4.width * kPanelX4.height / 100);
   EXPECT_LT(inked, kPanelX4.width * kPanelX4.height / 5);
   EXPECT_TRUE(logicalBandIsBlank(plain.data(), kPanelX4, 772, 794));
+}
+
+TEST(WalletCryptoCtr, DecryptsRealGeneratorContentIvCiphertext) {
+  // The same asset as the test above, re-encrypted by the generator under the
+  // content IV (flags bit 1). Two fixtures on purpose: the legacy one proves a card
+  // written before 2026-11-23 still opens, this one proves the form written since
+  // then does -- and the device picks between them from the header alone.
+  const std::vector<uint8_t> file = encFixture("enc-contentiv/f3/f3e7250a407c088b.dat");
+  ASSERT_EQ(file.size(), 48032u) << "fixtures/enc-contentiv asset missing";
+
+  AssetHeader header;
+  ASSERT_TRUE(parseAssetHeader(file.data(), file.size(), header));
+  EXPECT_NE(header.flags & kFlagEncrypted, 0);
+  EXPECT_NE(header.flags & kFlagContentIv, 0) << "the generator must mark the IV form";
+
+  const std::vector<uint8_t> legacy = encFixture("enc/f3/f3e7250a407c088b.dat");
+  EXPECT_NE(std::memcmp(file.data() + kAssetHeaderBytes, legacy.data() + kAssetHeaderBytes,
+                        file.size() - kAssetHeaderBytes),
+            0)
+      << "the two IV forms must not produce the same ciphertext";
+
+  uint8_t iv[kAssetIvLen];
+  ASSERT_TRUE(buildAssetIvForAsset(header.flags, kEncCodeAssetId, header.sha256Prefix,
+                                   sizeof(header.sha256Prefix), header.version, iv));
+
+  std::vector<uint8_t> plain(file.begin() + kAssetHeaderBytes, file.end());
+  wallet::host::ctrXor(kTestKey, iv, 0, plain.data(), plain.size());
+
+  // Same plaintext as the legacy fixture -- one document, two encryptions, and this
+  // is what says the new derivation is right rather than merely different.
+  const HashResult full = checkPayloadHash(plain.data(), plain.size(), kEncCodePlainSha, header.sha256Prefix);
+  EXPECT_TRUE(full.ok) << "content-IV ciphertext did not decrypt to the known plaintext";
+
+  // And the old derivation on these bytes gives noise, which is why the flag has to
+  // be read rather than assumed.
+  uint8_t wrongIv[kAssetIvLen];
+  ASSERT_TRUE(buildAssetIv(kEncCodeAssetId, header.version, wrongIv));
+  std::vector<uint8_t> noise(file.begin() + kAssetHeaderBytes, file.end());
+  wallet::host::ctrXor(kTestKey, wrongIv, 0, noise.data(), noise.size());
+  EXPECT_FALSE(checkPayloadHash(noise.data(), noise.size(), kEncCodePlainSha, header.sha256Prefix).ok);
 }
 
 TEST(WalletCryptoCtr, EveryRowOffsetADesignBWindowUsesDecryptsIndependently) {

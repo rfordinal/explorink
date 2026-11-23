@@ -434,7 +434,9 @@ int renderGrey(const std::string& tree, const wallet::PageImageSpec& planes, con
         std::fprintf(stderr, "the grey planes asset is encrypted; pass --key\n");
         return 1;
       }
-      if (!wallet::buildAssetIv(planes.assetId, header.version, iv)) return 1;
+      if (!wallet::buildAssetIvForAsset(header.flags, planes.assetId, header.sha256Prefix,
+                                        sizeof(header.sha256Prefix), header.version, iv))
+        return 1;
     }
     if (!decodeGreyWindow(file, planes, panel, true, x, y, encrypted, key, iv, fromPlanes)) return 1;
 
@@ -481,7 +483,9 @@ int renderGrey(const std::string& tree, const wallet::PageImageSpec& planes, con
         std::fprintf(stderr, "the grey image asset is encrypted; pass --key\n");
         return 1;
       }
-      if (!wallet::buildAssetIv(image.assetId, header.version, iv)) return 1;
+      if (!wallet::buildAssetIvForAsset(header.flags, image.assetId, header.sha256Prefix,
+                                        sizeof(header.sha256Prefix), header.version, iv))
+        return 1;
     }
     if (!decodeGreyWindow(file, image, panel, false, x, y, encrypted, key, iv, fromImage)) return 1;
   }
@@ -845,7 +849,8 @@ int main(int argc, char** argv) {
       std::fprintf(stderr, "%s is encrypted; pass --key\n", path);
       return 1;
     }
-    if (!wallet::buildAssetIv(assetId.c_str(), header.version, iv)) {
+    if (!wallet::buildAssetIvForAsset(header.flags, assetId.c_str(), header.sha256Prefix,
+                                      sizeof(header.sha256Prefix), header.version, iv)) {
       std::fprintf(stderr, "cannot build an IV for %s\n", assetId.c_str());
       return 1;
     }
