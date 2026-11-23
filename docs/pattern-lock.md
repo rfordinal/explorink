@@ -174,18 +174,31 @@ Three things that frame changed, all of them layout:
 `../../docs/device-shots/2026-11-23-t5s3pro-pattern-gate-540x960.png` is the
 frame as the panel drew it, 1:1.
 
+**And on an X4 Pro the same day** (`b8:1f:3f:d4:89:bc`, 480x800, `env:x4pro`):
+the derived geometry lands on a second panel size with nothing changed, and a
+six-point walk plus CONFIRM unlocked. That board is the one T-265 is about --
+BACK and CONFIRM there are touch only, and this screen wants six buttons -- so
+the question was whether a rider can enter a vertical step at all.
+
+**They can, confirmed by thumb, not by code reading.** The side hint tabs are
+touch targets like the bottom boxes are: `MappedInputManager::hintBoxAt()` maps
+`sideHintBox(0)` to `BTN_UP` and `sideHintBox(1)` to `BTN_DOWN` wherever
+`TouchPolicy::touchHintBoxes()` holds. The maintainer tapped "Down" and kept
+tapping, and the frame afterwards shows six points in and the cursor where the
+taps put it --
+`../../docs/device-shots/2026-11-23-x4pro-pattern-gate-480x800.png`. So **T-265
+does not block this screen**: all four directions, BACK and CONFIRM are reachable
+on a board with two hardware keys.
+
 **Still not checked, and T-2079 is where it is tracked:**
 
-1. **Any other board.** Only `env:t5s3pro` has run this. The devel flag also
-   reaches `default` (ESP32-C3, 792x528), `sticky`, `x4pro` (800x480) and
-   `simulator`, and the geometry is derived per panel, so each is its own case.
+1. **The C3 line.** `env:default` builds clean (T15, 2026-11-23: RAM 18.2 %,
+   flash 57.2 %) and has never been on an X4 or an X3 panel -- 792x528 is the
+   third framebuffer geometry and the only one still unseen. The X3 was not
+   plugged in that day. `env:sticky` and `env:simulator` carry the flag too.
 2. **Ghosting.** A framebuffer read cannot show what the panel keeps. Whether a
    `FAST_REFRESH` per cursor move leaves the old ring visible is an eye
    question, and nobody has looked at the glass while walking a pattern.
-3. **The X4 Pro.** BACK and CONFIRM there are touch only (T-265) and this screen
-   assumes six buttons. It may be unusable on that board as written.
-4. **The side-button labels per board.** They were right here; the T5 S3 Pro's
-   four names for one key is a trap already paid for (`lilygo-t5s3-bringup.md`).
 
 ## The bench command
 
