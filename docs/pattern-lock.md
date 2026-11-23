@@ -72,8 +72,8 @@ with, and what makes guessing impractical is the caller's rate limiter
 
 ## What the hidden path buys
 
-The screen draws the grid, the cursor, and one dot per point entered. **It never
-draws the path.**
+The screen draws the grid, the cursor, and a segmented meter counting how many
+points are in. **It never draws the path.**
 
 What that protects: the pattern is not on the panel after the screen leaves. An
 e-ink panel holds its last frame with no power, so a device that is lost or stolen
@@ -141,8 +141,8 @@ read back over `CMD:SCREENSHOT`). What a frame actually showed:
 
 | Checked | Result |
 |---|---|
-| The screen draws at all | grid, cursor, progress row, status line, bottom hints, side hints |
-| A direction press moves the cursor one cell | yes, and the progress row gains a dot |
+| The screen draws at all | grid, cursor, meter, status line, bottom hints, side hints |
+| A direction press moves the cursor one cell | yes, and the meter gains a segment |
 | A press into a wall | nothing drawn, nothing counted -- three points stayed three at the right edge |
 | CONFIRM on a correct path | `unlocked on 4 points`, activity popped, caller resumed |
 | CONFIRM on a wrong path | bold "Wrong pattern", entry reset to the start cell |
@@ -162,6 +162,14 @@ Three things that frame changed, all of them layout:
    half a pitch under it, reading as a fifth row of the lattice. The pitch is
    `span / (cols + 2)` now, about half the width, and the row sits a full pitch
    below and is exactly as wide as the grid.
+4. That row was still a row of dots under a lattice of dots, so moving it was not
+   enough. It is a **segmented meter** now -- one pill-shaped outline in the
+   theme's own box idiom, one segment per possible point, filled left to right,
+   hairlines between the slots still to come. A box around the dots was tried
+   first and rejected on the sketch: it made them a tray of dots rather than a
+   different thing. **Changing the mark is what separates the two; the box is
+   what makes it look like a control.** Confirmed on the panel at three points
+   and at the full eight.
 
 `../../docs/device-shots/2026-11-23-t5s3pro-pattern-gate-540x960.png` is the
 frame as the panel drew it, 1:1.

@@ -31,7 +31,8 @@
 //
 // ## What is on screen, and what that does and does not protect
 //
-// The grid, the cursor, and one dot per point entered. **The path is not drawn.**
+// The grid, the cursor, and a segmented meter counting the points entered. **The
+// path is not drawn.**
 // That keeps the pattern off the panel after the screen leaves, ghosting included,
 // which matters on a device that gets lost or stolen with the last frame still
 // visible on an unpowered panel.
