@@ -63,9 +63,16 @@ struct FilePathResult {
   std::string path;
 };
 
+// One bit, on purpose: the gate screen reports whether it let the caller through
+// and nothing about the path that did it (PatternLockActivity.h).
+struct PatternLockResult {
+  bool unlocked = false;
+};
+
 using ResultVariant =
     std::variant<std::monostate, WifiResult, KeyboardResult, MenuResult, ChapterResult, PercentResult, IntervalResult,
-                 PageResult, ProgressChangeResult, NetworkModeResult, FootnoteResult, FilePathResult>;
+                 PageResult, ProgressChangeResult, NetworkModeResult, FootnoteResult, FilePathResult,
+                 PatternLockResult>;
 
 struct ActivityResult {
   bool isCancelled = false;
