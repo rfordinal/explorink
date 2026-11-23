@@ -236,11 +236,16 @@ factory-default X4 Pro, and the first version of this paragraph -- "T-265 does
 not block this screen" -- was true only of the mode that board happened to be
 in. Caught in review the same evening.
 
-That is what the screen's own touch controls are for (see "Controls" above). The
-claim now is narrower and testable: **on a board with two hardware keys the gate
-is usable in both touch modes** -- through the theme's hint boxes in
-`BUTTONS_ONLY`, through its own cell taps and boxes in `ANYWHERE`. The second
-half has not been on a panel yet.
+That is what the screen's own touch controls are for (see "Controls" above), and
+**both halves are now confirmed on that board** (2026-11-23, the touch row
+switched to `Anywhere` in Settings and switched back afterwards): the theme's
+hint boxes and side tabs disappear, the gate draws its own BACK and OK at the
+foot of the screen, a tap on the cell next to the cursor steps there, and BACK
+and OK answer a thumb. Four points were entered by tapping alone --
+`../../docs/device-shots/2026-11-23-x4pro-pattern-gate-touchmode-480x800.png`.
+
+So the claim is: **on a board with two hardware keys the gate is usable in both
+touch modes.** Confirmed by thumb in both, which is the only instrument for it.
 
 **Still not checked, and T-2079 is where it is tracked:**
 
