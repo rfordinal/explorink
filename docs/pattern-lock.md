@@ -54,6 +54,20 @@ The **start is fixed**, because it is the one point no button press produces. Le
 it be wherever the cursor rested last and the same four presses mean two different
 patterns on two days.
 
+The cells are numbered row by row, and a pattern is a path through them:
+
+```
+ 0  1  2  3
+ 4  5  6  7
+ 8  9  a  b
+ c  d  e  f
+```
+
+So `"0145"` is **malformed** -- cell 1 is row 0 column 1 and cell 4 is row 1
+column 0, which is a diagonal, and `isWellFormed()` refuses it. Two bench
+commands were typed that way on 2026-11-23 before anybody drew the grid out;
+the error message was right both times and the pattern was wrong.
+
 Encoding is one char per point, in order, start included: `'0'`-`'9'` then `'a'`-`'f'`
 for cells 0 to 15. `"048cdef"` is down the left column then along the bottom. That
 string is the only thing that leaves the component, and it is what a verifier
@@ -84,6 +98,28 @@ sentence that holds for the dot PIN holds harder here: **the pattern is not the
 strength.** What makes a wrap hard to attack is the device secret it is mixed
 with, and what makes guessing impractical is the caller's rate limiter
 (`../../../docs/wallet-plan.md`, and `WalletCrypto.h` on the wallet branch).
+
+## The standard system
+
+Android's pattern lock is the obvious predecessor and this screen is a
+deliberate variant of it, so the differences are worth naming. Both of the real
+ones fall out of the hardware rather than out of taste:
+
+- **No finger, so no lift.** On a phone, releasing the finger is the submit --
+  the gesture has an end built into it. Buttons have none, so the end has to be
+  a CONFIRM press or the auto-submit probe, and that single missing affordance
+  is what produced the whole attempt-accounting problem this screen was wrong
+  about twice (see "Counting attempts" above).
+- **The path is not drawn.** A phone is held close and put away in a pocket; an
+  e-ink panel keeps its last frame with no power, in a bag, in someone else's
+  hands.
+
+Everything else about how Android's version behaves -- how it counts a failed
+attempt, whether it allows a dot to be used twice, what it does about a stroke
+that passes over an unvisited dot -- is `[open]` here. It is widely described
+second hand and this repo does not cite memory: settle it by reading AOSP's
+`LockPatternView` / `LockPatternUtils` at a named commit before any of it is
+written down as fact or used to argue for a change.
 
 ## What the hidden path buys
 
