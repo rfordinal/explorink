@@ -45,10 +45,26 @@ points the rider never entered, and the path is the secret.
 
 ## What a pattern is
 
-A start cell plus 3 to 7 right-angle steps -- 4 to 8 points counting the start.
-No diagonals: a press moves one cell, and the hardware has four directions. A cell
-may be stepped on twice, because right-then-left comes back and forbidding that
-would both surprise a rider and shrink an already small space.
+A start cell plus right-angle steps, one cell per press. No diagonals: the
+hardware has four directions. A cell may be stepped on twice, because
+right-then-left comes back and forbidding that would both surprise a rider and
+shrink an already small space.
+
+**How many points is the caller's, not this file's**: `Config::minPoints` and
+`Config::maxPoints`, defaulting to 4 and 12. `patternlock::kMaxPoints` is only
+the path buffer's bound. Two callers want different things from the same screen
+and both are right:
+
+| Caller | Range | Why |
+|---|---|---|
+| bench harness (`CMD:PATTERNLOCK`) | 4 to 12, the file default | it drives any caller's pattern, so it must not be narrower than the widest of them |
+| the wallet (`WalletUnlockActivity`) | 8 to 12 | the path is a KDF password and the floor is a key's floor |
+| a future screen lock | its own call | a short gesture in front of a screen is not a key; 4 to 8 is defensible there and is not here |
+
+A caller that sets a range **must pass the same range to `isWellFormed()`** when
+it validates a stored pattern. The two numbers disagreeing is the same class of
+failure as a wrong start cell: a stored pattern the gate will never let a rider
+finish.
 
 The **start is fixed**, because it is the one point no button press produces. Let
 it be wherever the cursor rested last and the same four presses mean two different
@@ -80,24 +96,41 @@ Enumerated, not estimated (`test/pattern_lock/PatternLockTest.cpp`, the three
 bound moves -- the edge row had no test behind it until a review noticed this
 sentence claimed otherwise):
 
-| Start | Distinct patterns, 4 to 8 points | Bits |
-|---|---|---|
-| corner | 2,810 | ~11.5 |
-| edge | 4,545 | ~12.1 |
-| middle four | 7,350 | ~12.8 |
+| Start | 4 to 8 points | Bits | 8 to 12 points | Bits |
+|---|---|---|---|---|
+| corner | 2,810 | ~11.5 | 307,970 | ~18.2 |
+| edge | 4,545 | ~12.1 | 498,305 | ~18.9 |
+| middle four | 7,350 | ~12.8 | 806,270 | ~19.6 |
 
 So the default start is `kDefaultStart`, row 1 column 1 -- interior. The first
 step branches four ways there instead of two, and that is 2.6x a corner start for
 no cost at all.
 
-**12.8 bits is about a four-digit decimal PIN.** The wallet's dot PIN
-(`WalletUnlockActivity`) is 4^6 to 4^10, around 20 bits, because every press there
-is a free choice and no grid wall ever refuses one. A grid is easier to remember
-and smaller. That trade is what this screen is, and it is a trade -- so the same
-sentence that holds for the dot PIN holds harder here: **the pattern is not the
-strength.** What makes a wrap hard to attack is the device secret it is mixed
-with, and what makes guessing impractical is the caller's rate limiter
-(`../../../docs/wallet-plan.md`, and `WalletCrypto.h` on the wallet branch).
+**Each extra point is worth about +1.7 bits** -- four directions less the walls,
+a branching factor of about 3.24. `scripts/pattern_space.py` prints both tables
+and the per-length breakdown; it is the same enumeration the tests run, so a
+number here can be re-derived in a second rather than trusted.
+
+**The floor matters more than the total**, because an attacker searches the
+shortest patterns first and nothing stops a rider picking one. From an interior
+cell:
+
+| Points | Presses | Walks | Bits |
+|---|---|---|---|
+| 4 | 3 | 46 | 5.5 |
+| 8 | 7 | 5,094 | 12.3 |
+| 12 | 11 | 172,646 | 17.4 |
+
+That table is why the wallet asks for 8 to 12 rather than taking the default.
+It replaced a 6-to-10-symbol dot PIN worth 12.0 to 20.0 bits, and 4 points would
+have dropped the floor by six and a half bits while `docs/wallet-crypto.md` still
+promised the old number. 8 to 12 points is 7 to 11 presses -- one more than the
+PIN at each end -- for 12.3 to 19.6 bits.
+
+**The pattern is still not the strength.** What makes a wrap hard to attack is
+the device secret it is mixed with, and what makes guessing impractical is the
+caller's rate limiter (`WalletCrypto.h`, "Why 8 to 12 and not the gate's own
+4 to 8"; `../../../docs/wallet-plan.md`).
 
 ## The standard system
 
@@ -132,9 +165,11 @@ would otherwise be handed over with the secret still visible, ghosting included.
 
 What it does **not** protect: someone watching the entry. The cursor has to be
 visible or the grid is pointless, and a watcher who sees every press has the
-pattern. The dot PIN this replaces could claim more -- "a shoulder looking at the
-panel must learn nothing" (`WalletUnlockActivity.h`) -- and a grid cannot. Anyone
-weighing the two screens should weigh that, not just which is easier to enter.
+pattern. The dot PIN this replaced could claim more -- "a shoulder looking at the
+panel must learn nothing" -- and a grid cannot. That claim was **given up, not
+forgotten**, when the wallet moved to this screen on 2026-11-24: anybody reading
+`docs/wallet-crypto.md` is reading about a gate a watcher can read off the panel,
+and nothing in the product text may say otherwise.
 
 ## The verifier contract
 
@@ -143,7 +178,10 @@ The screen owns no secret. The caller hands it:
 ```cpp
 PatternLockActivity::Config config;
 config.title = tr(STR_WALLET_UNLOCK);
-config.isLockedOut = [] { return wallet::pinIsLockedOut(wallet::KeyStore::failures()); };
+config.minPoints = wallet::kPatternMinPoints;   // 8: the path is a KDF password
+config.maxPoints = wallet::kPatternMaxPoints;   // 12
+config.startCell = wallet::KeyStore::patternStart();
+config.isLockedOut = [] { return wallet::isLockedOut(wallet::KeyStore::failures()); };
 pushActivity(std::make_unique<PatternLockActivity>(
     renderer, mappedInput, config,
     [](const char* path, bool speculative) { ... }));
@@ -220,11 +258,19 @@ verifier is then called with `speculative = true`, and both sides of that matter
 
 ## Verified, and not
 
-**Host-tested, 2026-11-23**: 17 tests in `test/pattern_lock/`, all green -- the
-grid walk, walls, revisits, the 8-point cap, undo down to the start, the encoding,
-the wipe, `isWellFormed` against both its accept and its reject cases, every path
-the screen can produce validating, the two space counts, and no encoding collision
-across all 7,350 paths.
+**Host-tested, 2026-11-23, extended 2026-11-24**: 21 tests in
+`test/pattern_lock/`, all green -- the grid walk, walls, revisits, the length cap,
+undo down to the start, the encoding, the wipe, `isWellFormed` against both its
+accept and its reject cases and against a caller's own range, a caller's range
+being clamped rather than obeyed, every path the screen can produce validating,
+four space counts, and no encoding collision.
+
+**The producer is walked against its own validator exhaustively, and the count is
+exact**: all 808,526 paths of 4 to 12 points from an interior start are generated
+by `Entry` and each one fed to `isWellFormed()`. An exact count rather than a
+floor, because the whole point of that test is that a disagreement between the
+two halves is a lockout, and "enough of them agreed" is not an assertion that
+catches one.
 
 **And a gap worth stating rather than hiding: none of them touch the screen.**
 `test/pattern_lock/` exercises `PatternLock.h`, which is grid arithmetic. The
@@ -233,6 +279,14 @@ attempt accounting, the auto-submit path and the lifecycle live in
 only by hand over `CMD:PATTERNLOCK` plus `CMD:BUTTON` on a board. That is exactly
 where both reviews found their worst defects, and it is why they were found by
 reading rather than by a red test. T-2083.
+
+**Not on any panel, 2026-11-24: the wallet's 8-to-12 range.** Every frame below
+was taken with 4-to-8 patterns, before `Config::minPoints`/`maxPoints` existed.
+A twelve-segment meter has never been drawn, and neither has this gate with a
+real `tryUnlock()` behind it -- that verifier blocks the loop for 905 ms per
+CONFIRM and nothing has measured what the panel does during it. Both are
+hardware-pass work on `wallet-pattern-gate`, on one board per environment the
+wallet reaches (`default`, `x4pro`, `t5s3pro`).
 
 **On the panel, 2026-11-23, T5 S3 Pro** (board `7c:2c:67:8a:4c:b4`, 540x960,
 `env:t5s3pro`, driven by `CMD:PATTERNLOCK` + `CMD:BUTTON` with the framebuffer
@@ -248,7 +302,7 @@ read back over `CMD:SCREENSHOT`). What a frame actually showed:
 | Auto-submit | the last point unlocked with no CONFIRM, on a 4-point and a 6-point pattern |
 | A speculative miss | serial said `PATTERNLOCK_TRY:auto:wrong`; the panel still read "4 of 8 points" and said nothing |
 | A candidate abandoned with BACK | one `PATTERNLOCK_ENTRY_ENDED`, and the next candidate's BACK another -- the backtracking hole, confirmed closed on both boards 2026-11-23 |
-| A wrong walk reaching the eighth point | one `PATTERNLOCK_ENTRY_ENDED`, "Wrong pattern" on the panel, meter back to the start |
+| A wrong walk reaching the last point | one `PATTERNLOCK_ENTRY_ENDED`, "Wrong pattern" on the panel, meter back to the start |
 | Side hints | "Up"/"Down" tabs clipped by the panel edge exactly as the map's own "+"/"--" are, so house style and not a defect |
 
 Three things that frame changed, all of them layout:
@@ -328,6 +382,38 @@ construction from `buttonHintsRect()` and by luck from the side boxes.
    `FAST_REFRESH` per cursor move leaves the old ring visible is an eye
    question, and nobody has looked at the glass while walking a pattern.
 
+## The first real caller: the wallet
+
+Until 2026-11-24 the only thing that pushed this screen was the bench harness.
+The document wallet is the first caller that brings a secret, and the shape of
+that call is what the Config fields were built for.
+
+`WalletUnlockActivity` keeps the half this screen refuses to hold: the wrap, the
+persisted failure count, the rate limiter, the start cell, and the item a
+`CMD:GOTO_WALLET 0 3` asked for before the gate appeared. It pushes the gate and
+gets one bit back. The verifier is `wallet::KeyStore::tryUnlock()` -- the same
+call `CMD:WALLETUNLOCK` drives, which is what keeps the serial command a test
+driver rather than a test bypass.
+
+Three things that call had to settle, and every one of them is a field rather
+than a change to this screen:
+
+- **The range.** 8 to 12, not the default, because the path is the KDF password
+  and the floor is a key's floor. See "How large the space is".
+- **The start cell.** `Config::startCell` comes from NVS (`pstart`), written at
+  provisioning. The wrap says nothing about the path that made it, so without a
+  stored start the gate would open on `kDefaultStart` and refuse every pattern a
+  rider can walk, permanently. `KeyStore::provision()` validates with
+  `isWellFormed()` against the start it is about to store, so the two cannot
+  disagree.
+- **Auto-submit off.** The verifier is a 905 ms PBKDF2. Probing it after every
+  point from the eighth would spend four seconds against a five-second task
+  watchdog. `onEntryEnded` is therefore unused here: with auto-submit off every
+  verifier call is a CONFIRM and `tryUnlock()` counts it.
+
+What this screen gave up to take the job is written in "What the hidden path
+buys": the dot PIN could claim a shoulder learns nothing, and a grid cannot.
+
 ## The bench command
 
 `CMD:PATTERNLOCK <pattern> [auto]` pushes the screen with a literal-compare
@@ -335,10 +421,18 @@ verifier -- the host supplies the pattern, so the screen can be put on a panel
 before any caller exists.
 
 ```
-CMD:PATTERNLOCK 5678        -> PATTERNLOCK_OK:4 points, start 5, auto 0
-CMD:PATTERNLOCK 5678 auto   -> same, auto-submit on
+CMD:PATTERNLOCK 567b        -> PATTERNLOCK_OK:4 points, start 5, auto 0
+CMD:PATTERNLOCK 567b auto   -> same, auto-submit on
+CMD:PATTERNLOCK 567ba98c    -> PATTERNLOCK_OK:8 points, start 5, auto 0
 CMD:PATTERNLOCK 0145        -> PATTERNLOCK_ERR:malformed   (1 to 4 is a diagonal)
+CMD:PATTERNLOCK 5678        -> PATTERNLOCK_ERR:malformed   (7 to 8 jumps a row)
 ```
+
+That last line **was this doc's own worked example** until 2026-11-24, written
+as a success. Cell 7 is row 1 column 3 and cell 8 is row 2 column 0, so it is
+the exact error the paragraph above it warns about, in the paragraph that warns
+about it. The grid is drawn out in "What a pattern is" for a reason: reading
+`5678` as four adjacent cells is what everybody does, and the numbers wrap.
 
 Every attempt answers `PATTERNLOCK_TRY:confirm:ok` or `...:wrong`, and a
 speculative probe answers `PATTERNLOCK_TRY:auto:...`, so a host can see what the

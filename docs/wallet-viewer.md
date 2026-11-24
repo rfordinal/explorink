@@ -12,8 +12,12 @@ Three screens:
 - `WalletViewActivity` -- one asset, one whole screen (`src/activities/wallet/WalletViewActivity.h`).
 - `WalletCodeActivity` -- one machine-readable code, fullscreen, meant to be read
   by a scanner off the glass (`src/activities/wallet/WalletCodeActivity.h`). P2.
-- `WalletUnlockActivity` -- the direction PIN, the only way into an encrypted
-  wallet (`src/activities/wallet/WalletUnlockActivity.h`). P3.
+- `WalletUnlockActivity` -- the gate host, the only way into an encrypted wallet
+  (`src/activities/wallet/WalletUnlockActivity.h`). It owns the wrap, the rate
+  limiter and the stored start cell, and pushes the shared `PatternLockActivity`
+  to do the entering; it draws only the two dead ends that have no pattern to
+  enter. Was a directional PIN with its own keypad until 2026-11-24
+  (`pattern-lock.md`, "The first real caller"). P3.
 
 **Encryption is a separate document.** The crypto path, the key's lifetime, the
 threat boundary, the provisioning test path and the PBKDF2 measurement are
@@ -1037,7 +1041,7 @@ Strings: `lib/I18n/translations/english.yaml`, `STR_WALLET_*`. Mapping:
 | a code asset that is not `assetType` 4 | "This code file is damaged" |
 | a code whose payload does not hash | "This code does not match its checksum" + "Not shown: a wrong code is worse than none" |
 | an unverified code with nowhere to put the marker | "No room to mark this code unverified" |
-| an encrypted tree and no key held | "Wallet is locked" -- normally unreachable, the PIN screen comes first |
+| an encrypted tree and no key held | "Wallet is locked" -- normally unreachable, the gate comes first |
 | the manifest's GCM tag does not verify | "Wrong key, or the wallet list was altered" |
 | an encrypted manifest over the 32 KB cap, or no heap for it | "Wallet list is too big for this device" |
 | an asset that did not decrypt to its plaintext | "This page did not decrypt" |
@@ -1366,11 +1370,12 @@ Heap, **derived from the type sizes, not measured on hardware**:
   of it scans off e-ink glass is **completely open** -- see "Nothing has been
   scanned off the panel" -- which is no longer true, see "Scanned off the panel".
 - **P3, encryption: written and compiled, never run on hardware.** The CTR
-  arithmetic, the manifest envelope, the KEK formula, the PIN codec and the rate
-  limiter are **host-tested** against verbatim encrypted generator output with an
-  independent crypto library, and an encrypted tree **renders byte-identically** to
-  its cleartext twin through `wallet_preview --key`. mbedtls's own calls, NVS, the
-  unlock screen and the PBKDF2 timing are **unverified** --
+  arithmetic, the manifest envelope, the KEK formula, the pattern codec and the
+  rate limiter are **host-tested** against verbatim encrypted generator output with
+  an independent crypto library, and an encrypted tree **renders byte-identically**
+  to its cleartext twin through `wallet_preview --key`. mbedtls's own calls, NVS,
+  the gate with a real verifier behind it and the PBKDF2 timing are
+  **unverified** --
   [`wallet-crypto.md`](wallet-crypto.md) says exactly what and how to settle it.
 - Still open after the on-panel session: whether FIT is legible in daylight,
   whether HALF on every page turn is too slow to page through a document, the real

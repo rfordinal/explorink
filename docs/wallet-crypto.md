@@ -20,9 +20,10 @@ Two cases, and they are not close to each other:
   the panel geometry. So: that this is an ExplorInk wallet, which device it was
   built for, roughly how many pages, and which assets are codes.
 - **Device in hand with a USB cable: readable.** The wrapped key is in NVS, NVS is
-  plaintext flash, and `esptool` dumps flash. The PIN slows a person pressing
+  plaintext flash, and `esptool` dumps flash. The pattern slows a person pressing
   buttons; it does not slow anybody who takes the flash image away and attacks the
-  wrap offline.
+  wrap offline. The start cell (`pstart`) is in that same plaintext flash, which
+  costs nothing -- it is on the panel before the first press anyway.
 
 Closing the second case needs flash encryption plus an irreversible eFuse burn,
 which breaks the reflash workflow this project runs on (`CLAUDE.md`, "Never flash
@@ -87,7 +88,9 @@ device has it before it has decrypted anything, and it changes exactly when the
 bytes change. Identical payloads still produce identical ciphertext -- no new leak,
 the plaintext hash is in the clear either way.
 
-**Proved end to end on an X4 Pro, 2026-11-23.** `tools/walletgen.py --demo
+**Proved end to end on an X4 Pro, 2026-11-23**, on the directional PIN this
+screen no longer has -- the crypto below is unchanged by the gate swap, the
+screen in it is not. `tools/walletgen.py --demo
 --new-key --pin UDLRUD` wrote an encrypted tree whose three assets all carry
 `flags=0x03`; the files went to the card over BLE (`tools/blepush.py`, paths
 relative to `/explorink`), `CMD:WALLETPROVISION` stored the wrap, 18,000 PBKDF2
@@ -139,15 +142,23 @@ the three agree.
 
 ## Driving the whole chain from a host
 
-The bench path, end to end, as it was run on 2026-11-23. **`ENABLE_WALLET_TEST_CMDS`
+**This recipe was rewritten for the pattern gate on 2026-11-24 and has not been
+run since.** The chain is the same; the two commands that took a PIN take a
+pattern now. A dated run of the PIN version is recorded above and stays there as
+evidence of what the panel did on 2026-11-23, not as instructions.
+
+The bench path, end to end. **`ENABLE_WALLET_TEST_CMDS`
 lives only in `env:default`** (`platformio.ini`), so every other environment needs
 it added for the run and taken away afterwards -- a release build must never carry
 these commands.
 
 ```bash
-# 1. a tree, its key and its PIN. --panel picks the board: x4, x3 or t5s3.
+# 1. a tree, its key and its pattern. --panel picks the board: x4, x3 or t5s3.
+#    567ba98c is right, right, down, left, left, left, down from cell 5 --
+#    eight cells, the wallet's floor. walletgen refuses a path the grid cannot
+#    walk, so a typo is caught before the card is written.
 python3 tools/walletgen.py --demo --title "Bench" --panel x4 \
-  --out /tmp/wt/tree --new-key /tmp/wt/key.hex --pin UDLRUD \
+  --out /tmp/wt/tree --new-key /tmp/wt/key.hex --pattern 567ba98c \
   --provision-file /tmp/wt/provision.json
 
 # 2. a build that answers the wallet commands, on a board that is not env:default
@@ -162,14 +173,16 @@ for f in /tmp/wt/tree/*/*.dat; do
 done
 
 # 4. the wrap, then the key in the session. Both take ~1 s at 18,000 iterations.
-#    key, PIN, salt and iteration count all come out of provision.json.
-CMD:WALLETPROVISION <keyhex64> UDLRUD <salthex32> 18000
-CMD:WALLETUNLOCK UDLRUD
+#    key, pattern, salt and iteration count all come out of provision.json.
+CMD:WALLETPROVISION <keyhex64> 567ba98c <salthex32> 18000
+CMD:WALLETUNLOCK 567ba98c
+# CMD:WALLETSTATUS now reports pattern_start=5, which is what the gate opens on.
 ```
 
 **The last step has a version with no command in it at all**, and it is the one
-worth running: reboot the board, open Home > Wallet, and type the PIN on the
-buttons -- `up down left right up down`, then confirm. That path uses nothing a
+worth running: reboot the board, open Home > Wallet, and walk the pattern on the
+buttons. For `567ba98c` the cursor starts on cell 5 and the presses are
+`right right down left left left down`, then confirm. That path uses nothing a
 release build lacks, which is why it is the one that proves the feature rather
 than the plumbing.
 
@@ -243,19 +256,27 @@ field.
 ## The key's lifetime
 
 ```
-NVS:  dsecret 32 B | salt 16 B | iters u32 | wrap 60 B | fails u8
+NVS:  dsecret 32 B | salt 16 B | iters u32 | pstart u8 | wrap 60 B | fails u8
 RAM:  K, while unlocked, in wallet::Session
 ```
 
-`KEK = PBKDF2-HMAC-SHA256(password = PIN bytes || deviceSecret, salt, iters)`,
+`KEK = PBKDF2-HMAC-SHA256(password = pattern bytes || deviceSecret, salt, iters)`,
 and the wrap is AES-256-GCM over K under that KEK (`WalletKeyStore.cpp`).
 
 - **`deviceSecret` is 32 random bytes made on this device** the first time anything
   provisions it, and it never leaves. That is why the laptop cannot compute the KEK
   and never sees the wrap: a leaked `provision.json` is a leaked key, but it is not
   a wrap, and it is useless against a different device.
-- **PIN bytes are the ASCII letters** `U`/`D`/`L`/`R`, exactly as `provision.json`
-  spells them. A phone app has to send the same spelling.
+- **Pattern bytes are the gate's own encoding**: lower-case `0`-`9` then `a`-`f`,
+  one character per grid cell visited, start cell first, exactly as
+  `provision.json` spells it. `patternlock::Entry::encode()` produces that string
+  and nothing translates it, so a phone app has to send the same spelling.
+- **`pstart` is the start cell**, stored beside the salt because the wrap says
+  nothing about the path that made it. It is **not a secret** -- the gate draws
+  its cursor there before the first press -- but it has to be stored, because a
+  gate opened on any other cell refuses every pattern a rider can walk, for ever
+  (`src/components/lock/PatternLock.h`, `isWellFormed`). Provisioning reads it off
+  the pattern it is wrapping, so the two cannot disagree.
 - K is set on a successful unwrap and **cleared explicitly** on every one of:
   sleep (`enterDeepSleep()`, first thing it does), `CMD:WALLETLOCK`, a fresh
   provisioning, and **120 seconds of idle** with a wallet screen up
@@ -268,24 +289,45 @@ and the wrap is AES-256-GCM over K under that KEK (`WalletKeyStore.cpp`).
   destructor is a promise about a code path, and the sleep path is not one to make
   promises about.
 
-The typed PIN is wiped after every attempt and again in `onExit()`
-(`WalletUnlockActivity.cpp`), and the KDF password buffer -- which holds the PIN
+The walked pattern is wiped by the gate after every attempt
+(`PatternLockActivity::submit()`), the normalised copy is wiped by
+`KeyStore::tryUnlock()`, and the KDF password buffer -- which holds the pattern
 next to the device secret -- is wiped before `deriveKek()` returns.
 
-## What the PIN is for
+## What the pattern is for
 
-Six to ten of four symbols is 4^6 to 4^10, i.e. **2^12 to 2^20**. That is small, and
-it is not the strength:
+A walk of 8 to 12 cells on a 4x4 grid is **806,270 paths from an interior start,
+about 2^19.6** -- counted by `scripts/pattern_space.py` and pinned by
+`test/pattern_lock/`. That is small, and it is not the strength:
 
 - against **guessing on the device**, the rate limiter is the defence;
 - against **an attacker with the flash image**, the device secret is what makes the
   wrap worth anything, and PBKDF2 iterations only add a constant factor. That case
   is out of scope anyway (see the threat boundary).
 
-A direction sequence rather than digits because the device has four direction
-buttons and no keyboard, and because a rider enters it in gloves at a roadside. The
-screen shows **dots only** -- one per symbol, never which symbol -- so a shoulder
-learns the length and no more.
+A grid walk rather than digits because the device has four direction buttons and
+no keyboard, and because a rider enters it in gloves at a roadside.
+
+### What replaced what, and what was given up
+
+Until 2026-11-24 this was a **directional PIN**: 6 to 10 presses of U/D/L/R, so
+4^6 to 4^10, 12.0 to 20.0 bits. It was replaced by `PatternLockActivity`, the
+shared gate (`docs/pattern-lock.md`), which the whole device can reuse and which
+a second caller -- a screen lock -- already wants.
+
+The length range was chosen to keep the numbers above rather than to match the
+gate's own default. 8 to 12 points is 7 to 11 presses, one more than the PIN at
+each end, for **12.3 to 19.6 bits**; the gate's default floor of 4 points is 46
+walks, 5.5 bits, which would have been a silent loss of six and a half bits
+against a doc that still promised twelve.
+
+**One property was given up and is not coming back.** The dot PIN drew one dot
+per symbol and never which symbol, so a shoulder learned the length and no more.
+A grid cannot do that: the cursor has to be visible or the grid is pointless, and
+a watcher who sees every press has the pattern. Nothing in the product text may
+claim otherwise. `docs/pattern-lock.md`, "What the hidden path buys", has the
+rest, including that `CMD:SCREENSHOT` is ungated and puts the cursor in a
+framebuffer a host can poll (T-2081).
 
 ### Rate limiting is a UX defence, not a cryptographic one
 
@@ -300,13 +342,20 @@ learns the length and no more.
 | 9 | 30 s (capped, so the screen never looks hung) |
 | 10 | **locked out**: the wrap is refused until the device is provisioned again |
 
-`pinFailureDelayMs()` / `pinIsLockedOut()`, `WalletCrypto.h`. The counter lives in
+`unlockFailureDelayMs()` / `isLockedOut()`, `WalletCrypto.h`. The counter lives in
 NVS and is written **before** the next attempt is allowed, so pulling the power
 mid-guess does not buy a free retry -- and the delay earned by a past session is
-applied again when the unlock screen opens.
+applied again when the gate opens.
 
 It slows a person at the device. It does nothing about the flash-image case, and
-the hard stop at ten exists precisely because a 2^12 PIN loses to unlimited tries.
+the hard stop at ten exists precisely because a 2^19.6 pattern loses to unlimited
+tries.
+
+**Auto-submit is off for this gate**, which is a limiter question and not a
+comfort one: with it on, the gate probes the verifier after every point and a
+single walk yields several candidates for one counted attempt
+(`docs/pattern-lock.md`, "Counting attempts"). It would also run a 905 ms PBKDF2
+per probe, four seconds against a five-second task watchdog.
 
 ## The test commands, and the flag that keeps them out of a release
 
@@ -317,13 +366,14 @@ set in `[env:default]` and in no release environment** -- `gh_release`,
 carry them (`platformio.ini`, `src/main.cpp`).
 
 ```
-CMD:WALLETPROVISION <keyhex64> <pin> <salthex32> <iters> [force]
+CMD:WALLETPROVISION <keyhex64> <pattern> <salthex32> <iters> [force]
                       -> WALLETPROVISION_OK iters=50000 provision_us=<n>
-CMD:WALLETUNLOCK <pinsymbols>
+CMD:WALLETUNLOCK <pattern>
                       -> WALLETUNLOCK_OK unwrap_us=<n>
                       -> WALLETUNLOCK_ERR <reason> attempts=<n> of 10 wait_ms=<n>
 CMD:WALLETSTATUS      -> WALLETSTATUS provisioned=1 unlocked=0 attempts=0 of 10
                          wait_ms=0 manifest=enc items=-1 idle_left_ms=0 iters=50000
+                         pattern_start=5
 CMD:WALLETLOCK        -> WALLETLOCK_OK was_unlocked=1
 CMD:WALLETPBKDF2 <n>  -> WALLETPBKDF2_OK iters=n us=<n> ms=<n> iters_per_s=<n>
 ```
@@ -336,8 +386,9 @@ compile-out, not a runtime `if`.
 
 **The trade in that flag, stated because it is a real one.** The commands are ON in
 the environment everybody builds and flashes day to day, not opt-in through
-`platformio.local.ini` like the grayscale bench. Reason: PIN entry is four physical
-buttons, so without them the entire list under "What the host tests cannot reach"
+`platformio.local.ini` like the grayscale bench. Reason: pattern entry is a walk
+driven by four physical buttons, so without them the entire list under "What the
+host tests cannot reach"
 stays unreached unless a person is standing at the device -- and a verification path
 that needs an untracked file edited first is one that stops being run. What it costs
 is that a **dev** device accepts "unlock this wallet" over USB, which is already
@@ -346,19 +397,32 @@ release build has neither the commands nor that exposure.
 
 ### CMD:WALLETUNLOCK drives the real path
 
-It calls `KeyStore::tryUnlock()` -- **the same function the PIN screen calls**, with
-the same unwrap, the same rate limiter and the same session. That is deliberate: a
-test command that installed K directly would verify nothing about the thing it is
-meant to verify, and the paths could then drift without anybody noticing.
+It calls `KeyStore::tryUnlock()` -- **the same function the gate's verifier
+calls**, with the same unwrap, the same rate limiter and the same session. That is
+deliberate: a test command that installed K directly would verify nothing about
+the thing it is meant to verify, and the paths could then drift without anybody
+noticing.
 
-So a wrong PIN over serial **consumes an attempt**, gets the same refusal a person
-gets, and moves the same persisted counter. `attempts=<n> of 10` and `wait_ms=<n>`
-come out of the reply, so the limiter can be walked from a script: three free, then
-1 s, 2, 4, 8, 16, 30 (capped), then `locked_out` at ten. The reasons are stable
-one-word tokens -- `wrong_pin`, `rate_limited`, `locked_out`, `not_provisioned`,
-`malformed_pin` -- and they are part of the command's contract, pinned by
-`WalletUnlockOutcomes.EveryResultHasItsOwnStableToken`. `malformed_pin` costs no
-attempt: a typo is not a guess.
+So a wrong pattern over serial **consumes an attempt**, gets the same refusal a
+person gets, and moves the same persisted counter. `attempts=<n> of 10` and
+`wait_ms=<n>` come out of the reply, so the limiter can be walked from a script:
+three free, then 1 s, 2, 4, 8, 16, 30 (capped), then `locked_out` at ten. The
+reasons are stable one-word tokens -- `wrong_pattern`, `rate_limited`,
+`locked_out`, `not_provisioned`, `malformed_pattern` -- and they are part of the
+command's contract, pinned by
+`WalletUnlockOutcomes.EveryResultHasItsOwnStableToken`. `malformed_pattern` costs
+no attempt: a typo is not a guess.
+
+**`wrong_pin` and `malformed_pin` were the old spellings**, renamed with the gate
+on 2026-11-24. Free, because this command is `env:default` only and has never
+been in a release image -- which is not the same scope as `ENABLE_WALLET` itself,
+which is in `base` and does reach one.
+
+**The argument is the encoded path, start cell first.** A host cannot guess the
+start cell, because it is the one character no button press produces, so
+`CMD:WALLETSTATUS` prints it as `pattern_start` (`-1` when this device has none).
+`CMD:WALLETPROVISION` refuses a path the grid cannot walk, and says so differently
+from a bad alphabet, because a diagonal and a typo are different mistakes to fix.
 
 `not_provisioned` prints a second line saying to run `CMD:WALLETPROVISION` first.
 
@@ -371,7 +435,8 @@ reset it -- locking must not be a way to clear a penalty.
 
 One line: provisioned, unlocked, the attempt count and the cap, the delay being
 enforced, which manifest is on the card (`enc` / `json` / `none`), the item count,
-the idle time left on the key, and the provisioned iteration count.
+the idle time left on the key, the provisioned iteration count, and the stored
+pattern start cell.
 
 `items=-1` means **not knowable right now**, not zero -- an encrypted tree with no
 key held cannot be counted, because the titles are inside the manifest. Two
@@ -384,7 +449,7 @@ proving the unlock path twice in one session needs to tell those apart.
 
 ## Provisioning: a test path, and it says so
 
-The wallet key and the PIN are supposed to arrive from the phone over BLE (P4/P6).
+The wallet key and the pattern are supposed to arrive from the phone over BLE (P4/P6).
 That app does not exist, so the laptop writes `provision.json` and
 `CMD:WALLETPROVISION` (above) pushes it in.
 
@@ -395,13 +460,20 @@ provisioning lands.
 
 It **refuses an already provisioned device** unless the fifth argument is `force`:
 overwriting a wrap makes every asset already on the card unreadable for ever, and
-that has to be asked for, not defaulted into. A malformed key, salt, PIN or
+that has to be asked for, not defaulted into. A malformed key, salt, pattern or
 iteration count is refused with a usage line -- never zero-padded into a key that
 half works. A successful provisioning drops any session key, because it may be a
 different wallet.
 
-`--force`-style overwrite, a bad hex length and a short PIN are all covered by the
-host tests; the NVS write itself is not (see below).
+**It also refuses a pattern the gate could not walk**, and that refusal is not a
+tidiness check: a wrap derived from a path nobody can enter is a wallet that
+opens for no one, with no way back. It is the only moment that can be caught,
+because it is the moment the device decides what it will later demand. The walk
+check and the alphabet check give different messages -- a diagonal and a typo are
+different mistakes to fix.
+
+`--force`-style overwrite, a bad hex length, a short pattern and an unwalkable
+one are all covered by the host tests; the NVS write itself is not (see below).
 
 ## The PBKDF2 measurement: the command exists, the number does not
 
@@ -443,7 +515,7 @@ flash for free, attributable to a screen rather than to whatever the 10-second `
 line happened to catch:
 
 ```
-WALLETPIN  heap on the unlock screen: <free>, <largest block>
+WALLETGATE heap on the gate: <free>, <largest block>
 WALLET     heap with the browse list up (encrypted manifest): <free>, <largest block>
 ```
 
@@ -481,9 +553,11 @@ asset, built with the committed non-secret test key):
   ciphertext bit, a flipped tag bit and the wrong key -- each proved, not assumed;
 - the envelope refusing wrong magic, an unknown version, a truncated file and a
   spliced `plaintextLen`;
-- the KEK password being PIN-then-secret, the wrap round-tripping, and the unwrap
-  **failing** for a wrong PIN and for the same PIN on a different device secret;
-- the PIN normaliser, the rate-limit table, the hex decoder's exact-length rule and
+- the KEK password being pattern-then-secret, the wrap round-tripping, and the
+  unwrap **failing** for a wrong pattern and for the same pattern on a different
+  device secret;
+- the pattern normaliser, the walk check that stops provisioning making an
+  unopenable wallet, the rate-limit table, the hex decoder's exact-length rule and
   `secureWipe()`.
 
 The host binds that shared arithmetic to **OpenSSL**; the device binds it to
@@ -499,9 +573,16 @@ hardware.
   -- **read off the source, never executed here**;
 - NVS: every `Preferences` call, the device secret's first generation, and whether
   the failure counter survives a power cycle in practice;
-- the unlock screen's *drawing*: dots, the delay message, the lockout message, and
-  that the PIN is never spelled on the panel. Its *logic* is now reachable from a
-  host through `CMD:WALLETUNLOCK`, which runs the same `KeyStore::tryUnlock()`;
+- the gate's *drawing* with a real verifier behind it: the twelve-segment meter,
+  the delay message, the lockout message, and what the panel does during the
+  905 ms the verifier blocks for. Its *logic* is reachable from a host through
+  `CMD:WALLETUNLOCK`, which runs the same `KeyStore::tryUnlock()`, but **no board
+  has drawn this gate with that verifier attached** (`docs/pattern-lock.md`,
+  "Verified, and not");
+- the two dead-end screens `WalletUnlockActivity` still draws itself: no wrap on
+  this device, and already locked out;
+- the stored start cell surviving a power cycle, and `forgetWrap()` taking it
+  with the wrap;
 - `esp_fill_random`'s quality;
 - the PBKDF2 timing, which is the whole point of the command above;
 - the real heap figures.
@@ -512,9 +593,13 @@ hardware.
   Nothing here diverges from it; everything in it that this firmware reads was
   checked against real generator bytes.
 - CTR arithmetic, the IV, the offset property, the envelope, the KEK password, the
-  PIN codec, the rate-limit table: **host-tested** against verbatim generator output
-  with an independent crypto library, 14 cases, and every failure path proved to
+  pattern codec, the rate-limit table: **host-tested** against verbatim generator
+  output with an independent crypto library, and every failure path proved to
   fire.
+- The pattern gate replacing the directional PIN, 2026-11-24: **host-tested on
+  both sides** (860 firmware tests, 206 in `tools/tests`) and **built for
+  `env:default` and `env:t5s3pro`**, zero warnings. `env:x4pro` has not been
+  built -- T15's disk is full -- and **no board has run any of it**.
 - The encrypted tree **rendered host-side** through the device's own reader code
   (`wallet_preview --key`): the decrypted QR is **byte-identical** to the cleartext
   tree's render and still decodes to the exact payload through `zxing-cpp`.
