@@ -271,12 +271,23 @@ and OK answer a thumb. Four points were entered by tapping alone --
 So the claim is: **on a board with two hardware keys the gate is usable in both
 touch modes.** Confirmed by thumb in both, which is the only instrument for it.
 
+**And on an X3, 2026-11-24** (`7c:e8:b1:6f:c2:9c`, `env:default`, ESP32-C3,
+528x792 -- the third framebuffer geometry and the last one unseen): the gate
+draws, a step moves the cursor, the wall holds (four `right` presses from the
+interior start leave three points and the cursor on the right column), a
+six-point walk plus CONFIRM unlocks, and CONFIRM at three points is inert.
+`../../docs/device-shots/2026-11-24-x3-pattern-gate-528x792.png`.
+
+Worth knowing for the next pass on that board: the theme puts the side hints on
+**opposite edges** there -- "Up" left, "Down" right -- where the T5 S3 Pro stacks
+both on the right. Neither collides with the grid, which the layout gets by
+construction from `buttonHintsRect()` and by luck from the side boxes.
+
 **Still not checked, and T-2079 is where it is tracked:**
 
-1. **The C3 line.** `env:default` builds clean (T15, 2026-11-23: RAM 18.2 %,
-   flash 57.2 %) and has never been on an X4 or an X3 panel -- 792x528 is the
-   third framebuffer geometry and the only one still unseen. The X3 was not
-   plugged in that day. `env:sticky` and `env:simulator` carry the flag too.
+1. **`env:sticky` and `env:simulator`** carry the devel flag and nothing has run
+   the screen there. Both are the same code paths as envs already passed; this is
+   the weakest of the gaps.
 2. **Ghosting.** A framebuffer read cannot show what the panel keeps. Whether a
    `FAST_REFRESH` per cursor move leaves the old ring visible is an eye
    question, and nobody has looked at the glass while walking a pattern.
