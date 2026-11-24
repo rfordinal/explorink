@@ -59,6 +59,227 @@ four-row menu -- which is what buys the brand block its 224 px. `HomeActivity::l
 height as the step for the same reason
 (`src/activities/home/HomeActivity.cpp`, `rowTouch`).
 
+## The battery goes stale
+
+**Read this first: the charging bolt is not part of what this screen's poll
+does, and for one day it looked like it was.** `HalGPIO::update()` raises a
+one-iteration `usbStateChanged` on every plug and unplug, and `src/main.cpp`
+asks for a full frame on it -- "Refresh the battery icon when USB is plugged
+or unplugged" -- before `activityManager.loop()` runs. That path predates this
+work and covers every screen. The first three versions of
+`HomeActivity::updateBatteryStatus()` also compared the charging state, and
+that branch could never fire: the full frame had already redrawn the band and
+recorded what it drew. It was removed on 2026-11-22.
+
+The cost of not knowing: **three cable cycles across two boards were run as
+hardware evidence for this feature and every one of them exercised the
+`main.cpp` path**, answering in about 10 ms rather than within the 2 s poll. A
+`CMD:SCREENSHOT` diff cannot tell them apart, because a full render rebuilds a
+byte-identical framebuffer apart from the bolt. The level evidence below is
+unaffected -- nothing else in the firmware repaints on a battery percentage
+change, which is the whole reason this function exists.
+
+**The consequence is deliberate and worth knowing before touching either
+file**: the bolt now has exactly one owner, that line in `main.cpp`. Delete
+it and the charging indicator stops updating on every screen, and nothing in
+`HomeActivity` will catch it. The alternative -- keeping a second, unreachable
+copy of the logic here as a backstop -- was rejected on 2026-11-22 because
+dead code that cannot fire is not a backstop, it is a thing the next reader
+has to disprove.
+
+
+Until 2026-11-21 the battery in the status header only changed when the rider
+touched something. `HomeActivity::loop()` called `requestUpdate()` on a button,
+a swipe or a touch and on nothing else, so the band kept the pixels of the last
+frame. The percentage behind it was never stale -- `drawBatteryRight()` reads
+`powerManager.getBatteryPercentage()` live
+(`src/components/themes/BaseTheme.cpp`, `drawBatteryRight`) and that is cached
+for 1.5 s (`BATTERY_POLL_MS`, `lib/hal/HalPowerManager.h`). Only the panel was.
+A device left on Home showed the charge it had when the rider last pressed a
+key, and the next press made it jump.
+
+The map screen had already solved this for its own header with
+`MapActivity::updateHeaderStatus()`, and Home now does the same thing in
+`HomeActivity::updateBatteryStatus()`:
+
+- **Polled at `kBatteryPollMs` (2,000 ms)**, the same figure as the map's
+  `kHeaderPollMs`. The poll bounds the ADC read behind the percentage and the
+  I2C charge-line read behind the bolt -- on a board with no `usbDetect` pin
+  that read shares a bus with the touch controller.
+- **Repaints on what the glyph actually shows, not on the raw number.** With
+  the percentage text on (`SETTINGS.hideBatteryPercentage != HIDE_ALWAYS`, the
+  default) one percent is a real change, because the number is what gets read.
+  With the text hidden the icon is all there is, and
+  `BaseTheme::batteryIconStep()` says how many states it has -- four in Lyra
+  (three bars at 10/40/70), ten in BaseTheme (a proportional fill in a
+  10 px box). Repainting per percent with the text hidden would be about a
+  hundred waveform passes per discharge for a four-state glyph.
+- **A plug or unplug is somebody else's job** -- `main.cpp`'s
+  `usbStateChanged` path, see the note at the top of this section. The
+  charging state is still read here, because `batteryIconStep()` needs it to
+  say what the glyph shows, but it is not a trigger.
+- **Windowed, not a full frame.** `displayBufferWindow()` over
+  `HomeActivity::headerRect()` -- the band is `[5, 61)` in Lyra and the brand
+  block starts at 64, so the window cannot clip the mountain art. The rows and
+  the logo keep what is on the glass.
+
+Two traps carried over from the map's version of this, both already paid for
+there:
+
+1. **The band goes through `GUI.drawHeader()` and nothing else.** The active
+   theme's `drawHeader()` clears the full width of the rect it is handed --
+   `LyraTheme::drawHeader()` opens with `fillRect(rect.x, rect.y, rect.width,
+   rect.height)`, all 480 columns, while only `BaseTheme` confines itself to an
+   80 px battery box. A hand-rolled "repaint just the battery" path has to
+   reproduce that clear-then-draw order and keep reproducing it. The map found
+   that on hardware on 2026-08-15 by wiping its own clock (`map-header-status.md`,
+   "The clock").
+2. **It does not draw while the render task is composing a frame.** The guard
+   is `RenderLock::peek()`; that frame reads the same live percentage and draws
+   it itself, so a windowed patch underneath it buys nothing and races its
+   framebuffer writes.
+
+Home passes no title to `drawHeader()`, so this band holds the battery and
+nothing else -- there is no clock here to wipe, which is why the full-width
+clear costs nothing on this screen.
+
+**A repaint of this band is not cheap on every board, and the first version of
+this section said otherwise.** `displayBufferWindow()` is a scoped refresh only
+where the driver implements one: `Ssd1677Driver` and `PaperMonoDriver` override
+`PanelDriver::displayWindow()`, and every other panel inherits its base body,
+which drops the rectangle and pushes a whole Fast frame. That includes the
+T5 S3 Pro (`LgfxEpdDriver`) and the X4 Pro (`Uc8279X4Driver`) -- the two boards
+this feature was signed off on. `HalDisplay::displayWindow()`'s own comment and
+[`t5s3-partial-refresh.md`](t5s3-partial-refresh.md), section 1, both said so
+since 2026-09-07; this code was written without reading either.
+
+It does not *look* like a full frame, and that is not a contradiction: Fast maps
+to `lgfx::epd_mode::epd_fast` and Panel_EPD diffs per pixel, so only pixels that
+changed move. Confirmed on the glass 2026-11-21 -- the maintainer saw the header
+update with no panel-wide flash. The cost is panel time and energy, not
+flashing, and it is why the conditions above are as tight as they are and why
+the level carries a 30 s floor.
+
+**Confirmed on `t5s3pro-b`, 2026-11-21.** Both branches, and the window:
+
+- **The percentage moves with no input.** Board on Home, USB out, nobody
+  touching it: 59 % became 58 % on the panel. That is the whole defect, gone.
+- **A plug lights the bolt at once.** Cable back in at 58 %, so the charger
+  actually resumed, and the bolt appeared immediately.
+- **Nothing else on the panel changes.** Between the frame before the unplug and
+  the frame after the replug, the only pixels that differ on the whole 540x960
+  panel are `(484, 16)-(525, 29)` -- the number and the icon. The wordmark, the
+  mountain art and all five rows are byte-identical. That is the framebuffer and
+  the per-pixel diff, not evidence of a scoped refresh -- see the paragraph
+  above.
+- **An idle board pays nothing.** 29 minutes on Home with no state change: not
+  one pixel moved, so the 2 s poll never turns into a waveform pass on its own.
+- **The input path is unbroken.** A `down` press changes only
+  `(20, 298)-(520, 417)`, the selector row.
+
+Shot: `docs/device-shots/2026-11-21-t5s3prob-home-battery-58-charging-540x960.png`
+in the parent repo, 1:1.
+
+**A tethered board cannot produce either change**, which is why this pass
+needed a person and a cable. The cell neither charges nor discharges while USB
+is in: 29 one-minute `CMD:BATT` reads, all `mv=4106..4107 pct=59 curr_ma=0
+chrg_stat=3`. And `CMD:CHARGE OFF` does not help, because
+`HalGPIO::isUsbConnected()` on a board with no `usbDetect` pin *is*
+`HalPowerManager::isCharging()`, already false once the charger terminates. In
+the parent repo's `device-test-protocol.md` trap table.
+
+**Fourth review, 2026-11-23 (`f5d4f1a5`) -- the first to find no defect in
+behaviour.** What it found was the debris of the previous cut: both constants
+still documented the deleted charging branch, `drawnCharging_` had become a
+write-only field with no reader (and GCC does not warn on an unused private
+field), the "charging is not a condition here" comment was a half-truth
+because the glyph step still depends on it with the percentage hidden, the
+post-lock re-check reused the pre-lock reading, and
+`drawsHeaderWithoutTitle()`'s comment blamed `drawRecentBookCover()` -- which
+is upstream CrossPoint's home screen and is called by no activity in this
+tree. The truth behind that gate is worse and is now written down: **on the
+RoundedRaff theme this firmware's Home screen has no battery at all.**
+
+**Fifth pass, 2026-11-23, on the other T5 S3 Pro (`t5s3pro`, board A -- the
+maintainer's words: identical hardware, different serial)**: clean boot, flat
+heap, input path unchanged, 6.5 idle minutes with no pixel moving, and 63 % to
+61 % on the panel over twenty-five minutes with the cable out. Board A also
+reads low with its charger terminated, 63 % against board B's 58 %, which
+makes T-2076 a property of the model and not of one cell.
+
+**Two bounds on all of this, worth knowing before trusting it:**
+
+- `HomeActivity` does not override `preventAutoSleep()`, and
+  `sleepTimeoutMinutes` defaults to 10, so the window in which this feature
+  can show anything is ten idle minutes -- one or two ticks in practice,
+  unless the rider sets the timeout to Never.
+- Every board it has run on carries an I2C fuel gauge, where
+  `getBatteryPercentage()` is cached and there is no EMA at all. The dither
+  the 30 s floor exists for, and the ADC cost the 2 s poll exists for, both
+  belong to a gaugeless board -- the plain X4 -- which has never run this
+  code.
+
+**Fourth build state, 2026-11-22 (`475bc987`), fourth pass on `t5s3pro-b`**: clean
+boot, heap flat, input path unchanged, 6.5 idle minutes with no pixel moving,
+and 60 % to 57 % on the panel over twenty-five minutes with the cable out --
+three steps, so the 30 s floor swallowed none of them. That is the whole of
+what this function does now; the bolt belongs to `main.cpp`, see the note at
+the top.
+
+**A second review found five more, 2026-11-22 (`925d56d4`).** The worst was
+that the first fix did not fix what it claimed: `drawHeader()` reads the
+battery *inside* (`drawBatteryRight()` calls `getBatteryPercentage()`,
+`fillBatteryIcon()` called `isUsbConnected()`), so recording the caller's own
+earlier read stored a value the panel had never shown -- and because that
+stored value is also the comparison basis, the panel could sit on a percentage
+nothing would ever correct. The theme now remembers what it drew
+(`BaseTheme::lastBatteryDrawn()`) and `fillBatteryIcon()` takes `charging` as a
+parameter, so one read each per repaint. Also: the poll ran at the *top* of
+`loop()`, before input is dispatched, so the frame guard could not see a press
+already latched -- it is at the end now, where `MapActivity` calls its own;
+there was no `HalPowerManager::Lock` around a blocking panel pass, while
+`ActivityManager` wraps every `render()` in one, and on a board with no PSRAM
+the idle floor is 10 MHz; the charging branch had no floor at all, and its
+signal has no hysteresis either; and the post-lock re-check compared the
+percentage even with the number hidden.
+
+**Third pass on `t5s3pro-b`, 2026-11-22**: clean boot, heap flat over 7.5
+minutes, input path unchanged, 6.5 idle minutes with no pixel moving, and a
+cable cycle lit the bolt -- changing `(517, 18)-(525, 26)`, eight pixels
+square, and nothing else on the panel. The level branch cannot be exercised on that
+board while it is tethered, because its charger terminates at 4.116 V while
+its gauge reports 58 % (T-2076 in the parent repo) -- so the cable came out
+for it: 58 % became 56 % on the panel over twenty minutes with the frontlight
+at full and nobody touching the device. Two steps, which also says the 30 s
+floor did not swallow the second one.
+
+**Re-run on the fixed build (`3d2de4d9`), 2026-11-21/22.** The review above
+rewrote the decision logic, so the first pass's evidence belonged to the old
+binary. On `t5s3pro-b` with the fixed build: boot clean, heap unchanged, input
+path unchanged, five minutes of idle with no pixel moving, the bolt clearing at
+once on an unplug, and the percentage stepping down on its own with the cable
+out. An X4 Pro stepped down too, but it was still running the pre-review build
+-- that board has not run the fixed one.
+
+**Also confirmed on an X4 Pro (`env:x4pro`), 2026-11-21.** Boot clean on the
+UC8279 panel, Home drew `100 %` with the bolt, and pulling the cable cleared
+the bolt at once with nobody touching the device. The input path is unbroken
+there too: a `down` press changes only `(20, 298)-(460, 417)`. The percentage
+branch was not re-run on this board -- it sat at 100 %, which is hours away
+from its first step -- and it does not need to be: the two boards run the same
+code and the T5 S3 Pro already walked it.
+
+**A note on the instrument.** `CMD:SCREENSHOT` dumps `display.getFrameBuffer()`
+with no re-render (`src/main.cpp`), so the pixel diffs above are of the
+framebuffer. The two claims that matter -- the number moving, the bolt
+clearing -- were read off the glass by a person, not off a screenshot.
+
+**Still unverified**: `env:default` (ESP32-C3, X3 or X4), which compiles clean
+but has not run this, and where `HalGPIO::isUsbConnected()` takes a different
+route -- on X3 it reads the BQ27220's current sign rather than the charger, so
+the bolt is a different path. And the hidden-percentage route through
+`BaseTheme::batteryIconStep()`, which needs `hideBatteryPercentage = always`.
+
 ## The rows
 
 | Row | Destination | Icon |

@@ -90,6 +90,14 @@ class ActivityManager {
   std::atomic<bool> requestedUpdate{false};
 
  public:
+  // A frame has been asked for and the render task has not started it yet.
+  // The other half of the question is RenderLock::peek(), which answers "a
+  // frame is being composed right now"; an activity that paints part of the
+  // panel from loop() has to stand aside for both, or it spends a waveform
+  // pass on pixels the frame behind it is about to overwrite
+  // (MapActivity::frameInFlight(), HomeActivity::updateBatteryStatus()).
+  bool updatePending() const { return requestedUpdate.load(); }
+
   explicit ActivityManager(GfxRenderer& renderer, MappedInputManager& mappedInput)
       : renderer(renderer), mappedInput(mappedInput), renderingMutex(xSemaphoreCreateMutex()) {
     assert(renderingMutex != nullptr && "Failed to create rendering mutex");

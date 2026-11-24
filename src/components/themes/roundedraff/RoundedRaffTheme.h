@@ -80,6 +80,14 @@ class RoundedRaffTheme : public BaseTheme {
  public:
   void drawHeader(const GfxRenderer& renderer, Rect rect, const char* title,
                   const char* subtitle = nullptr) const override;
+  // drawHeader() returns without drawing when `title` is nullptr, which is how
+  // Home calls it. **So on this theme ExplorInk's Home screen has no battery
+  // at all** -- nothing else paints that band
+  // (HomeActivity::render()). The early return carries a comment about
+  // drawRecentBookCover(), which is upstream CrossPoint's home screen; no
+  // activity in this tree calls it. Said out loud here so a caller that
+  // repaints that band on its own does not refresh an empty strip.
+  bool drawsHeaderWithoutTitle() const override { return false; }
   void drawTabBar(const GfxRenderer& renderer, Rect rect, const std::vector<TabInfo>& tabs,
                   bool selected) const override;
   bool tabIndexFromPoint(const GfxRenderer& renderer, Rect rect, const std::vector<TabInfo>& tabs, int x, int y,

@@ -3,6 +3,7 @@
 #include <Icon.h>
 
 #include "activities/Activity.h"
+#include "components/themes/BaseTheme.h"  // Rect, for headerRect()
 #include "util/ButtonNavigator.h"
 
 class HomeActivity final : public Activity {
@@ -61,6 +62,24 @@ class HomeActivity final : public Activity {
   void onGroupOpen();
 #endif
   void activate(int index);
+
+  // The header band, as render() draws it. One function so the windowed
+  // repaint and the full frame cannot drift apart.
+  Rect headerRect() const;
+  // Battery state as it is on the panel right now, for updateBatteryStatus().
+  // headerDrawn_ gates the windowed path: there is nothing to patch before the
+  // first frame exists.
+  bool headerDrawn_ = false;
+  int drawnBatteryStep_ = -1;
+  uint16_t drawnBatteryPercent_ = 0;
+  uint32_t nextBatteryPollMs_ = 0;
+  uint32_t nextLevelRepaintMs_ = 0;
+  void recordDrawnBattery();
+  // Keeps the header's battery honest while the rider is not touching
+  // anything. Ported from MapActivity::updateHeaderStatus(), which is where
+  // this screen's staleness was already solved (../../../docs/home-screen.md,
+  // "The battery goes stale").
+  void updateBatteryStatus();
 
  public:
   explicit HomeActivity(GfxRenderer& renderer, MappedInputManager& mappedInput,

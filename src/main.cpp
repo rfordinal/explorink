@@ -114,6 +114,9 @@ static inline void sampleInput() {
 #include "activities/Activity.h"
 #include "activities/ActivityManager.h"
 #include "activities/settings/SdFirmwareUpdateActivity.h"
+#ifdef ENABLE_PATTERNLOCK_CMD
+#include "activities/lock/PatternLockActivity.h"
+#endif
 #if defined(ENABLE_WALLET) && ENABLE_WALLET
 #include "activities/wallet/WalletAsset.h"
 #include "activities/wallet/WalletCryptoDevice.h"
@@ -3901,6 +3904,58 @@ void loop() {
           logSerial.printf("SETTING_OK:%s=%u\n", key.c_str(), static_cast<unsigned>(*target));
         }
 #endif  // ENABLE_SETTING_CMD
+#ifdef ENABLE_PATTERNLOCK_CMD
+      } else if (cmd.startsWith("PATTERNLOCK ")) {
+        // The bench harness for the pattern gate (PatternLockActivity). The screen
+        // owns no secret by design, so there is nothing on the device to unlock
+        // against until a caller (the wallet, a device lock) brings its own
+        // verifier -- and until then the only way to put the screen on a panel is
+        // to hand it an expected pattern from the host.
+        //
+        //   CMD:PATTERNLOCK 56789        -> PATTERNLOCK_OK, screen pushed
+        //   CMD:PATTERNLOCK 5678 auto    -> same, with auto-submit on
+        //   CMD:PATTERNLOCK 0145         -> PATTERNLOCK_ERR:malformed (a diagonal)
+        //
+        // It reads nothing and writes nothing, which is why the refusal below is
+        // about the pattern's shape and not about ownership. Devel envs only all
+        // the same: a harness has no business in a release image (platformio.ini,
+        // "What a stranger gets").
+        String rest = cmd.substring(12);
+        rest.trim();
+        const int space = rest.indexOf(' ');
+        String expected = space < 0 ? rest : rest.substring(0, space);
+        String mode = space < 0 ? String("") : rest.substring(space + 1);
+        expected.trim();
+        mode.trim();
+        if (!patternlock::isWellFormed(expected.c_str(), patternlock::startCellOf(expected.c_str()))) {
+          // Refusing here rather than on the panel: a pattern the screen cannot
+          // produce would be a gate nobody can pass, and that reads on hardware as
+          // a broken screen rather than as a typo in the command.
+          logSerial.printf("PATTERNLOCK_ERR:malformed\n");
+        } else {
+          const std::string want = expected.c_str();
+          PatternLockActivity::Config config;
+          config.autoSubmit = mode == "auto";
+          // The gate must start where the stored pattern starts, or nothing a
+          // rider enters can match it (patternlock::startCellOf).
+          config.startCell = patternlock::startCellOf(want.c_str());
+          // The harness has no rate limiter, so it only reports the walk the way
+          // a real caller would have to count it.
+          config.onEntryEnded = [] { logSerial.printf("PATTERNLOCK_ENTRY_ENDED\n"); };
+          activityManager.pushActivity(std::make_unique<PatternLockActivity>(
+              renderer, mappedInputManager, config,
+              [want](const char* path, bool speculative) {
+                // A literal compare, which is exactly what a bench harness should
+                // be: no key derivation, no failure counter, nothing persisted. A
+                // real caller's verifier is where those live.
+                const bool ok = want == path;
+                logSerial.printf("PATTERNLOCK_TRY:%s:%s\n", speculative ? "auto" : "confirm", ok ? "ok" : "wrong");
+                return ok ? PatternLockActivity::Verdict::Ok : PatternLockActivity::Verdict::Wrong;
+              }));
+          logSerial.printf("PATTERNLOCK_OK:%u points, start %u, auto %d\n", (unsigned)want.size(),
+                           (unsigned)config.startCell, config.autoSubmit ? 1 : 0);
+        }
+#endif  // ENABLE_PATTERNLOCK_CMD
 #ifdef ENABLE_BUTTON_CMD
       } else if (cmd == "BUTTON" || cmd.startsWith("BUTTON ")) {
         // Press a hardware button from the host. Every screen that is not the

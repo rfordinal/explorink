@@ -224,7 +224,70 @@ class BaseTheme {
                        bool showPercentage = true) const;  // Left aligned (reader mode)
   void drawBatteryRight(const GfxRenderer& renderer, Rect rect,
                         bool showPercentage = true) const;  // Right aligned (UI headers)
-  virtual void fillBatteryIcon(const GfxRenderer& renderer, Rect rect, uint16_t percentage) const;
+  // `charging` is read once by drawBatteryLeft/Right and handed down rather
+  // than asked for again here. Two reasons: on a board with no usbDetect pin
+  // the question is an I2C transaction on the bus the touch controller shares,
+  // and a second read can answer a different moment than the percentage next
+  // to it -- which is the whole point of lastBatteryDrawn() below.
+  virtual void fillBatteryIcon(const GfxRenderer& renderer, Rect rect, uint16_t percentage, bool charging) const;
+  // What the battery glyph actually distinguishes, as a number that changes
+  // exactly when fillBatteryIcon() would draw something different. Virtual
+  // because the themes disagree: this one draws a proportional fill measured
+  // in pixels, Lyra draws three fixed bars.
+  //
+  // A caller that repaints on a battery change needs this and not the raw
+  // percentage. With the percentage text hidden
+  // (SETTINGS.hideBatteryPercentage == HIDE_ALWAYS) one repaint per percent
+  // would be about a hundred waveform passes per discharge for a glyph with
+  // ten states, and e-ink pays for every one of them
+  // (HomeActivity::updateBatteryStatus()).
+  //
+  // `iconWidth` is the rect width the icon is drawn into (metrics.batteryWidth
+  // at every call site today), passed rather than read from a metrics
+  // singleton so this file keeps knowing nothing about the active theme.
+  //
+  // `charging` is not decoration: fillBatteryIcon() draws a *fixed* shape while
+  // charging in both themes (this one clamps the fill to a minimum, Lyra paints
+  // a solid bar), so a step that ignored it would report movement the glyph
+  // does not have. Left out of the first version, which cost three repaints of
+  // bit-identical pixels over one Lyra charge cycle and seven over a Classic
+  // one.
+  virtual int batteryIconStep(uint16_t percentage, int iconWidth, bool charging) const;
+
+  // Whether drawHeader() puts anything on the panel when `title` is nullptr --
+  // which is how the Home screen calls it, to get the battery and no heading.
+  // False in RoundedRaff, whose drawHeader() returns immediately in that case
+  // -- which on this firmware's Home screen means no battery is drawn there at
+  // all.
+  //
+  // Exists so a caller that repaints the band on its own
+  // (HomeActivity::updateBatteryStatus()) can tell a band with a battery in it
+  // from an empty one, rather than spending a waveform pass on nothing.
+  virtual bool drawsHeaderWithoutTitle() const { return true; }
+
+  // What the last battery glyph this theme drew was drawn from. Recorded by
+  // drawBatteryLeft/Right at the moment they read it.
+  //
+  // Exists because the reads are *inside* the draw: drawBatteryRight() calls
+  // getBatteryPercentage() itself, and on a board with no fuel gauge that
+  // function is uncached and steps an EMA on every call, so a caller that read
+  // the battery before calling drawHeader() and then stored its own number
+  // would be storing something the panel never showed. A caller that repaints
+  // on change (HomeActivity::updateBatteryStatus()) compares against this
+  // value, so it has to be the drawn one or the panel can sit on a number
+  // nothing ever corrects.
+  struct BatteryReading {
+    uint16_t percentage = 0;
+    bool charging = false;
+  };
+  //
+  // **Not synchronised.** HomeActivity's two writers both hold a RenderLock,
+  // which is what makes its own reads sound. MapActivity::updateHeaderStatus()
+  // reaches drawBatteryRight() from the main task with no RenderLock at all,
+  // so a second reader on another screen would be reading a two-field struct
+  // written without one. Take a lock, or give this an atomic, before relying
+  // on it anywhere else.
+  const BatteryReading& lastBatteryDrawn() const { return lastBatteryDrawn_; }
   // fontId 0 means "this theme's own default" -- NOT a default argument
   // (BaseTheme, LyraTheme and RoundedRaffTheme each want a *different*
   // fallback font, but GUI is `const BaseTheme&` (UITheme.h), a fixed
@@ -333,6 +396,9 @@ class BaseTheme {
  private:
   mutable bool frontLabelDrawn[4] = {false, false, false, false};
   mutable bool sideLabelDrawn[2] = {false, false};
+  // Mutable because GUI is a `const BaseTheme&` (UITheme.h) and every draw
+  // method is const; this is a record of what was drawn, not configuration.
+  mutable BatteryReading lastBatteryDrawn_;
 
  public:
   virtual int getListRowStep(bool hasSubtitle) const;
