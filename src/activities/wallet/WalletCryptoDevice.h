@@ -92,10 +92,12 @@ class Session {
   uint8_t key_[kWalletKeyLen] = {0};
   bool hasKey_ = false;
   uint32_t lastTouchMs_ = 0;
-  // When the next unlock attempt may run. RAM only: the *count* is persisted, and
-  // the delay is re-armed from it whenever an unlock path starts, so a power cycle
-  // does not hand out a free fast retry.
-  uint32_t retryAtMs_ = 0;
+  // When the next unlock attempt may run, and what it was armed for. RAM only:
+  // the *count* is persisted, and the deadline is armed from it when an unlock
+  // path starts after a reboot, so a power cycle does not hand out a free fast
+  // retry. The arithmetic is `wallet::RetryGate` in WalletCrypto.h, host-tested,
+  // because the bug it carries was in the arming rule and not in the table.
+  RetryGate retry_;
 };
 
 }  // namespace wallet

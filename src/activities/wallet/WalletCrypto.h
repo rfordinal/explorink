@@ -377,6 +377,42 @@ inline uint32_t unlockFailureDelayMs(uint8_t failures) {
 
 inline bool isLockedOut(uint8_t failures) { return failures >= kMaxUnlockFailures; }
 
+// The rate limiter's deadline, as arithmetic with the clock passed in.
+//
+// It lives here rather than inside `Session` because the part that was wrong was
+// never the delay table -- that is a pure function and the host tests had it
+// right from the start. What was wrong was **when the deadline is armed**, and
+// that was unreachable from a host because it sat next to `millis()`. Pulling it
+// out is the whole lesson of the 2026-11-24 X3 run: a tested table and an
+// untested interaction add up to a wallet that locks its owner out for ever
+// after four typos.
+struct RetryGate {
+  // 0 means no deadline. Wrap-safe against a 49-day `millis()` rollover through
+  // the signed difference below.
+  uint32_t retryAtMs = 0;
+  // The failure count the deadline was armed for. 0xFF is "nothing armed yet",
+  // which no live count reaches -- the hard stop is kMaxUnlockFailures.
+  uint8_t armedForFailures = 0xFF;
+
+  // Arms the delay `failures` has earned, **once per count**. A caller arms on
+  // every unlock attempt so a reboot cannot skip a delay the persisted count
+  // already earned; arming again for a count already armed would push the
+  // deadline forward on an attempt that is itself being refused, and the wait
+  // could then never be served.
+  void arm(const uint8_t failures, const uint32_t nowMs) {
+    if (armedForFailures == failures) return;
+    armedForFailures = failures;
+    const uint32_t delay = unlockFailureDelayMs(failures);
+    retryAtMs = delay > 0 ? nowMs + delay : 0;
+  }
+
+  uint32_t waitMs(const uint32_t nowMs) const {
+    if (retryAtMs == 0) return 0;
+    const int32_t left = static_cast<int32_t>(retryAtMs - nowMs);
+    return left > 0 ? static_cast<uint32_t>(left) : 0;
+  }
+};
+
 // What one unlock attempt did. Shared by the gate screen and by
 // CMD:WALLETUNLOCK, because they run the same attempt through the same code
 // (KeyStore::tryUnlock).

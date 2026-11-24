@@ -167,11 +167,7 @@ void Session::clear(const char* reason) {
 
 void Session::touch() { lastTouchMs_ = millis(); }
 
-uint32_t Session::retryWaitMs() const {
-  if (retryAtMs_ == 0) return 0;
-  const int32_t left = static_cast<int32_t>(retryAtMs_ - millis());
-  return left > 0 ? static_cast<uint32_t>(left) : 0;
-}
+uint32_t Session::retryWaitMs() const { return retry_.waitMs(millis()); }
 
 uint32_t Session::idleLeftMs() const {
   if (!hasKey_) return 0;
@@ -180,8 +176,21 @@ uint32_t Session::idleLeftMs() const {
 }
 
 void Session::armRetryDelay(const uint8_t failures) {
-  const uint32_t delay = unlockFailureDelayMs(failures);
-  retryAtMs_ = delay > 0 ? millis() + delay : 0;
+  // **Once per failure count, not once per attempt.** `tryUnlock()` calls this at
+  // the top of every unlock path so a reboot cannot skip a delay the persisted
+  // count already earned -- but arming unconditionally means an attempt that is
+  // itself about to be refused pushes its own deadline forward, so the wait can
+  // never be served and the count never moves again.
+  //
+  // Measured on an X3, 2026-11-24, the first time this path ran on hardware:
+  // after the fourth wrong pattern every later attempt answered
+  // `rate_limited ... wait_ms=1000` for ever, with `attempts` frozen at 4,
+  // however long the caller waited. That is not the ten-failure hard stop this
+  // limiter is specified as -- it is a permanent lockout four failures early,
+  // and the only way out of it destroys every document on the card. The host
+  // tests could not see it: they cover `unlockFailureDelayMs()`, which is a pure
+  // table and was right, and nothing exercised it against the Session.
+  retry_.arm(failures, millis());
 }
 
 bool Session::expireIfIdle() {

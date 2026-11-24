@@ -2077,6 +2077,76 @@ TEST(WalletCryptoRateLimit, FreeTriesThenDoublingThenAHardStop) {
   EXPECT_EQ(kMaxUnlockFailures, 10);
 }
 
+TEST(WalletCryptoRateLimit, TheDeadlineIsArmedOncePerCountNotOncePerAttempt) {
+  // The regression this test exists for, found on an X3 on 2026-11-24 the first
+  // time the unlock path ran on hardware. Arming on every attempt made an
+  // attempt that was itself being refused push its own deadline forward, so the
+  // wait could never be served: four wrong patterns and the wallet answered
+  // `rate_limited wait_ms=1000` for ever with the count frozen at 4. A permanent
+  // lockout six failures before the specified hard stop, escapable only by
+  // re-provisioning, which destroys every document on the card.
+  //
+  // Nothing above caught it because the delay TABLE was always right. The clock
+  // is a parameter here for exactly that reason.
+  RetryGate gate;
+  uint32_t now = 1000;
+
+  // Three free failures arm nothing.
+  gate.arm(3, now);
+  EXPECT_EQ(gate.waitMs(now), 0u);
+
+  // The fourth earns a second.
+  gate.arm(4, now);
+  EXPECT_EQ(gate.waitMs(now), 1000u);
+
+  // **A second attempt during the wait must not move the deadline.** This is the
+  // bug: without the per-count guard each of these re-armed a full second.
+  now += 400;
+  gate.arm(4, now);
+  EXPECT_EQ(gate.waitMs(now), 600u) << "the wait has to count down, not restart";
+  now += 400;
+  gate.arm(4, now);
+  EXPECT_EQ(gate.waitMs(now), 200u);
+
+  // And once it is served it stays served, however many attempts arrive.
+  now += 300;
+  gate.arm(4, now);
+  EXPECT_EQ(gate.waitMs(now), 0u) << "a served wait must not re-arm for the same count";
+  gate.arm(4, now);
+  EXPECT_EQ(gate.waitMs(now), 0u);
+
+  // A new failure is a new count, so it arms the next rung.
+  gate.arm(5, now);
+  EXPECT_EQ(gate.waitMs(now), 2000u);
+
+  // A successful unlock clears the count, which clears the deadline.
+  now += 2500;
+  gate.arm(0, now);
+  EXPECT_EQ(gate.waitMs(now), 0u);
+}
+
+TEST(WalletCryptoRateLimit, AFreshGateArmsWhatThePersistedCountAlreadyEarned) {
+  // The half the per-count guard must not break: after a reboot the deadline is
+  // gone from RAM but the count is in NVS, so the first unlock path has to arm
+  // it. A power cycle is not a free fast retry.
+  RetryGate afterReboot;
+  EXPECT_EQ(afterReboot.waitMs(5000), 0u) << "nothing armed before the first attempt";
+  afterReboot.arm(6, 5000);
+  EXPECT_EQ(afterReboot.waitMs(5000), 4000u);
+}
+
+TEST(WalletCryptoRateLimit, TheDeadlineSurvivesAMillisRollover) {
+  // millis() wraps after 49 days. The difference is signed so a deadline across
+  // the wrap still counts down instead of reading as 49 days of waiting.
+  RetryGate gate;
+  const uint32_t nearWrap = 0xFFFFFF00u;
+  gate.arm(4, nearWrap);
+  EXPECT_EQ(gate.waitMs(nearWrap), 1000u);
+  // 500 ms later, which is past the wrap.
+  const uint32_t afterWrap = nearWrap + 500u;  // wraps around
+  EXPECT_EQ(gate.waitMs(afterWrap), 500u);
+}
+
 TEST(WalletCryptoHex, ExactLengthOrNothing) {
   uint8_t key[kWalletKeyLen];
   EXPECT_TRUE(hexToBytes("000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f", key, sizeof(key)));
