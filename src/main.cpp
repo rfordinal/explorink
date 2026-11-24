@@ -2494,7 +2494,23 @@ bool write8(uint8_t addr, uint8_t reg, uint8_t value) {
 
 }  // namespace powerbus
 
-#ifdef ENABLE_BATT_CMD
+// **`CMD:BATT GAUGE` and `CMD:BATT PROVISION` sit behind their own flag, not
+// behind `ENABLE_BATT_CMD`.** That one is set for `env:default` as well, and
+// `env:default` is the ESP32-C3 binary for the X4 *and the X3* -- which carries
+// the same BQ27220 at the same address. A provisioning write compiled into that
+// binary would stand one runtime comparison away from burning this board's cell
+// capacity into a different board's gauge, persistently. Both commands were
+// built for the T5 S3 Pro and are tested on it, so that is the only environment
+// they ship in. Widening the flag to the X3 is a deliberate later decision for
+// whoever measures that board, with its own hardware pass -- the same reasoning
+// `CMD:BATT` already gives for its own gating.
+#ifdef ENABLE_GAUGE_CMD
+constexpr bool kGaugeCmdEnabled = true;
+#else
+constexpr bool kGaugeCmdEnabled = false;
+#endif
+
+#ifdef ENABLE_GAUGE_CMD
 // The BQ27220's data memory, read and write. Register access alone cannot reach
 // it: a data-memory parameter is moved through ManufacturerAccessControl
 // (0x3E/0x3F) into the MACData block (0x40..0x5F), with MACDataSum() (0x60) and
@@ -2668,7 +2684,7 @@ bool exitCfgUpdate(uint8_t addr) {
 bool seal(uint8_t addr) { return controlSub(addr, kSubSealed); }
 
 }  // namespace gaugedm
-#endif  // ENABLE_BATT_CMD
+#endif  // ENABLE_GAUGE_CMD
 #endif  // ENABLE_BATT_CMD || ENABLE_CHARGE_CMD
 
 #ifdef ENABLE_CHARGE_CMD
@@ -4905,8 +4921,10 @@ void loop() {
         if (g.gaugeAddr == 0) {
           logSerial.printf("BATT_ERR:no gauge on this board\n");
         } else if (battArg.length() > 0 && !battArg.startsWith("DM") && battArg != "SCAN" &&
-                   !battArg.startsWith("PROBE") && battArg != "GAUGE" && !battArg.startsWith("PROVISION")) {
-          logSerial.printf("BATT_ERR:unknown:DM,SCAN,PROBE,GAUGE,PROVISION\n");
+                   !battArg.startsWith("PROBE") &&
+                   !(kGaugeCmdEnabled && (battArg == "GAUGE" || battArg.startsWith("PROVISION")))) {
+          logSerial.printf("BATT_ERR:unknown:DM,SCAN,PROBE%s\n", kGaugeCmdEnabled ? ",GAUGE,PROVISION" : "");
+#ifdef ENABLE_GAUGE_CMD
         } else if (battArg.startsWith("PROVISION")) {
           // **Teach the gauge what cell it is attached to.** T-2076: both T5 S3
           // Pro boards carry TI's factory `Design Capacity` and `Learned Full
@@ -4947,13 +4965,27 @@ void loop() {
           constexpr uint16_t kCedvProfile1Base = 0x929B;  // GaugingConfig, then FCC, then DesignCapacity
           constexpr uint8_t kFccOffset = 2;
           constexpr uint8_t kDesignOffset = 4;
-          constexpr uint16_t kCellMah = 1500;  // LilyGo's parameter table: "3.7 V 1500 mAh LiPo"
+
+          // **The capacity is a fact about one board, so this refuses to guess
+          // on any other.** `ENABLE_BATT_CMD` is set for `env:default` too, and
+          // that is the ESP32-C3 binary for the X4 *and the X3* -- and the X3
+          // carries the same BQ27220 at the same address. Without this gate a
+          // `PROVISION WRITE` on an X3 would burn the T5 S3 Pro's 1500 mAh into
+          // a different board's gauge, persistently, with a reply that says it
+          // succeeded. Add a board here only with a cell figure from its
+          // vendor's own specification, not from a listicle and not from the
+          // gauge's own guess.
+          const uint16_t kCellMah = BoardConfig::ACTIVE.board == BoardConfig::Board::LilyGoT5S3
+                                        ? 1500  // LilyGo's parameter table: "3.7 V 1500 mAh LiPo"
+                                        : 0;
 
           String provArg = battArg.substring(9);
           provArg.trim();
           const bool doWrite = provArg == "WRITE";
           if (provArg.length() > 0 && !doWrite) {
             logSerial.printf("BATT_ERR:provision:WRITE or nothing\n");
+          } else if (kCellMah == 0) {
+            logSerial.printf("BATT_PROV_ERR:no cell capacity known for this board\n");
           } else {
             powerbus::begin();
             uint8_t block[32] = {0};
@@ -5110,6 +5142,7 @@ void loop() {
             snprintf(line + pos, sizeof(line) - pos, "opstat=?");
           }
           logSerial.printf("%s\n", line);
+#endif  // ENABLE_GAUGE_CMD
         } else if (battArg == "SCAN") {
           // Whether a charger IC sits on the gauge bus at all is unknown for X3
           // (BoardConfig.h: chargerAddr=0, unlike the T5 S3 Pro's BQ25896 or the
