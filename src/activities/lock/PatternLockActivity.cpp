@@ -61,7 +61,7 @@ PatternLockActivity::PatternLockActivity(GfxRenderer& renderer, MappedInputManag
     : Activity("PatternLock", renderer, mappedInput),
       config_(config),
       verifier_(std::move(verifier)),
-      entry_(config.startCell) {}
+      entry_(config.startCell, config.minPoints, config.maxPoints) {}
 
 void PatternLockActivity::onEnter() {
   Activity::onEnter();
@@ -397,12 +397,12 @@ void PatternLockActivity::draw(const HalDisplay::RefreshMode mode) {
   const int segInset = l.meterHeight / kMeterInsetDiv;
   const int innerLeft = l.meterLeft + kMeterBorder + segInset / 2;
   const int innerWidth = l.meterWidth - (kMeterBorder + segInset / 2) * 2;
-  for (size_t i = 0; i < patternlock::kMaxPoints; ++i) {
-    const int x0 = innerLeft + static_cast<int>(i) * innerWidth / static_cast<int>(patternlock::kMaxPoints);
-    const int x1 = innerLeft + static_cast<int>(i + 1) * innerWidth / static_cast<int>(patternlock::kMaxPoints);
+  for (size_t i = 0; i < entry_.maxPoints(); ++i) {
+    const int x0 = innerLeft + static_cast<int>(i) * innerWidth / static_cast<int>(entry_.maxPoints());
+    const int x1 = innerLeft + static_cast<int>(i + 1) * innerWidth / static_cast<int>(entry_.maxPoints());
     if (i < entry_.points()) {
       renderer.fillRect(x0, l.meterTop + segInset, x1 - x0 - kMeterBorder, l.meterHeight - segInset * 2, true);
-    } else if (i + 1 < patternlock::kMaxPoints) {
+    } else if (i + 1 < entry_.maxPoints()) {
       // A hairline between the slots still to come, so the scale is readable when
       // it is nearly empty. No tick after the last one: that is the border.
       renderer.drawLine(x1, l.meterTop + segInset, x1, l.meterTop + l.meterHeight - segInset, true);
@@ -420,10 +420,10 @@ void PatternLockActivity::draw(const HalDisplay::RefreshMode mode) {
   } else if (lastAttemptWrong_) {
     snprintf(line, sizeof(line), "%s", tr(STR_PATTERN_LOCK_WRONG));
   } else if (!entry_.longEnough()) {
-    snprintf(line, sizeof(line), tr(STR_PATTERN_LOCK_SHORT), static_cast<int>(patternlock::kMinPoints));
+    snprintf(line, sizeof(line), tr(STR_PATTERN_LOCK_SHORT), static_cast<int>(entry_.minPoints()));
   } else {
     snprintf(line, sizeof(line), tr(STR_PATTERN_LOCK_PROMPT), static_cast<int>(entry_.points()),
-             static_cast<int>(patternlock::kMaxPoints));
+             static_cast<int>(entry_.maxPoints()));
   }
   renderer.drawCenteredText(UI_10_FONT_ID, l.statusY, line, true,
                             (lockedOut_ || lastAttemptWrong_) ? EpdFontFamily::BOLD : EpdFontFamily::REGULAR);

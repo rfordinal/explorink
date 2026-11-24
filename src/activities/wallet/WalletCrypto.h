@@ -11,7 +11,7 @@
 // The contract is frozen and lives in the parent repo's `docs/wallet-format.md`,
 // section 11. This header implements the half of it that needs no library: the
 // CTR IV, the offset arithmetic a windowed read depends on, the encrypted
-// manifest's envelope, and the directional PIN. `WalletCryptoDevice.h` binds the
+// manifest's envelope, and the unlock pattern. `WalletCryptoDevice.h` binds the
 // primitives to mbedtls on the device; the host tests bind them to OpenSSL, and
 // the arithmetic below is the same code on both sides -- which is the point,
 // because the arithmetic is what a windowed read gets wrong.
@@ -269,76 +269,81 @@ inline bool parseManifestEnvelope(const uint8_t* bytes, size_t fileLen, Manifest
 }
 
 // ---------------------------------------------------------------------------
-// The directional PIN
+// The unlock pattern
 // ---------------------------------------------------------------------------
 
-// Four symbols, 6 to 10 of them: 4^6 = 4,096 to 4^10 = 1,048,576. Not a lot, and
-// it is not meant to be -- the PIN is not the key and not the strength. It gates
-// a device already in the rider's hand, and the rate limiter is what makes
-// guessing it impractical (../../../docs/wallet-crypto.md, "What the PIN is for").
-inline constexpr size_t kPinMinLen = 6;
-inline constexpr size_t kPinMaxLen = 10;
-inline constexpr size_t kPinBufBytes = kPinMaxLen + 1;
+// A path walked on the gate's 4x4 grid (`components/lock/PatternLock.h`), 8 to 12
+// cells counting the start, encoded one character per cell: '0'..'9' then
+// 'a'..'f'.
+//
+// **The encoded path IS the password.** `PatternLockActivity` hands its verifier
+// exactly this string, so nothing translates between what a rider walks and what
+// PBKDF2 hashes -- a translation step is a place for the two sides to disagree,
+// and a disagreement here is an unopenable wallet.
+//
+// ## Why 8 to 12 and not the gate's own 4 to 8
+//
+// This replaced a 6-to-10-symbol directional PIN worth 12.0 to 20.0 bits. A
+// pattern buys about 1.7 bits per point, so the gate's default floor of 4 points
+// is 46 walks -- 5.5 bits -- and accepting it would have dropped the floor by
+// six and a half bits while the docs still promised the old number. 8 to 12
+// points is 7 to 11 presses, one more than the old PIN at each end, for 12.3 to
+// 19.6 bits: the same strength for the same effort.
+//
+//   8 to 12 points, interior start   806,270 walks   19.6 bits
+//
+// Counted by `scripts/pattern_space.py`, not estimated.
+//
+// **The pattern is still not the strength**, exactly as the PIN was not. What
+// makes the wrap hard to attack is the 32-byte device secret mixed into the KDF
+// password, and what makes guessing impractical is the rate limiter below
+// (../../../docs/wallet-crypto.md, "What the pattern is for").
+inline constexpr size_t kPatternMinPoints = 8;
+inline constexpr size_t kPatternMaxPoints = 12;
+inline constexpr size_t kPatternBufBytes = kPatternMaxPoints + 1;
 
-enum class PinSymbol : uint8_t { Up = 0, Down = 1, Left = 2, Right = 3 };
+// The start cell a stored pattern was provisioned on. Kept next to the salt in
+// NVS rather than derived, because the wrap is all the device stores and a wrap
+// says nothing about the path that produced it. It is **not a secret**: the gate
+// draws the cursor on it before the first press, so a shoulder has it anyway, and
+// NVS is plaintext flash to anyone with a cable (../../../docs/wallet-crypto.md,
+// "The threat boundary").
+//
+// It still has to be stored, because a gate opened on the wrong start cell is a
+// permanent lockout: every path a rider can walk begins with that cell's
+// character and the stored one begins with another.
+inline constexpr uint8_t kPatternNoStart = 0xFF;
 
-// The byte a symbol contributes to the KDF password is its **ASCII letter**, not
-// its enum value: `provision.json` spells the PIN "UDLRUD" and the password is
-// "PIN bytes || deviceSecret" over exactly those characters. A phone app later has
-// to send the same spelling.
-inline char pinSymbolChar(PinSymbol symbol) {
-  switch (symbol) {
-    case PinSymbol::Up:
-      return 'U';
-    case PinSymbol::Down:
-      return 'D';
-    case PinSymbol::Left:
-      return 'L';
-    case PinSymbol::Right:
-      return 'R';
-  }
-  return '?';
+// Lower-case hex digit for a cell, matching `patternlock::Entry::encode()`.
+inline bool patternCharIsLegal(const char c) {
+  return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
 }
 
-inline bool pinSymbolFromChar(char c, PinSymbol& out) {
-  switch (c) {
-    case 'U':
-    case 'u':
-      out = PinSymbol::Up;
-      return true;
-    case 'D':
-    case 'd':
-      out = PinSymbol::Down;
-      return true;
-    case 'L':
-    case 'l':
-      out = PinSymbol::Left;
-      return true;
-    case 'R':
-    case 'r':
-      out = PinSymbol::Right;
-      return true;
-    default:
-      return false;
-  }
-}
+inline char patternCharFold(const char c) { return (c >= 'A' && c <= 'F') ? static_cast<char>(c - 'A' + 'a') : c; }
 
-// Normalises a PIN string to upper-case U/D/L/R of a legal length. False for
-// anything else -- a PIN that is not exactly what was provisioned cannot unwrap
-// the key anyway, and refusing it here gives a message instead of a failed
+// Normalises a pattern string to lower-case hex of a legal length. False for
+// anything else -- a pattern that is not exactly what was provisioned cannot
+// unwrap the key anyway, and refusing it here gives a message instead of a failed
 // attempt against the rate limiter.
-inline bool normalisePin(const char* text, char* out, size_t outLen, size_t& length) {
+//
+// It checks the alphabet and the length and **not the geometry**: at unlock time
+// the path came from the gate, which cannot produce an illegal step, and a
+// host-side typo that happens to be legal hex is a wrong pattern rather than a
+// malformed one. Provisioning is where geometry is checked, with
+// `patternlock::isWellFormed()` against the start cell being stored -- that is
+// the call that prevents an unopenable wallet, and it needs the start cell, which
+// this function does not have.
+inline bool normalisePattern(const char* text, char* out, size_t outLen, size_t& length) {
   length = 0;
-  if (text == nullptr || out == nullptr || outLen < kPinBufBytes) return false;
+  if (text == nullptr || out == nullptr || outLen < kPatternBufBytes) return false;
   size_t at = 0;
   for (; text[at] != '\0'; ++at) {
-    if (at >= kPinMaxLen) return false;
-    PinSymbol symbol = PinSymbol::Up;
-    if (!pinSymbolFromChar(text[at], symbol)) return false;
-    out[at] = pinSymbolChar(symbol);
+    if (at >= kPatternMaxPoints) return false;
+    if (!patternCharIsLegal(text[at])) return false;
+    out[at] = patternCharFold(text[at]);
   }
   out[at] = '\0';
-  if (at < kPinMinLen) return false;
+  if (at < kPatternMinPoints) return false;
   length = at;
   return true;
 }
@@ -348,13 +353,13 @@ inline bool normalisePin(const char* text, char* out, size_t outLen, size_t& len
 // ---------------------------------------------------------------------------
 
 // After this many failures the wrap is locked until the device is provisioned
-// again. There is no unlock-by-waiting past it: a directional PIN is 2^12 to 2^20
+// again. There is no unlock-by-waiting past it: a pattern is 2^12 to 2^20
 // guesses, so an attacker with unlimited tries wins, and the only defence that
 // actually holds is a hard stop.
-inline constexpr uint8_t kMaxPinFailures = 10;
+inline constexpr uint8_t kMaxUnlockFailures = 10;
 // Failures below this cost nothing: a rider fat-fingering one press should not be
 // punished.
-inline constexpr uint8_t kFreePinFailures = 3;
+inline constexpr uint8_t kFreeUnlockFailures = 3;
 
 // How long the next attempt has to wait, in milliseconds. Doubles per failure
 // past the free ones, capped so the screen never looks hung.
@@ -362,31 +367,41 @@ inline constexpr uint8_t kFreePinFailures = 3;
 // **This is a UX defence, not a cryptographic one.** It slows a person at the
 // device. It does nothing against somebody who dumps NVS over USB and attacks the
 // wrap offline -- that case is out of scope and the doc says so.
-inline uint32_t pinFailureDelayMs(uint8_t failures) {
-  if (failures <= kFreePinFailures) return 0;
-  const uint8_t over = static_cast<uint8_t>(failures - kFreePinFailures);
+inline uint32_t unlockFailureDelayMs(uint8_t failures) {
+  if (failures <= kFreeUnlockFailures) return 0;
+  const uint8_t over = static_cast<uint8_t>(failures - kFreeUnlockFailures);
   uint32_t delay = 1000;
   for (uint8_t i = 1; i < over && delay < 30000; ++i) delay *= 2;
   return delay > 30000 ? 30000 : delay;
 }
 
-inline bool pinIsLockedOut(uint8_t failures) { return failures >= kMaxPinFailures; }
+inline bool isLockedOut(uint8_t failures) { return failures >= kMaxUnlockFailures; }
 
-// What one unlock attempt did. Shared by the PIN screen and by
+// What one unlock attempt did. Shared by the gate screen and by
 // CMD:WALLETUNLOCK, because they run the same attempt through the same code
 // (KeyStore::tryUnlock).
 enum class UnlockResult : uint8_t {
   Ok = 0,
   NotProvisioned,  // no wrap in NVS: provision first
-  Malformed,       // not 6..10 of U/D/L/R, so not spent against the limiter
+  Malformed,       // not 8..12 hex cells, so not spent against the limiter
   Waiting,         // the rate limiter's delay has not run out
   LockedOut,       // ten failures: the wrap is refused until re-provisioning
-  BadPin,          // the unwrap did not authenticate
+  BadPattern,      // the unwrap did not authenticate
 };
 
 // A stable one-word token per outcome, for the serial reply and the log. Stable on
 // purpose: a host script greps these, so they are part of the command's contract
 // and renaming one breaks a caller.
+//
+// Two were renamed once, with the gate: `malformed_pin` and `wrong_pin` became
+// `malformed_pattern` and `wrong_pattern` when the directional PIN was replaced,
+// because the command's argument changed in the same pass and a token naming a
+// PIN that no longer exists is worse than a break nobody can have shipped
+// against. `CMD:WALLETUNLOCK` is `env:default` only (`ENABLE_WALLET_TEST_CMDS`
+// in platformio.ini), so these tokens have never reached a release image and the
+// only callers are this tree's own scripts. **`ENABLE_WALLET` itself is in
+// `base`**, so the wallet SCREENS do reach a release build -- the two flags are
+// not the same scope, and only the narrower one makes this rename free.
 inline const char* unlockResultName(UnlockResult result) {
   switch (result) {
     case UnlockResult::Ok:
@@ -394,13 +409,13 @@ inline const char* unlockResultName(UnlockResult result) {
     case UnlockResult::NotProvisioned:
       return "not_provisioned";
     case UnlockResult::Malformed:
-      return "malformed_pin";
+      return "malformed_pattern";
     case UnlockResult::Waiting:
       return "rate_limited";
     case UnlockResult::LockedOut:
       return "locked_out";
-    case UnlockResult::BadPin:
-      return "wrong_pin";
+    case UnlockResult::BadPattern:
+      return "wrong_pattern";
   }
   return "?";
 }
@@ -410,12 +425,12 @@ inline const char* unlockResultName(UnlockResult result) {
 // ---------------------------------------------------------------------------
 
 // nonce(12) | ciphertext(32) | tag(16). AES-256-GCM over K under the KEK, which
-// is PBKDF2-HMAC-SHA256(PIN bytes || deviceSecret, salt, iters). K itself never
+// is PBKDF2-HMAC-SHA256(pattern bytes || deviceSecret, salt, iters). K itself never
 // touches the card and never touches NVS unwrapped.
 inline constexpr size_t kWrappedKeyLen = kGcmNonceLen + kWalletKeyLen + kGcmTagLen;
 inline constexpr size_t kDeviceSecretLen = 32;
 inline constexpr size_t kPbkdf2SaltLen = 16;
-inline constexpr size_t kKekPasswordBufBytes = kPinMaxLen + kDeviceSecretLen;
+inline constexpr size_t kKekPasswordBufBytes = kPatternMaxPoints + kDeviceSecretLen;
 
 // The most PBKDF2 iterations a serial command will run in one go.
 //
@@ -427,23 +442,30 @@ inline constexpr size_t kKekPasswordBufBytes = kPinMaxLen + kDeviceSecretLen;
 // way of the measurement it exists to make safe.
 inline constexpr uint32_t kMaxProvisionIterations = 200000u;
 
-// The KDF's password: PIN bytes then the device secret, in that order and with
-// nothing between them.
+// The KDF's password: the encoded pattern then the device secret, in that order
+// and with nothing between them.
+//
+// The pattern bytes are the gate's own encoding, lower-case, start cell included
+// -- the same string `patternlock::Entry::encode()` produces. **The start cell is
+// part of the password even though it is stored in the clear**, which costs
+// nothing: an attacker who can read `pstart` out of plaintext NVS can also read
+// the salt and the wrap, so the only question is whether a second implementation
+// agrees about the bytes. Including it keeps that answer short.
 //
 // Separate from the derivation itself so the concatenation -- the part a second
 // implementation gets wrong, and the part the laptop's `provision.json` describes
-// in prose ("PIN bytes || deviceSecret") -- is host-testable. The PBKDF2 call over
-// it is mbedtls on the device and OpenSSL in the tests.
-inline bool buildKekPassword(const char* pin, size_t pinLen, const uint8_t* secret, size_t secretLen, uint8_t* out,
-                             size_t outLen, size_t& length) {
+// in prose ("pattern bytes || deviceSecret") -- is host-testable. The PBKDF2 call
+// over it is mbedtls on the device and OpenSSL in the tests.
+inline bool buildKekPassword(const char* pattern, size_t patternLen, const uint8_t* secret, size_t secretLen,
+                             uint8_t* out, size_t outLen, size_t& length) {
   length = 0;
-  if (pin == nullptr || secret == nullptr || out == nullptr) return false;
-  if (pinLen < kPinMinLen || pinLen > kPinMaxLen) return false;
+  if (pattern == nullptr || secret == nullptr || out == nullptr) return false;
+  if (patternLen < kPatternMinPoints || patternLen > kPatternMaxPoints) return false;
   if (secretLen != kDeviceSecretLen) return false;
-  if (outLen < pinLen + secretLen) return false;
-  std::memcpy(out, pin, pinLen);
-  std::memcpy(out + pinLen, secret, secretLen);
-  length = pinLen + secretLen;
+  if (outLen < patternLen + secretLen) return false;
+  std::memcpy(out, pattern, patternLen);
+  std::memcpy(out + patternLen, secret, secretLen);
+  length = patternLen + secretLen;
   return true;
 }
 

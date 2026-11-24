@@ -118,11 +118,15 @@ static inline void sampleInput() {
 #include "activities/lock/PatternLockActivity.h"
 #endif
 #if defined(ENABLE_WALLET) && ENABLE_WALLET
+// CMD:WALLETPROVISION refuses a pattern the gate could not walk, so it needs the
+// grid's own well-formedness check -- the gate ACTIVITY is a separate include
+// above and is gated on a different flag.
 #include "activities/wallet/WalletAsset.h"
 #include "activities/wallet/WalletCryptoDevice.h"
 #include "activities/wallet/WalletGreyPage.h"
 #include "activities/wallet/WalletKeyStore.h"
 #include "activities/wallet/WalletStore.h"
+#include "components/lock/PatternLock.h"
 #endif
 #include "components/UITheme.h"
 #include "fontIds.h"
@@ -4206,7 +4210,7 @@ void loop() {
       } else if (cmd.startsWith("WALLETPROVISION ")) {
         // ## TEST PATH. Not how a device gets provisioned in the end.
         //
-        // The wallet key and the PIN are supposed to arrive from the phone over BLE
+        // The wallet key and the pattern are supposed to arrive from the phone over BLE
         // (P4/P6). That app does not exist, so the laptop writes provision.json and
         // this command pushes it in -- which means the key crosses a USB cable in the
         // clear and is visible in any serial log of this session. It is a test seam
@@ -4214,15 +4218,15 @@ void loop() {
         //
         // Replaced by BLE provisioning; when that lands, this goes.
         char keyHex[80] = {0};
-        char pinText[16] = {0};
+        char patternText[16] = {0};
         char saltHex[48] = {0};
         unsigned long itersArg = 0;
         char forceArg[16] = {0};
-        const int fields = sscanf(cmd.c_str(), "WALLETPROVISION %79s %15s %47s %lu %15s", keyHex, pinText, saltHex,
+        const int fields = sscanf(cmd.c_str(), "WALLETPROVISION %79s %15s %47s %lu %15s", keyHex, patternText, saltHex,
                                   &itersArg, forceArg);
         if (fields < 4) {
           logSerial.printf(
-              "WALLETPROVISION_ERR usage: CMD:WALLETPROVISION <keyhex64> <pin> <salthex32> <iters> [force]\n");
+              "WALLETPROVISION_ERR usage: CMD:WALLETPROVISION <keyhex64> <pattern> <salthex32> <iters> [force]\n");
         } else {
           const bool force = fields >= 5 && strcmp(forceArg, "force") == 0;
           LOG_ERR("MAIN", "*** TEST PATH: CMD:WALLETPROVISION carries the wallet key in the clear over USB. ***");
@@ -4230,20 +4234,30 @@ void loop() {
                   "*** Replaced by BLE provisioning (P4/P6). Never use it on a device holding real papers. ***");
           uint8_t key[wallet::kWalletKeyLen];
           uint8_t salt[wallet::kPbkdf2SaltLen];
-          char pin[wallet::kPinBufBytes];
-          size_t pinLen = 0;
+          char pattern[wallet::kPatternBufBytes];
+          size_t patternLen = 0;
           const bool keyOk = wallet::hexToBytes(keyHex, key, sizeof(key));
           const bool saltOk = wallet::hexToBytes(saltHex, salt, sizeof(salt));
-          const bool pinOk = wallet::normalisePin(pinText, pin, sizeof(pin), pinLen);
+          const bool patternOk = wallet::normalisePattern(patternText, pattern, sizeof(pattern), patternLen);
+          // Geometry is checked separately from the alphabet so the two refusals
+          // read differently: "not hex of the right length" is a typo, "not a path
+          // this grid can walk" is a diagonal or a jump, and a host script fixing
+          // one is not fixing the other.
+          const bool walkableOk =
+              patternOk && patternlock::isWellFormed(pattern, patternlock::startCellOf(pattern),
+                                                     wallet::kPatternMinPoints, wallet::kPatternMaxPoints);
           if (!keyOk) {
             logSerial.printf("WALLETPROVISION_ERR key must be %u hex characters\n",
                              static_cast<unsigned>(wallet::kWalletKeyLen * 2));
           } else if (!saltOk) {
             logSerial.printf("WALLETPROVISION_ERR salt must be %u hex characters\n",
                              static_cast<unsigned>(wallet::kPbkdf2SaltLen * 2));
-          } else if (!pinOk) {
-            logSerial.printf("WALLETPROVISION_ERR pin must be %u-%u of U/D/L/R\n",
-                             static_cast<unsigned>(wallet::kPinMinLen), static_cast<unsigned>(wallet::kPinMaxLen));
+          } else if (!patternOk) {
+            logSerial.printf("WALLETPROVISION_ERR pattern must be %u-%u cells of 0-9a-f\n",
+                             static_cast<unsigned>(wallet::kPatternMinPoints),
+                             static_cast<unsigned>(wallet::kPatternMaxPoints));
+          } else if (!walkableOk) {
+            logSerial.printf("WALLETPROVISION_ERR pattern is not a walk on the 4x4 grid (no diagonals, no jumps)\n");
           } else if (itersArg == 0 || itersArg > wallet::kMaxProvisionIterations) {
             logSerial.printf("WALLETPROVISION_ERR iterations must be 1..%lu\n",
                              static_cast<unsigned long>(wallet::kMaxProvisionIterations));
@@ -4252,11 +4266,11 @@ void loop() {
             // the derivation inside it is the same work an unlock pays, and running it
             // twice would double a wait that already blocks the main loop.
             const uint32_t startedUs = micros();
-            const bool ok = wallet::KeyStore::provision(key, pin, pinLen, salt, sizeof(salt),
+            const bool ok = wallet::KeyStore::provision(key, pattern, patternLen, salt, sizeof(salt),
                                                         static_cast<uint32_t>(itersArg), force);
             const uint32_t micros1 = micros() - startedUs;
             wallet::secureWipe(key, sizeof(key));
-            wallet::secureWipe(pin, sizeof(pin));
+            wallet::secureWipe(pattern, sizeof(pattern));
             if (ok) {
               // Provisioning invalidates any session key: it may be a different wallet.
               wallet::Session::instance().clear("provisioned");
@@ -4296,36 +4310,40 @@ void loop() {
       } else if (cmd.startsWith("WALLETUNLOCK ")) {
         // ## TEST PATH. The same two warnings as WALLETPROVISION apply.
         //
-        // PIN entry is four physical buttons, so without this nobody can verify the
-        // whole crypto path -- manifest decrypt, asset decrypt, the wrong-key refusal,
-        // the code screen on an encrypted tree -- unless a person is standing at the
-        // device. That is precisely the list the host tests cannot reach
-        // (docs/wallet-crypto.md).
+        // Pattern entry is a walk on a grid driven by four physical buttons, so
+        // without this nobody can verify the whole crypto path -- manifest decrypt,
+        // asset decrypt, the wrong-key refusal, the code screen on an encrypted tree
+        // -- unless a person is standing at the device. That is precisely the list the
+        // host tests cannot reach (docs/wallet-crypto.md).
         //
-        // It drives the REAL path: KeyStore::tryUnlock(), the same call the PIN screen
-        // makes, with the same unwrap, the same rate limiter and the same session. A
-        // command that installed K directly would verify nothing about the thing it is
-        // meant to verify.
-        char pinText[16] = {0};
-        if (sscanf(cmd.c_str(), "WALLETUNLOCK %15s", pinText) != 1) {
+        // It drives the REAL path: KeyStore::tryUnlock(), the same call the gate's
+        // verifier makes, with the same unwrap, the same rate limiter and the same
+        // session. A command that installed K directly would verify nothing about the
+        // thing it is meant to verify.
+        //
+        // The argument is the gate's own encoding, start cell first:
+        // `CMD:WALLETUNLOCK 56789abcd`. `CMD:WALLETSTATUS` prints the start cell this
+        // device expects, which is the one character no walk can choose.
+        char patternText[16] = {0};
+        if (sscanf(cmd.c_str(), "WALLETUNLOCK %15s", patternText) != 1) {
           logSerial.printf("WALLETUNLOCK_ERR usage attempts=%u\n", static_cast<unsigned>(wallet::KeyStore::failures()));
         } else {
           LOG_ERR("MAIN", "*** TEST PATH: CMD:WALLETUNLOCK opened the wallet from the host, not from a person. ***");
           LOG_ERR("MAIN",
-                  "*** The PIN crossed a USB cable in the clear. Replaced by nothing -- it is a test seam. ***");
+                  "*** The pattern crossed a USB cable in the clear. Replaced by nothing -- it is a test seam. ***");
           uint32_t unwrapMicros = 0;
           uint32_t waitMs = 0;
           uint8_t failures = 0;
-          const wallet::UnlockResult result = wallet::KeyStore::tryUnlock(pinText, unwrapMicros, failures, waitMs);
-          // The typed PIN does not get to stay in the command buffer.
-          wallet::secureWipe(pinText, sizeof(pinText));
+          const wallet::UnlockResult result = wallet::KeyStore::tryUnlock(patternText, unwrapMicros, failures, waitMs);
+          // The typed pattern does not get to stay in the command buffer.
+          wallet::secureWipe(patternText, sizeof(patternText));
           if (result == wallet::UnlockResult::Ok) {
             logSerial.printf("WALLETUNLOCK_OK unwrap_us=%lu\n", static_cast<unsigned long>(unwrapMicros));
           } else {
             // attempts is the count AFTER this one, and wait_ms is the delay now being
             // enforced -- so a host can watch the limiter double without guessing.
             logSerial.printf("WALLETUNLOCK_ERR %s attempts=%u of %u wait_ms=%lu\n", wallet::unlockResultName(result),
-                             static_cast<unsigned>(failures), static_cast<unsigned>(wallet::kMaxPinFailures),
+                             static_cast<unsigned>(failures), static_cast<unsigned>(wallet::kMaxUnlockFailures),
                              static_cast<unsigned long>(waitMs));
             if (result == wallet::UnlockResult::NotProvisioned) {
               logSerial.printf("WALLETUNLOCK_ERR no wrap in NVS: run CMD:WALLETPROVISION first\n");
@@ -4360,12 +4378,19 @@ void loop() {
         if (wallet::readCardWalletVersion(cv)) cardVersion = static_cast<long>(cv);
         logSerial.printf(
             "WALLETSTATUS provisioned=%d unlocked=%d attempts=%u of %u wait_ms=%lu manifest=%s items=%d "
-            "walletVersion=%ld idle_left_ms=%lu iters=%lu\n",
+            "walletVersion=%ld idle_left_ms=%lu iters=%lu pattern_start=%d\n",
             wallet::KeyStore::isProvisioned() ? 1 : 0, session.hasKey() ? 1 : 0,
-            static_cast<unsigned>(wallet::KeyStore::failures()), static_cast<unsigned>(wallet::kMaxPinFailures),
+            static_cast<unsigned>(wallet::KeyStore::failures()), static_cast<unsigned>(wallet::kMaxUnlockFailures),
             static_cast<unsigned long>(session.retryWaitMs()), manifestKind, items, cardVersion,
             static_cast<unsigned long>(session.idleLeftMs()),
-            static_cast<unsigned long>(wallet::KeyStore::iterations()));
+            static_cast<unsigned long>(wallet::KeyStore::iterations()),
+            // -1 for "this device has no stored start cell". It is the one
+            // character of a pattern no walk can choose, so a host driving
+            // CMD:WALLETUNLOCK has to be told it rather than guess
+            // (WalletKeyStore.h, pstart).
+            wallet::KeyStore::patternStart() == wallet::kPatternNoStart
+                ? -1
+                : static_cast<int>(wallet::KeyStore::patternStart()));
       } else if (cmd == "WALLETGREY" || cmd.startsWith("WALLETGREY ")) {
         // The A/B switch of P2b, from a host, because the question it serves is
         // "does grey read better than dither on this panel" and the answer is a

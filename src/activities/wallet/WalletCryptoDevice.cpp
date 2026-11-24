@@ -93,24 +93,25 @@ bool gcmUnwrapKey(const uint8_t kek[kWalletKeyLen], const uint8_t* wrapped, cons
   return ok;
 }
 
-bool deriveKek(const char* pin, const size_t pinLen, const uint8_t* deviceSecret, const size_t secretLen,
+bool deriveKek(const char* pattern, const size_t patternLen, const uint8_t* deviceSecret, const size_t secretLen,
                const uint8_t* salt, const size_t saltLen, const uint32_t iterations, uint8_t out[kWalletKeyLen]) {
-  if (pin == nullptr || deviceSecret == nullptr || salt == nullptr || out == nullptr) return false;
-  if (pinLen == 0 || pinLen > kPinMaxLen || secretLen != kDeviceSecretLen || iterations == 0) return false;
+  if (pattern == nullptr || deviceSecret == nullptr || salt == nullptr || out == nullptr) return false;
+  if (patternLen == 0 || patternLen > kPatternMaxPoints || secretLen != kDeviceSecretLen || iterations == 0)
+    return false;
 
-  // password = PIN bytes || deviceSecret. The PIN alone is 2^12..2^20; the secret
+  // password = pattern bytes || deviceSecret. The pattern alone is 2^12..2^20; the secret
   // is what makes the wrap worth attacking offline at all, and it never leaves the
   // device, so the laptop cannot compute this.
   uint8_t password[kKekPasswordBufBytes];
   size_t passwordLen = 0;
-  if (!buildKekPassword(pin, pinLen, deviceSecret, secretLen, password, sizeof(password), passwordLen)) {
+  if (!buildKekPassword(pattern, patternLen, deviceSecret, secretLen, password, sizeof(password), passwordLen)) {
     secureWipe(password, sizeof(password));
     return false;
   }
 
   const int rc = mbedtls_pkcs5_pbkdf2_hmac_ext(MBEDTLS_MD_SHA256, password, passwordLen, salt, saltLen, iterations,
                                                static_cast<uint32_t>(kWalletKeyLen), out);
-  // The password held the PIN; it does not get to sit on the stack afterwards.
+  // The password held the pattern; it does not get to sit on the stack afterwards.
   secureWipe(password, sizeof(password));
   if (rc != 0) {
     LOG_ERR(kLogTag, "PBKDF2 failed: %d", rc);
@@ -131,7 +132,7 @@ void randomBytes(uint8_t* out, const size_t len) {
 uint32_t timePbkdf2Micros(const uint32_t iterations) {
   // A fixed, meaningless password and salt: the cost of PBKDF2 does not depend on
   // their content, only on the iteration count and the digest.
-  uint8_t password[kPinMaxLen + kDeviceSecretLen] = {0};
+  uint8_t password[kPatternMaxPoints + kDeviceSecretLen] = {0};
   uint8_t salt[kPbkdf2SaltLen] = {0};
   uint8_t out[kWalletKeyLen];
   const uint32_t started = micros();
@@ -179,7 +180,7 @@ uint32_t Session::idleLeftMs() const {
 }
 
 void Session::armRetryDelay(const uint8_t failures) {
-  const uint32_t delay = pinFailureDelayMs(failures);
+  const uint32_t delay = unlockFailureDelayMs(failures);
   retryAtMs_ = delay > 0 ? millis() + delay : 0;
 }
 

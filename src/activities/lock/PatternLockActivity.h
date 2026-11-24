@@ -104,6 +104,16 @@ class PatternLockActivity final : public Activity {
     // `patternlock::startCellOf()` reads it off a stored pattern; pass the two
     // together or not at all.
     uint8_t startCell = patternlock::kDefaultStart;
+    // How long a pattern this gate wants, start included. The default is this
+    // file's absolute range; a caller that derives a key from the path asks for
+    // more, because the floor is what an attacker searches first and a 4-point
+    // path is 46 walks (PatternLock.h, the space table).
+    //
+    // **Whatever a caller puts here it must also pass to
+    // `patternlock::isWellFormed()` when it validates a stored pattern**, or it
+    // can store one this gate will not let a rider finish.
+    size_t minPoints = patternlock::kMinPoints;
+    size_t maxPoints = patternlock::kMaxPoints;
     // Asked once on entry, so a rate limiter the caller is already enforcing shows
     // up before the first press rather than after the first wasted attempt -- a
     // power cycle must not buy a fresh set of guesses. Its own callback and not an

@@ -5,6 +5,7 @@
 #include <Preferences.h>
 
 #include "WalletCryptoDevice.h"
+#include "components/lock/PatternLock.h"
 
 namespace wallet {
 
@@ -19,6 +20,11 @@ constexpr const char* kKeySalt = "salt";
 constexpr const char* kKeyIters = "iters";
 constexpr const char* kKeyWrap = "wrap";
 constexpr const char* kKeyFails = "fails";
+// The cell the stored pattern starts on. Not a secret -- the gate draws the
+// cursor on it before the first press -- but the wrap says nothing about the path
+// that produced it, so without this the gate opens on the wrong cell and no path
+// a rider can walk will ever match (PatternLock.h, isWellFormed).
+constexpr const char* kKeyPatternStart = "pstart";
 
 // Reads the device secret, making one the first time anybody asks. Generated on
 // the device and never sent anywhere: it is what stops a leaked provisioning file
@@ -64,11 +70,34 @@ uint32_t KeyStore::iterations() {
   return iters;
 }
 
-bool KeyStore::provision(const uint8_t key[kWalletKeyLen], const char* pin, const size_t pinLen, const uint8_t* salt,
-                         const size_t saltLen, const uint32_t iterations, const bool force) {
-  if (key == nullptr || pin == nullptr || salt == nullptr) return false;
-  if (pinLen < kPinMinLen || pinLen > kPinMaxLen) return false;
+uint8_t KeyStore::patternStart() {
+  Preferences prefs;
+  if (!prefs.begin(kNamespace, true)) return kPatternNoStart;
+  // 0xFF rather than the grid's default cell: a caller must be able to tell "this
+  // device has no stored start" from "it starts at 5". Defaulting to a real cell
+  // would hand the gate a plausible wrong answer on an unprovisioned device, and
+  // a plausible wrong answer here reads on the panel as a gate that refuses a
+  // pattern the rider is entering correctly.
+  const uint8_t start = prefs.getUChar(kKeyPatternStart, kPatternNoStart);
+  prefs.end();
+  return start < patternlock::kCells ? start : kPatternNoStart;
+}
+
+bool KeyStore::provision(const uint8_t key[kWalletKeyLen], const char* pattern, const size_t patternLen,
+                         const uint8_t* salt, const size_t saltLen, const uint32_t iterations, const bool force) {
+  if (key == nullptr || pattern == nullptr || salt == nullptr) return false;
+  if (patternLen < kPatternMinPoints || patternLen > kPatternMaxPoints) return false;
   if (saltLen != kPbkdf2SaltLen || iterations == 0) return false;
+  // Geometry, here and nowhere else. This is the one moment the device chooses
+  // what it will later demand, so it is the only moment a pattern nobody can walk
+  // can be refused -- a wrap made from an illegal path is a wallet that opens for
+  // no one, and no later check can undo it. The start cell is read off the
+  // pattern itself, so the stored cell and the stored wrap cannot disagree.
+  const uint8_t startCell = patternlock::startCellOf(pattern);
+  if (!patternlock::isWellFormed(pattern, startCell, kPatternMinPoints, kPatternMaxPoints)) {
+    LOG_ERR(kLogTag, "refusing a pattern this device's gate cannot produce");
+    return false;
+  }
 
   if (isProvisioned() && !force) {
     // Overwriting a wrap makes every asset already on the card unreadable for
@@ -81,7 +110,7 @@ bool KeyStore::provision(const uint8_t key[kWalletKeyLen], const char* pin, cons
   if (!loadOrCreateDeviceSecret(secret)) return false;
 
   uint8_t kek[kWalletKeyLen];
-  const bool derived = deriveKek(pin, pinLen, secret, sizeof(secret), salt, saltLen, iterations, kek);
+  const bool derived = deriveKek(pattern, patternLen, secret, sizeof(secret), salt, saltLen, iterations, kek);
   secureWipe(secret, sizeof(secret));
   if (!derived) return false;
 
@@ -99,7 +128,12 @@ bool KeyStore::provision(const uint8_t key[kWalletKeyLen], const char* pin, cons
     secureWipe(wrapped, sizeof(wrapped));
     return false;
   }
+  // `pstart` is written before the wrap on purpose. A power cut between them
+  // leaves a start cell with no wrap, which `isProvisioned()` already reports as
+  // unprovisioned; the other order leaves a wrap whose start cell is missing,
+  // which is a wallet nobody can open.
   const bool stored = prefs.putBytes(kKeySalt, salt, saltLen) == saltLen && prefs.putUInt(kKeyIters, iterations) > 0 &&
+                      prefs.putUChar(kKeyPatternStart, startCell) > 0 &&
                       prefs.putBytes(kKeyWrap, wrapped, sizeof(wrapped)) == sizeof(wrapped) &&
                       prefs.putUChar(kKeyFails, 0) > 0;
   prefs.end();
@@ -108,13 +142,14 @@ bool KeyStore::provision(const uint8_t key[kWalletKeyLen], const char* pin, cons
     LOG_ERR(kLogTag, "storing the wrap failed");
     return false;
   }
-  LOG_INF(kLogTag, "provisioned: %u PBKDF2 iterations, %u-byte salt, wrap stored", static_cast<unsigned>(iterations),
-          static_cast<unsigned>(saltLen));
+  LOG_INF(kLogTag, "provisioned: %u PBKDF2 iterations, %u-byte salt, start cell %u, wrap stored",
+          static_cast<unsigned>(iterations), static_cast<unsigned>(saltLen), static_cast<unsigned>(startCell));
   return true;
 }
 
-bool KeyStore::unwrap(const char* pin, const size_t pinLen, uint8_t out[kWalletKeyLen]) {
-  if (pin == nullptr || out == nullptr || pinLen < kPinMinLen || pinLen > kPinMaxLen) return false;
+bool KeyStore::unwrap(const char* pattern, const size_t patternLen, uint8_t out[kWalletKeyLen]) {
+  if (pattern == nullptr || out == nullptr || patternLen < kPatternMinPoints || patternLen > kPatternMaxPoints)
+    return false;
 
   uint8_t secret[kDeviceSecretLen];
   uint8_t salt[kPbkdf2SaltLen];
@@ -137,7 +172,7 @@ bool KeyStore::unwrap(const char* pin, const size_t pinLen, uint8_t out[kWalletK
   }
 
   uint8_t kek[kWalletKeyLen];
-  const bool derived = deriveKek(pin, pinLen, secret, sizeof(secret), salt, sizeof(salt), iters, kek);
+  const bool derived = deriveKek(pattern, patternLen, secret, sizeof(secret), salt, sizeof(salt), iters, kek);
   secureWipe(secret, sizeof(secret));
   if (!derived) {
     secureWipe(wrapped, sizeof(wrapped));
@@ -147,47 +182,48 @@ bool KeyStore::unwrap(const char* pin, const size_t pinLen, uint8_t out[kWalletK
   const bool ok = gcmUnwrapKey(kek, wrapped, sizeof(wrapped), out);
   secureWipe(kek, sizeof(kek));
   secureWipe(wrapped, sizeof(wrapped));
-  // A failure is a wrong PIN or an altered wrap, and GCM cannot say which. The
+  // A failure is a wrong pattern or an altered wrap, and GCM cannot say which. The
   // caller counts it against the rate limiter either way.
   return ok;
 }
 
-UnlockResult KeyStore::tryUnlock(const char* pinText, uint32_t& unwrapMicros, uint8_t& failures, uint32_t& waitMs) {
+UnlockResult KeyStore::tryUnlock(const char* patternText, uint32_t& unwrapMicros, uint8_t& failures,
+                                 uint32_t& waitMs) {
   unwrapMicros = 0;
   waitMs = 0;
   failures = KeyStore::failures();
 
-  char pin[kPinBufBytes];
-  size_t pinLen = 0;
-  if (!normalisePin(pinText, pin, sizeof(pin), pinLen)) {
-    // Not a PIN at all. Refused without touching the counter: a typo must not spend
-    // one of ten attempts.
-    secureWipe(pin, sizeof(pin));
+  char pattern[kPatternBufBytes];
+  size_t patternLen = 0;
+  if (!normalisePattern(patternText, pattern, sizeof(pattern), patternLen)) {
+    // Not a pattern at all. Refused without touching the counter: a typo must not
+    // spend one of ten attempts.
+    secureWipe(pattern, sizeof(pattern));
     return UnlockResult::Malformed;
   }
   if (!isProvisioned()) {
-    secureWipe(pin, sizeof(pin));
+    secureWipe(pattern, sizeof(pattern));
     return UnlockResult::NotProvisioned;
   }
-  if (pinIsLockedOut(failures)) {
-    secureWipe(pin, sizeof(pin));
+  if (isLockedOut(failures)) {
+    secureWipe(pattern, sizeof(pattern));
     return UnlockResult::LockedOut;
   }
   // The delay is re-armed from the persisted count every time an unlock path starts,
-  // so a reboot cannot skip it, and the gate is shared with the PIN screen.
+  // so a reboot cannot skip it, and the gate is shared with the pattern screen.
   Session& session = Session::instance();
   session.armRetryDelay(failures);
   waitMs = session.retryWaitMs();
   if (waitMs > 0) {
-    secureWipe(pin, sizeof(pin));
+    secureWipe(pattern, sizeof(pattern));
     return UnlockResult::Waiting;
   }
 
   uint8_t key[kWalletKeyLen];
   const uint32_t startedUs = micros();
-  const bool ok = unwrap(pin, pinLen, key);
+  const bool ok = unwrap(pattern, patternLen, key);
   unwrapMicros = micros() - startedUs;
-  secureWipe(pin, sizeof(pin));
+  secureWipe(pattern, sizeof(pattern));
 
   if (!ok) {
     secureWipe(key, sizeof(key));
@@ -195,7 +231,7 @@ UnlockResult KeyStore::tryUnlock(const char* pinText, uint32_t& unwrapMicros, ui
     failures = KeyStore::failures();
     session.armRetryDelay(failures);
     waitMs = session.retryWaitMs();
-    return pinIsLockedOut(failures) ? UnlockResult::LockedOut : UnlockResult::BadPin;
+    return isLockedOut(failures) ? UnlockResult::LockedOut : UnlockResult::BadPattern;
   }
 
   session.setKey(key);
@@ -237,6 +273,10 @@ void KeyStore::forgetWrap() {
   prefs.remove(kKeyWrap);
   prefs.remove(kKeySalt);
   prefs.remove(kKeyIters);
+  // The start cell goes with the wrap it belongs to. Leaving it behind would make
+  // the next gate open on the old pattern's cell while the new wrap expects
+  // another, which is the same permanent lockout provisioning refuses up front.
+  prefs.remove(kKeyPatternStart);
   prefs.putUChar(kKeyFails, 0);
   prefs.end();
   LOG_INF(kLogTag, "wrap forgotten; the device secret stays");

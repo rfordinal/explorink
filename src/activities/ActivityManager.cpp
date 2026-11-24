@@ -265,10 +265,14 @@ void ActivityManager::goToWebServerStation() {
 void ActivityManager::goToWallet(const int itemIndex, const int codeIndex) {
 #if defined(ENABLE_WALLET) && ENABLE_WALLET
   // An encrypted tree with no key in the session cannot list anything -- the titles
-  // are inside the encrypted manifest -- so the PIN screen comes first and carries
-  // the requested target through the unlock. A cleartext tree, and an already
-  // unlocked one, go straight to the list: a card in the field may be either
+  // are inside the encrypted manifest -- so the gate comes first and carries the
+  // requested target through the unlock. A cleartext tree, and an already unlocked
+  // one, go straight to the list: a card in the field may be either
   // (docs/wallet-crypto.md).
+  //
+  // This is called twice per unlock and that is the design: the gate host replaces
+  // itself by calling back in here once the session has K, so the branch below
+  // picks the list the second time round (WalletUnlockActivity.h).
   if (wallet::treeIsEncrypted() && !wallet::Session::instance().hasKey()) {
     replaceActivity(std::make_unique<WalletUnlockActivity>(renderer, mappedInput, itemIndex, codeIndex));
     return;

@@ -37,8 +37,9 @@ bool gcmWrapKey(const uint8_t kek[kWalletKeyLen], const uint8_t key[kWalletKeyLe
 bool gcmUnwrapKey(const uint8_t kek[kWalletKeyLen], const uint8_t* wrapped, size_t wrappedLen,
                   uint8_t out[kWalletKeyLen]);
 
-// KEK = PBKDF2-HMAC-SHA256(PIN bytes || deviceSecret, salt, iterations).
-bool deriveKek(const char* pin, size_t pinLen, const uint8_t* deviceSecret, size_t secretLen, const uint8_t* salt,
+// KEK = PBKDF2-HMAC-SHA256(pattern bytes || deviceSecret, salt, iterations).
+bool deriveKek(const char* pattern, size_t patternLen, const uint8_t* deviceSecret, size_t secretLen,
+               const uint8_t* salt,
                size_t saltLen, uint32_t iterations, uint8_t out[kWalletKeyLen]);
 
 // Hardware RNG. Used for the device secret, the salt and every wrap nonce.
@@ -78,7 +79,7 @@ class Session {
   // Milliseconds of idle left before the key dies, 0 when there is no key.
   uint32_t idleLeftMs() const;
   // Arms the rate limiter's delay for `failures` consecutive failures. Lives here
-  // rather than in the PIN screen so the screen and CMD:WALLETUNLOCK share one gate
+  // rather than in the gate screen so the screen and CMD:WALLETUNLOCK share one gate
   // -- otherwise a host command could step around a delay the screen is enforcing.
   void armRetryDelay(uint8_t failures);
   // True when it cleared the key. Checked from the wallet screens' loop().

@@ -10,6 +10,7 @@
 #include "WalletAsset.h"
 #include "WalletCrypto.h"
 #include "WalletCryptoHost.h"
+#include "components/lock/PatternLock.h"
 #include "WalletGreyStatus.h"
 #include "WalletGreySynth.h"
 #include "WalletManifestParser.h"
@@ -1486,7 +1487,7 @@ TEST(WalletCodeHints, EveryTranslationOfThemFitsTheHintBox) {
 // fixtures/enc/ is verbatim output of
 //
 //   tools/walletgen.py --demo --paper a4 --panel x4 --title "Boarding pass"
-//       --code "qr:M1DOE/JOHN ..." --key <the test key below> --pin UDLRUD
+//       --code "qr:M1DOE/JOHN ..." --key <the test key below> --pattern 567ba98c
 //
 // -- `manifest.enc` and the encrypted QR asset. The key is
 // 000102...1f, a deliberately non-secret test key committed on purpose; a real
@@ -1927,10 +1928,13 @@ TEST(WalletCryptoManifest, EnvelopeRefusesWhatItCannotBe) {
   EXPECT_EQ(kMaxEncryptedManifestBytes, 32u * 1024u);
 }
 
-TEST(WalletCryptoKek, ThePasswordIsPinThenSecretAndTheWrapRoundTrips) {
+TEST(WalletCryptoKek, ThePasswordIsPatternThenSecretAndTheWrapRoundTrips) {
   // The formula, end to end, with OpenSSL standing in for mbedtls: the KEK is
-  // PBKDF2(PIN bytes || deviceSecret), and it wraps K with AES-256-GCM.
-  const char* pin = "UDLRUD";
+  // PBKDF2(pattern bytes || deviceSecret), and it wraps K with AES-256-GCM.
+  //
+  // "567ba98c" is a legal walk from the interior cell 5: right, right, down,
+  // left, left, left, down. Eight points, the wallet's floor.
+  const char* pattern = "567ba98c";
   uint8_t secret[kDeviceSecretLen];
   for (size_t i = 0; i < sizeof(secret); ++i) secret[i] = static_cast<uint8_t>(0xA0 + i);
   const uint8_t salt[kPbkdf2SaltLen] = {0x78, 0xa3, 0x20, 0x45, 0xfc, 0x9d, 0x47, 0x94,
@@ -1938,17 +1942,18 @@ TEST(WalletCryptoKek, ThePasswordIsPinThenSecretAndTheWrapRoundTrips) {
 
   uint8_t password[kKekPasswordBufBytes];
   size_t passwordLen = 0;
-  ASSERT_TRUE(buildKekPassword(pin, std::strlen(pin), secret, sizeof(secret), password, sizeof(password), passwordLen));
-  EXPECT_EQ(passwordLen, std::strlen(pin) + sizeof(secret));
-  EXPECT_EQ(std::memcmp(password, "UDLRUD", 6), 0) << "the PIN's ASCII comes first";
-  EXPECT_EQ(std::memcmp(password + 6, secret, sizeof(secret)), 0) << "then the device secret, nothing between";
+  ASSERT_TRUE(buildKekPassword(pattern, std::strlen(pattern), secret, sizeof(secret), password, sizeof(password), passwordLen));
+  EXPECT_EQ(passwordLen, std::strlen(pattern) + sizeof(secret));
+  EXPECT_EQ(std::memcmp(password, "567ba98c", 8), 0) << "the encoded path comes first, start cell included";
+  EXPECT_EQ(std::memcmp(password + 8, secret, sizeof(secret)), 0) << "then the device secret, nothing between";
 
-  // A short PIN, a wrong-sized secret and a small buffer are all refused rather
-  // than padded into something that half works.
+  // A short pattern, a wrong-sized secret and a small buffer are all refused
+  // rather than padded into something that half works.
   size_t ignored = 0;
-  EXPECT_FALSE(buildKekPassword("UDL", 3, secret, sizeof(secret), password, sizeof(password), ignored));
-  EXPECT_FALSE(buildKekPassword(pin, std::strlen(pin), secret, 31, password, sizeof(password), ignored));
-  EXPECT_FALSE(buildKekPassword(pin, std::strlen(pin), secret, sizeof(secret), password, 8, ignored));
+  EXPECT_FALSE(buildKekPassword("567b", 4, secret, sizeof(secret), password, sizeof(password), ignored))
+      << "the gate's own floor of 4 points is below the wallet's, and this is the wallet's buffer";
+  EXPECT_FALSE(buildKekPassword(pattern, std::strlen(pattern), secret, 31, password, sizeof(password), ignored));
+  EXPECT_FALSE(buildKekPassword(pattern, std::strlen(pattern), secret, sizeof(secret), password, 8, ignored));
 
   // Two iteration counts, one of them small enough to keep the test fast; the real
   // count is a device measurement (docs/wallet-crypto.md).
@@ -1965,26 +1970,27 @@ TEST(WalletCryptoKek, ThePasswordIsPinThenSecretAndTheWrapRoundTrips) {
                                        wrapped + kGcmNonceLen, kWalletKeyLen, unwrapped));
   EXPECT_EQ(std::memcmp(unwrapped, kTestKey, kWalletKeyLen), 0);
 
-  // One wrong symbol in the PIN and the unwrap fails. Not "gives a wrong key" --
-  // fails, because the wrap is authenticated.
+  // One wrong cell in the pattern -- the last step up instead of down, both legal
+  // walks -- and the unwrap fails. Not "gives a wrong key": fails, because the
+  // wrap is authenticated.
   uint8_t wrongPassword[kKekPasswordBufBytes];
   size_t wrongLen = 0;
-  ASSERT_TRUE(buildKekPassword("UDLRUU", 6, secret, sizeof(secret), wrongPassword, sizeof(wrongPassword), wrongLen));
+  ASSERT_TRUE(buildKekPassword("567ba984", 8, secret, sizeof(secret), wrongPassword, sizeof(wrongPassword), wrongLen));
   uint8_t wrongKek[kWalletKeyLen];
   ASSERT_TRUE(wallet::host::pbkdf2(wrongPassword, wrongLen, salt, sizeof(salt), 1000, wrongKek));
   EXPECT_NE(std::memcmp(wrongKek, kek, sizeof(kek)), 0);
   EXPECT_FALSE(wallet::host::gcmDecrypt(wrongKek, wrapped, kGcmNonceLen, wrapped + kGcmNonceLen + kWalletKeyLen,
                                         kGcmTagLen, wrapped + kGcmNonceLen, kWalletKeyLen, unwrapped))
-      << "a wrong PIN must fail the unwrap, not return a plausible key";
+      << "a wrong pattern must fail the unwrap, not return a plausible key";
 
-  // And the device secret matters as much as the PIN: same PIN, another device, no
-  // unwrap. That is what makes a leaked provisioning file not a wrap.
+  // And the device secret matters as much as the pattern: same pattern, another
+  // device, no unwrap. That is what makes a leaked provisioning file not a wrap.
   uint8_t otherSecret[kDeviceSecretLen];
   std::memcpy(otherSecret, secret, sizeof(otherSecret));
   otherSecret[0] ^= 0x01;
   uint8_t otherPassword[kKekPasswordBufBytes];
   size_t otherLen = 0;
-  ASSERT_TRUE(buildKekPassword(pin, std::strlen(pin), otherSecret, sizeof(otherSecret), otherPassword,
+  ASSERT_TRUE(buildKekPassword(pattern, std::strlen(pattern), otherSecret, sizeof(otherSecret), otherPassword,
                                sizeof(otherPassword), otherLen));
   uint8_t otherKek[kWalletKeyLen];
   ASSERT_TRUE(wallet::host::pbkdf2(otherPassword, otherLen, salt, sizeof(salt), 1000, otherKek));
@@ -1992,57 +1998,83 @@ TEST(WalletCryptoKek, ThePasswordIsPinThenSecretAndTheWrapRoundTrips) {
                                         kGcmTagLen, wrapped + kGcmNonceLen, kWalletKeyLen, unwrapped));
 }
 
-TEST(WalletCryptoPin, NormalisesAndRefusesWhatCannotBeAPin) {
-  char out[kPinBufBytes];
+TEST(WalletCryptoPattern, NormalisesAndRefusesWhatCannotBeAPattern) {
+  char out[kPatternBufBytes];
   size_t len = 0;
 
-  ASSERT_TRUE(normalisePin("UDLRUD", out, sizeof(out), len));
-  EXPECT_EQ(len, 6u);
-  EXPECT_STREQ(out, "UDLRUD");
-  // Lower case is the same PIN: the symbols are directions, not letters a rider
-  // types with a shift key.
-  ASSERT_TRUE(normalisePin("udlrud", out, sizeof(out), len));
-  EXPECT_STREQ(out, "UDLRUD");
-  ASSERT_TRUE(normalisePin("UUUUUUUUUU", out, sizeof(out), len));
-  EXPECT_EQ(len, kPinMaxLen);
+  ASSERT_TRUE(normalisePattern("567ba98c", out, sizeof(out), len));
+  EXPECT_EQ(len, 8u);
+  EXPECT_STREQ(out, "567ba98c");
+  // Upper case is the same pattern: the characters are cell numbers in hex, not
+  // letters a rider types with a shift key. The gate always emits lower case, so
+  // this only matters for a host typing CMD:WALLETUNLOCK.
+  ASSERT_TRUE(normalisePattern("567BA98C", out, sizeof(out), len));
+  EXPECT_STREQ(out, "567ba98c");
+  ASSERT_TRUE(normalisePattern("567ba98cdefb", out, sizeof(out), len));
+  EXPECT_EQ(len, kPatternMaxPoints);
 
-  // Too short, too long, and not a direction. Refused here so a typo is a message
+  // Too short, too long, and not a hex cell. Refused here so a typo is a message
   // rather than an attempt spent against the rate limiter.
-  EXPECT_FALSE(normalisePin("UDLR", out, sizeof(out), len));
-  EXPECT_FALSE(normalisePin("UUUUUUUUUUU", out, sizeof(out), len));
-  EXPECT_FALSE(normalisePin("UDLR1D", out, sizeof(out), len));
-  EXPECT_FALSE(normalisePin("UDLR D", out, sizeof(out), len));
-  EXPECT_FALSE(normalisePin("", out, sizeof(out), len));
-  EXPECT_FALSE(normalisePin(nullptr, out, sizeof(out), len));
+  EXPECT_FALSE(normalisePattern("567ba98", out, sizeof(out), len)) << "seven points is below the wallet's floor";
+  EXPECT_FALSE(normalisePattern("567ba98cdefba", out, sizeof(out), len));
+  EXPECT_FALSE(normalisePattern("567ba98g", out, sizeof(out), len)) << "'g' is not one of sixteen cells";
+  EXPECT_FALSE(normalisePattern("567ba 8c", out, sizeof(out), len));
+  EXPECT_FALSE(normalisePattern("", out, sizeof(out), len));
+  EXPECT_FALSE(normalisePattern(nullptr, out, sizeof(out), len));
   EXPECT_EQ(len, 0u) << "a refusal must not leave a length behind";
 
-  // The four symbols round-trip through their ASCII, which is what the KDF password
-  // is built from.
-  for (const char c : std::string("UDLR")) {
-    PinSymbol symbol = PinSymbol::Up;
-    ASSERT_TRUE(pinSymbolFromChar(c, symbol));
-    EXPECT_EQ(pinSymbolChar(symbol), c);
+  // **Geometry is deliberately not checked here.** "0123456789ab" is twelve legal
+  // hex cells and not a walk -- 3 to 4 jumps a row -- and normalisePattern accepts
+  // it, because at unlock time a path that reaches this function came from the
+  // gate, which cannot produce an illegal step. Provisioning is where the walk is
+  // checked, and the next test is that one.
+  EXPECT_TRUE(normalisePattern("0123456789ab", out, sizeof(out), len));
+}
+
+TEST(WalletCryptoPattern, ProvisioningRefusesAPathTheGateCannotWalk) {
+  // The permanent-lockout guard. A wrap made from a path nobody can enter is a
+  // wallet that opens for no one and there is no way back from it, so the check
+  // belongs at the one moment the device chooses what it will later demand.
+  //
+  // This is the arithmetic half of KeyStore::provision()'s refusal; the NVS half
+  // needs a device.
+  for (const char* good : {"567ba98c", "567ba98cdefb"}) {
+    EXPECT_TRUE(patternlock::isWellFormed(good, patternlock::startCellOf(good), kPatternMinPoints, kPatternMaxPoints))
+        << good;
   }
+  // Legal hex, illegal walk: a jump across the grid between '3' and '4'.
+  EXPECT_FALSE(patternlock::isWellFormed("0123456789ab", patternlock::startCellOf("0123456789ab"), kPatternMinPoints,
+                                         kPatternMaxPoints));
+  // A legal walk the wallet is still too short to accept. The gate's own floor is
+  // four points; passing the wallet's range is what keeps the two from
+  // disagreeing about the same stored pattern.
+  EXPECT_TRUE(patternlock::isWellFormed("567b", patternlock::startCellOf("567b")));
+  EXPECT_FALSE(patternlock::isWellFormed("567b", patternlock::startCellOf("567b"), kPatternMinPoints,
+                                         kPatternMaxPoints));
+  // The start cell the gate will open on has to be the stored pattern's first
+  // character, or every walk a rider can produce begins with the wrong one.
+  EXPECT_FALSE(patternlock::isWellFormed("567ba98c", patternlock::kDefaultStart + 1, kPatternMinPoints,
+                                         kPatternMaxPoints));
 }
 
 TEST(WalletCryptoRateLimit, FreeTriesThenDoublingThenAHardStop) {
   // The state machine, as stated in the brief: a few free failures, exponential
   // delay after them, and a hard lockout at ten.
-  EXPECT_EQ(pinFailureDelayMs(0), 0u);
-  EXPECT_EQ(pinFailureDelayMs(3), 0u) << "three fat-fingered presses cost nothing";
-  EXPECT_EQ(pinFailureDelayMs(4), 1000u);
-  EXPECT_EQ(pinFailureDelayMs(5), 2000u);
-  EXPECT_EQ(pinFailureDelayMs(6), 4000u);
-  EXPECT_EQ(pinFailureDelayMs(7), 8000u);
-  EXPECT_EQ(pinFailureDelayMs(8), 16000u);
+  EXPECT_EQ(unlockFailureDelayMs(0), 0u);
+  EXPECT_EQ(unlockFailureDelayMs(3), 0u) << "three fat-fingered walks cost nothing";
+  EXPECT_EQ(unlockFailureDelayMs(4), 1000u);
+  EXPECT_EQ(unlockFailureDelayMs(5), 2000u);
+  EXPECT_EQ(unlockFailureDelayMs(6), 4000u);
+  EXPECT_EQ(unlockFailureDelayMs(7), 8000u);
+  EXPECT_EQ(unlockFailureDelayMs(8), 16000u);
   // Capped, so the screen never looks hung.
-  EXPECT_EQ(pinFailureDelayMs(9), 30000u);
-  EXPECT_EQ(pinFailureDelayMs(200), 30000u);
+  EXPECT_EQ(unlockFailureDelayMs(9), 30000u);
+  EXPECT_EQ(unlockFailureDelayMs(200), 30000u);
 
-  EXPECT_FALSE(pinIsLockedOut(9));
-  EXPECT_TRUE(pinIsLockedOut(10));
-  EXPECT_TRUE(pinIsLockedOut(255));
-  EXPECT_EQ(kMaxPinFailures, 10);
+  EXPECT_FALSE(isLockedOut(9));
+  EXPECT_TRUE(isLockedOut(10));
+  EXPECT_TRUE(isLockedOut(255));
+  EXPECT_EQ(kMaxUnlockFailures, 10);
 }
 
 TEST(WalletCryptoHex, ExactLengthOrNothing) {
@@ -2078,11 +2110,11 @@ TEST(WalletCryptoWipe, SecureWipeClearsEveryByte) {
 
 TEST(WalletUnlockOutcomes, EveryResultHasItsOwnStableToken) {
   // These tokens are the serial contract: a host script greps
-  // `WALLETUNLOCK_ERR wrong_pin` and friends, so each result needs its own word and
+  // `WALLETUNLOCK_ERR wrong_pattern` and friends, so each result needs its own word and
   // renaming one breaks a caller. Asserted rather than trusted, because a switch
   // that falls through to "?" would look fine on screen and silently break a script.
   const UnlockResult all[] = {UnlockResult::Ok,      UnlockResult::NotProvisioned, UnlockResult::Malformed,
-                              UnlockResult::Waiting, UnlockResult::LockedOut,      UnlockResult::BadPin};
+                              UnlockResult::Waiting, UnlockResult::LockedOut,      UnlockResult::BadPattern};
   std::vector<std::string> seen;
   for (const UnlockResult result : all) {
     const std::string name = unlockResultName(result);
@@ -2094,24 +2126,24 @@ TEST(WalletUnlockOutcomes, EveryResultHasItsOwnStableToken) {
   }
   EXPECT_EQ(seen.size(), 6u);
   // The two a host script keys on most, spelled out so a rename fails here.
-  EXPECT_STREQ(unlockResultName(UnlockResult::BadPin), "wrong_pin");
+  EXPECT_STREQ(unlockResultName(UnlockResult::BadPattern), "wrong_pattern");
   EXPECT_STREQ(unlockResultName(UnlockResult::LockedOut), "locked_out");
   EXPECT_STREQ(unlockResultName(UnlockResult::Waiting), "rate_limited");
   EXPECT_STREQ(unlockResultName(UnlockResult::NotProvisioned), "not_provisioned");
 }
 
 TEST(WalletUnlockOutcomes, TheDelayAHostWillWatchIsTheOneTheScreenEnforces) {
-  // CMD:WALLETUNLOCK reports wait_ms straight out of pinFailureDelayMs() via the
+  // CMD:WALLETUNLOCK reports wait_ms straight out of unlockFailureDelayMs() via the
   // session's gate, and the PIN screen reads the same gate. So the sequence a host
   // sees walking the limiter is exactly this, and it is worth pinning as a sequence
   // rather than as six separate cases.
   const uint32_t expected[] = {0, 0, 0, 0, 1000, 2000, 4000, 8000, 16000, 30000};
   for (uint8_t failures = 0; failures < 10; ++failures) {
-    EXPECT_EQ(pinFailureDelayMs(failures), expected[failures]) << "after " << static_cast<int>(failures) << " failures";
+    EXPECT_EQ(unlockFailureDelayMs(failures), expected[failures]) << "after " << static_cast<int>(failures) << " failures";
   }
   // And the tenth failure is not a delay at all: it is the end.
-  EXPECT_TRUE(pinIsLockedOut(kMaxPinFailures));
-  EXPECT_FALSE(pinIsLockedOut(kMaxPinFailures - 1));
+  EXPECT_TRUE(isLockedOut(kMaxUnlockFailures));
+  EXPECT_FALSE(isLockedOut(kMaxUnlockFailures - 1));
 }
 
 // ---------------------------------------------------------------------------

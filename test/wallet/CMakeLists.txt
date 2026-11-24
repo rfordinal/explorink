@@ -19,6 +19,10 @@ target_include_directories(WalletTest PRIVATE
   ${REPO_ROOT}/lib/EpdFont
   ${REPO_ROOT}/lib/Utf8
   ${REPO_ROOT}/test/wallet_preview
+  # components/lock/PatternLock.h only: the grid arithmetic the gate and the
+  # wallet's provisioning both validate against. Header-only, no Arduino and no
+  # renderer, which is the whole reason that check could move out of the screen.
+  ${REPO_ROOT}/src
 )
 
 target_compile_definitions(WalletTest PRIVATE
