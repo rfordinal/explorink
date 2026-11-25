@@ -35,11 +35,34 @@ theirs.
 
 - **`main`** mirrors upstream. Do not commit to it. A PR to upstream is branched
   from it, so it has to stay clean.
-- **`explorink`** is upstream plus our patches. This is what the firmware pins.
-  Today that is one patch: `readFileToStream` feeding the task watchdog
-  (`55a49587`). The other one, the T5 S3 Pro EPD config no longer asserting the
-  LoRa radio's chip select, went upstream as `Free-Ink/freeink-sdk#73` and is
-  now in `main`, so the fork no longer carries it.
+- **`explorink`** is upstream plus our patches. It carries two:
+  `readFileToStream` feeding the task watchdog (`55a49587`) and the T5 S3 Pro
+  EPD config no longer asserting the LoRa radio's chip select (`94e19f73`).
+  The second one went upstream as `Free-Ink/freeink-sdk#73` and is in `main`
+  by content, but the commit is still on this branch, so it still shows up as
+  ours in a `rev-list --not origin/main`.
+- **`t5s3-fast-lut`** is `explorink` plus the T5 S3 Pro waveform work -- a
+  `g_fastMode` global, the `CMD:EPDLUT` knob that points it at a second
+  waveform table, and the comment recording what forty marker moves and a
+  twenty-move soak decided. **This branch is a pinned line too, and the doc
+  did not say so for two months.** `develop` and `release/lilygo-t5-s3-pro`
+  have pinned its tip since 2026-09-18.
+
+**So "the firmware pins `explorink`" is wrong as a flat statement, and
+believing it is what made the pin look lost twice.** Two branches of the fork
+are pinned, and the right question is never "is the pin on `explorink`" but
+**"is the pin a descendant of `explorink`'s tip"**:
+
+```
+git -C freeink-sdk merge-base --is-ancestor origin/explorink <pin>
+```
+
+That is the check T-2087's "done when" names, and it is also the one
+"The pin can walk off the fork" below calls WRONG 2. Both are true in their
+own place and the difference is which way the fork branched: a branch that
+pins an *older* `explorink` commit is fine and fails this check, while a
+branch meant to carry everything the fork has must pass it. Say which case
+you are in before running either.
 
 `.gitmodules` says `branch = main` on every branch of this repo, deliberately.
 That field only steers `git submodule update --remote`, which is not part of the
@@ -160,6 +183,67 @@ Evidence, all from a laptop, none from a device:
 
 **None of that says the firmware runs.** A bump is trusted once a C3 device boots,
 draws a map and holds a BLE link on it.
+
+### The 2026-11-25 bump
+
+`154d57ee` -> `824713ce`, **503 commits** of upstream, done as T-2087 in the
+parent repo. The section below is the reason that was finally acted on, and it
+had grown a second one by then: the battery percentage.
+
+**What the pin actually was, which is not what anybody wrote down.** `develop`
+and `release/lilygo-t5-s3-pro` pinned the tip of `t5s3-fast-lut`, carrying
+**eleven** commits of ours; `origin/explorink` carried **two** and was not an
+ancestor of the pin at all. The parent repo's T-2087 entry said "13 commits on
+`origin/explorink`", which is the two numbers added together and placed on the
+wrong branch. Nobody checked, because the ancestry question had never been
+asked in the direction that would have shown it.
+
+**How it was done**, in the order that keeps every patch:
+
+1. `origin/main` fast-forwarded to `upstream/main` (`7f6bd0f4` -> `f7fa9b68`),
+   after `merge-base --is-ancestor origin/main upstream/main` said yes.
+2. `upstream/main` merged into `explorink`. **One conflict**,
+   `libs/hardware/SDCardManager/src/SDCardManager.cpp`, resolved in favour of
+   upstream: upstream carries our watchdog feed and has rewritten the loop
+   around it (exact remaining count, short-write loop, error paths).
+3. The new `explorink` merged into `t5s3-fast-lut`. **One conflict**,
+   `libs/display/FreeInkDisplay/src/driver/LgfxEpdDriver.cpp`, a collision
+   rather than a clash: upstream's clean-bank work (`8670ee1e`) added three
+   globals exactly where `g_fastMode` sits. Both sides kept.
+4. The old tips tagged first -- `pin/explorink-2026-11-25` and
+   `pin/t5s3-fast-lut-2026-11-25` -- so no branch move could orphan a pin some
+   other branch still uses.
+
+**One thing the merge changed under us, and it is a trap worth naming.**
+Upstream now overloads the `epd_fastest` slot: a board that parks a single `0u`
+word in `lutFastest` is declaring a bank that **drives nothing**, used by
+`normalizeForCleanBank()` to repaint a background without putting charge on the
+glass. `CMD:EPDLUT 1` points `g_fastMode` at that same slot. On such a board
+the knob would stop every fast refresh from driving, and the symptom -- a
+screen that stops updating -- reads as a hang, not as a setting. No board does
+it today (every `LgfxEpdConfig` leaves `lutFastest` null), so
+`setLgfxFastLut()` now refuses rather than waiting for the first one.
+
+**Seven files deleted upstream**, all under `libs/book/ContentProtection`, and
+this firmware references none of them. One rename, `TtfFont.cpp` into
+`libs/font`. So the "no header deleted" check from 2026-09-08 **fails** on this
+bump and that is fine -- the check was never the point, the question is whether
+*we* link any of them.
+
+**Cost, two builds on this laptop with the pin as the only difference:**
+
+| env | chip | RAM | flash |
+|---|---|---|---|
+| `default` | ESP32-C3 | +312 B | +43 kB |
+| `t5s3pro` | ESP32-S3 | +72 B | +13 kB |
+
+All nine envs build (`default`, `gh_release`, `gh_release_rc`, `slim`, `sticky`, `x4pro`, `gh_release_x4pro`, `t5s3pro`, `simulator`) with no warning from our tree or from the SDK, and the host tests are 742 of 742 in 1.5 s. **None of that
+says the firmware runs**, and the SDK is the panel driver, the SD card and the
+input layer, so the hardware set in "Moving the pin: record it, then test
+harder" applies on a board per chip. The panel half of it is judged by eye on
+glass, on both T5 S3 Pro boards, because the waveform code under it has already
+been reverted twice after exactly that comparison
+([`t5s3-partial-refresh.md`](t5s3-partial-refresh.md)).
 
 ### A reason for the next bump exists, 2026-11-04
 
