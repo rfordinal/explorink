@@ -281,14 +281,23 @@ the map takes three passes on *both* pins.
 imprint of the sleep screen under the Home menu. So the extra passes buy
 nothing visible here, and cost nothing visible either.
 
-**Where the extra passes come from.** Upstream `c27da30d` (2026-11-02),
-*"test: roll back jpirnay UC8253 X3 driver changes"*, reverses four changes in
-the X3 driver, two of which are exactly this: *reduce initial full
-synchronizations from two to one*, and the *interrupt-driven completion wait*.
-Its own body says **"Boot and refresh latency will increase"** and **"No
-consumer firmware build or hardware validation performed"**. It is a diagnostic
-experiment that stayed on `main`: nothing between it and `f7fa9b68` touches
-the X3 driver again. Our old pin happened to sit before it.
+**Where the extra passes probably come from -- read, not measured.** Upstream
+`c27da30d` (2026-11-02), *"test: roll back jpirnay UC8253 X3 driver changes"*,
+reverses four changes in the X3 driver, two of which are exactly this shape:
+*reduce initial full synchronizations from two to one*, and the
+*interrupt-driven completion wait*. Its own body says **"Boot and refresh
+latency will increase"** and **"No consumer firmware build or hardware
+validation performed"**. It is a diagnostic experiment that stayed on `main`:
+nothing between it and `f7fa9b68` touches the X3 driver again, and our old pin
+happened to sit before it.
+
+**Nobody bisected this.** The commit was matched to the symptom by its message
+and the file it touches, which is strong and still circumstantial. What would
+settle it: build `env:default` against `c27da30d^` and against `c27da30d`, and
+count the `X3_DRF` passes after `Entering activity: Home`, three runs a leg --
+the same instrument that produced the 380/1,797 ms pair above. Until that runs,
+do not repeat this attribution anywhere as established, and do not report it to
+upstream.
 
 **Not reverted on our side**, because the measurement does not justify it: the
 map is unaffected and the eye sees no difference. Revisit it if the ghosting

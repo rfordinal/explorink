@@ -222,6 +222,35 @@ the cost is CPU and PSRAM traffic rather than panel time.
 [`t5s3-partial-refresh.md`](t5s3-partial-refresh.md) has the chain, the cost
 model, the power half and the plan.
 
+### The X3 is the third panel, and its fast path is the cheapest of the three
+
+**Xteink X3, `FAST_REFRESH`: 380 ms** `[measured, 2026-11-25]`. The clean path
+is not one refresh but **three passes, 931 + 457 + 408 ms = 1,797 ms**.
+
+| | X4 | T5 S3 Pro | X3 |
+|---|---|---|---|
+| `FAST`, whole panel | 500 ms | ~545 ms | **380 ms** |
+| the clean path | 1,684 ms | -- | **1,797 ms, three passes** |
+| power-on wait | -- | -- | `X3_PON` 126 ms |
+
+Instrument: the device's own `Wait complete: X3_DRF (N ms)` lines over serial,
+three boots, Xteink X3 `7c:e8:b1:6f:c2:9c`, env `default`, build
+`sdk-pin-2087 / 0.2.3-dev-t2087/sdk-pin-ad7176eb`. The three figures repeated to
+within 1 ms across all three runs.
+
+**Which transition takes which is not obvious here, so name the transition with
+the number.** On this board the map in steady state pays the single 380 ms
+pass -- a `redraw` with the map already open, three times out of three. Map
+*entry* pays the three-pass clean, and so does returning from the map to Home.
+Only Home's very first paint after a boot differs between SDK pins, and that is
+a bump finding rather than a property of the panel
+([`freeink-sdk-fork.md`](freeink-sdk-fork.md), "What the bump costs at
+runtime").
+
+Carrying a number between these three boards is wrong in both directions: the
+X3's fast pass is cheaper than the X4's and its clean path is dearer, on the
+same build.
+
 ## The map never asks for a clean after entry
 
 Everything above is about picking the right mode per frame. There is a separate
