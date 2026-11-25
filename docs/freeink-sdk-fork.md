@@ -240,10 +240,22 @@ bump and that is fine -- the check was never the point, the question is whether
 All nine envs build (`default`, `gh_release`, `gh_release_rc`, `slim`, `sticky`, `x4pro`, `gh_release_x4pro`, `t5s3pro`, `simulator`) with no warning from our tree or from the SDK, and the host tests are 742 of 742 in 1.5 s. **None of that
 says the firmware runs**, and the SDK is the panel driver, the SD card and the
 input layer, so the hardware set in "Moving the pin: record it, then test
-harder" applies on a board per chip. The panel half of it is judged by eye on
-glass, on both T5 S3 Pro boards, because the waveform code under it has already
-been reverted twice after exactly that comparison
-([`t5s3-partial-refresh.md`](t5s3-partial-refresh.md)).
+harder" applies on a board per chip.
+
+**The C3 half ran the same day and passed**, on an Xteink X3, env `default`:
+boot and hardware detect (`X3 (792x528)`, the UC8253 fingerprint, SD mounted),
+a map frame reading 474 kB of tiles off the card, BLE up, `MKCOL` + `PUT` +
+`GET` + `DELETE` for SD writes, and the full `readFileToStream` test -- the
+same 732,765-byte `2842.tib` the S3 was checked with on 2026-09-09, fetched
+twice, bit-identical, `uptime` continuous across a 100 s transfer. That is the
+first time the watchdog fix this fork carries has been exercised on a C3 at
+all.
+
+**The S3 half has not run.** The panel is judged by eye on glass, on both T5 S3
+Pro boards, because the waveform code under this merge has already been
+reverted twice after exactly that comparison
+([`t5s3-partial-refresh.md`](t5s3-partial-refresh.md)), and `env:x4pro` is a
+third environment with no board behind it yet.
 
 ### A reason for the next bump exists, 2026-11-04
 
