@@ -257,6 +257,52 @@ reverted twice after exactly that comparison
 ([`t5s3-partial-refresh.md`](t5s3-partial-refresh.md)), and `env:x4pro` is a
 third environment with no board behind it yet.
 
+### What the bump costs at runtime, measured on an X3
+
+**Measured 2026-11-25**, one board, three runs per leg, the pin the only
+difference between the two builds.
+
+| | old pin `154d57ee` | new pin `824713ce` |
+|---|---|---|
+| map `redraw` | 1 x `X3_DRF` 380 ms | 1 x `X3_DRF` 380 ms |
+| map entry | 3 x DRF, 1,820 ms | 3 x DRF, 1,797 ms |
+| map render (host) | 1,830-1,863 ms | 1,818-1,868 ms |
+| of which, in the card | 904-932 ms | 905-930 ms |
+| map -> Home | 3 x DRF, 1,818 ms | 3 x DRF, 1,797 ms |
+| **Home straight after boot** | **1 x DRF, 380 ms** | **3 x DRF, 1,797 ms** |
+
+**The map is untouched** -- every figure sits inside the run-to-run spread. The
+only thing that moves is Home's first paint after a boot: **+1.4 s, once per
+boot**, not once per interaction. An earlier reading of this generalised the
+boot-time number to "every Home paint" and was wrong; returning to Home from
+the map takes three passes on *both* pins.
+
+**Wake to Home was then judged by eye on both pins, and both are clean** -- no
+imprint of the sleep screen under the Home menu. So the extra passes buy
+nothing visible here, and cost nothing visible either.
+
+**Where the extra passes come from.** Upstream `c27da30d` (2026-11-02),
+*"test: roll back jpirnay UC8253 X3 driver changes"*, reverses four changes in
+the X3 driver, two of which are exactly this: *reduce initial full
+synchronizations from two to one*, and the *interrupt-driven completion wait*.
+Its own body says **"Boot and refresh latency will increase"** and **"No
+consumer firmware build or hardware validation performed"**. It is a diagnostic
+experiment that stayed on `main`: nothing between it and `f7fa9b68` touches
+the X3 driver again. Our old pin happened to sit before it.
+
+**Not reverted on our side**, because the measurement does not justify it: the
+map is unaffected and the eye sees no difference. Revisit it if the ghosting
+fix that commit also reversed turns out to matter -- that is a panel question,
+not a speed one.
+
+**One more upstream change worth knowing, and it is invisible here.**
+`39606d5a` dropped the display SPI default on every Xteink profile from 20 MHz
+to 10 MHz (X4, X3 and X4 Classic), inside a commit about buffer tracking and
+with no mention of it in the body. The firmware defines no
+`FREEINK_X4_OVERCLOCK_SPI`, so the default applies. It does not show up in
+`[GFX] Time`, which moved 47-50 ms to 49-50 ms across the bump, so whatever it
+costs is not in that window.
+
 ### A reason for the next bump exists, 2026-11-04
 
 The pin is `154d57ee`; upstream CrossPoint builds against `5e94fe74`. That is
