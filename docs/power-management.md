@@ -2468,3 +2468,56 @@ Two caveats, both of which decide whether a number means anything:
 - It needs a cell attached at all. Whether this board has one is **assumed** as
   of 2026-09-01, from conversation rather than from the device -- see
   `gnss.md`, "The experiment was run", for the two free ways to check.
+
+## The gauge is told what cell it is attached to, at boot
+
+Added 2026-11-26, T-2076. Until then a LilyGo T5 S3 Pro reported **58 %** on a
+cell the charger had already terminated.
+
+**The mechanism.** A BQ27220 nobody has programmed carries TI's factory
+`Design Capacity` of **3000 mAh**, and `StateOfCharge()` is
+`RemainingCapacity()` over `FullChargeCapacity()` (SLUUBD4A 2.21). The LilyGo
+cell is **1500 mAh** by LilyGo's own parameter table, so a full pack reads about
+half. The gauge cannot correct itself on this board: it syncs RM to FCC only at
+a charge termination it qualifies, which needs `AverageCurrent()` below
+`Taper Current` (100 mA), while the BQ25896 stops at `ITERM` = 256 mA -- the
+current steps 256 mA to zero and `[FC]` never sets. Full mechanism, register by
+register, in the parent repo's `docs/t5s3-power-path.md`, "A full cell reads
+half".
+
+**What runs.** `gaugeload::tick()` in `src/main.cpp`, one step per `loop()`
+iteration, calling the SDK's `BatteryMonitor::loadDesignCapacity()`. The SDK
+owns the procedure (unseal, `ENTER_CFG_UPDATE`, two data-memory words,
+`EXIT_CFG_UPDATE_REINIT`); this firmware owns only the decision to call it. A
+full run takes about **8 s**; a gauge that already matches costs **one I2C
+read** and the tick never runs again that boot.
+
+**In the loop, not in `setup()`,** for two reasons. Eight seconds in `setup()`
+is eight seconds before the first frame. And `Design Capacity` returns to TI's
+3000 whenever the gauge loses power, so this is not a one-time factory step --
+a board that comes back from a flat cell needs it again.
+
+**It is gated to the LilyGo T5 S3 Pro, and that gate is deliberate.** The SDK
+reads `batteryGauge.designCapacityMah != 0` as consent, and both X3 profiles set
+**650** -- which is the X4's spec-sheet cell figure, carries no Xteink source for
+the X3, and ships in the same `env:default` binary. The write is persistent and
+the gauge learns `FullChargeCapacity` back down by at most 256 mAh per cycle
+(SLUUBD4A 1.1.3), so a wrong capacity is not something the next charge undoes.
+Widening the gate means reading a real X3's gauge first and finding a vendor
+figure for its cell -- the same rule `CMD:BATT PROVISION` already states.
+
+**What it prints**, every boot, including the common one where nothing was
+written:
+
+```
+INF GAUGE: Design capacity 1500 mAh settled in 12 ms, battery reads 95%
+```
+
+The percentage beside it is the point: a gauge that quietly refused the write
+(sealed, or a bus that answers with plausible bytes) is otherwise
+indistinguishable from one that had nothing to do. A load still running after
+30 s logs `ERR GAUGE`.
+
+**`CMD:BATT PROVISION` stays**, and goes back to being what it should have been
+all along: a bench tool for a board that needs inspecting, not the way a rider
+fixes a wrong number.
