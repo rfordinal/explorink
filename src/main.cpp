@@ -2917,10 +2917,26 @@ constexpr unsigned long kSettleMs = 120000;
 // percentage is the wrong instrument: it falls back to voltage when the gauge
 // read fails, so the first version of this log said 100 % while the gauge
 // itself said 63 %.
+// A capacity no cell in this product line has. The gauge answers with bus idle
+// bytes while it re-initialises after a write -- `0xFF00` printed as
+// `dc=65280 mAh` on board A, 2026-11-26, in the one log line whose job is to be
+// believed. That reads as a destroyed gauge and is only an impatient read.
+bool plausibleMah(const uint16_t mah) { return mah > 0 && mah < 20000; }
+
+// Up to two seconds, because the read immediately after EXIT_CFG_UPDATE is the
+// one that lies. Still far short of what FullChargeCapacity() needs to follow
+// the data memory -- that is minutes, and is what the second log line is for.
 bool readCapacities(uint16_t& dc, uint16_t& fcc) {
   const uint8_t addr = BoardConfig::ACTIVE.batteryGauge.gaugeAddr;
   powerbus::begin();
-  return powerbus::read16(addr, 0x3C, dc) && powerbus::read16(addr, 0x12, fcc);
+  for (int i = 0; i < 20; ++i) {
+    if (powerbus::read16(addr, 0x3C, dc) && powerbus::read16(addr, 0x12, fcc) && plausibleMah(dc) &&
+        plausibleMah(fcc)) {
+      return true;
+    }
+    delay(100);
+  }
+  return false;
 }
 
 void tick() {
@@ -2959,10 +2975,15 @@ void tick() {
       return;
     }
     doneMs = millis();
-    readCapacities(dcAtDone, fccAtDone);
-    LOG_INF("GAUGE", "Design capacity load settled in %lu ms: dc=%u fcc=%u mAh (cell is %u)", doneMs - startedMs,
-            static_cast<unsigned>(dcAtDone), static_cast<unsigned>(fccAtDone),
-            static_cast<unsigned>(BoardConfig::ACTIVE.batteryGauge.designCapacityMah));
+    const bool readable = readCapacities(dcAtDone, fccAtDone);
+    if (readable) {
+      LOG_INF("GAUGE", "Design capacity load settled in %lu ms: dc=%u fcc=%u mAh (cell is %u)", doneMs - startedMs,
+              static_cast<unsigned>(dcAtDone), static_cast<unsigned>(fccAtDone),
+              static_cast<unsigned>(BoardConfig::ACTIVE.batteryGauge.designCapacityMah));
+    } else {
+      dcAtDone = fccAtDone = 0;
+      LOG_INF("GAUGE", "Design capacity load settled in %lu ms, capacities not readable yet", doneMs - startedMs);
+    }
     phase = Settling;
     return;
   }
@@ -2975,7 +2996,9 @@ void tick() {
     LOG_ERR("GAUGE", "Capacity re-read failed");
     return;
   }
-  if (dc == dcAtDone && fcc == fccAtDone) return;  // nothing lagged; the line above already said it
+  // dcAtDone == 0 means the first line could not read them, so this one is the
+  // only statement about where they landed and is printed even if nothing moved.
+  if (dcAtDone != 0 && dc == dcAtDone && fcc == fccAtDone) return;
   LOG_INF("GAUGE", "Capacity after %lu s: dc=%u fcc=%u mAh (was %u/%u)", kSettleMs / 1000, static_cast<unsigned>(dc),
           static_cast<unsigned>(fcc), static_cast<unsigned>(dcAtDone), static_cast<unsigned>(fccAtDone));
 }
