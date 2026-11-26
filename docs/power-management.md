@@ -2539,3 +2539,12 @@ the same `env:default` binary. The write is persistent and the gauge learns
 `FullChargeCapacity` back down by at most 256 mAh per cycle (SLUUBD4A 1.1.3).
 Widening the gate needs an Xteink figure for that cell first -- parent repo,
 T-2089.
+
+**Hardware pass, 2026-11-26, one board per environment.** `t5s3pro-b`
+(`env:t5s3pro`) went 3000/3000 at 63 % to **1500/1500 at 95 %**, and a later
+boot logged `Design capacity load settled in 3 ms` -- the no-op path. The X3
+(`env:default`) printed **no `GAUGE` line at all** and its `0x929F` reads
+byte-identical before and after the flash, so the board gate is proven rather
+than argued. The X4 Pro (`env:x4pro`) boots clean with the tick retiring
+silently. The unseal fix was proven on the gauge the loader had sealed:
+`BATT_PROV:match dc=1500 fcc=1500 sec=3 writes=0 unsealed=1`.
