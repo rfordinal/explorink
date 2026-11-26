@@ -154,6 +154,10 @@ class Entry {
   }
 
   uint8_t cursor() const { return path_[count_ - 1]; }
+  // The i-th point of the walk, start included. Only enrollment uses it, to
+  // draw the path it is asking the rider to remember -- the gate must never
+  // call this (PatternLockActivity.h, "What is on screen").
+  uint8_t pointAt(const size_t i) const { return i < count_ ? path_[i] : path_[0]; }
   uint8_t cursorRow() const { return static_cast<uint8_t>(cursor() / kCols); }
   uint8_t cursorCol() const { return static_cast<uint8_t>(cursor() % kCols); }
   size_t points() const { return count_; }

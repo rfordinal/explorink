@@ -536,6 +536,25 @@ void PatternLockActivity::draw(const HalDisplay::RefreshMode mode) {
                  config_.title != nullptr ? config_.title : tr(STR_PATTERN_LOCK),
                  config_.hint != nullptr ? config_.hint : tr(STR_PATTERN_LOCK_HINT));
 
+  // The path, drawn **only while enrolling**. A rider choosing a pattern has to
+  // see what they walked or they cannot repeat it, and hiding it there buys
+  // nothing: whoever is watching the panel is watching the cursor move anyway.
+  // At the gate it stays hidden, which is the whole point of that screen
+  // (docs/pattern-lock.md, "What the hidden path buys"). Maintainer's call,
+  // 2026-11-26, off the first panel run of this screen.
+  //
+  // Thin, and drawn before the dots so the lattice sits on top of it: the line
+  // is a trace of where the cursor went, not a shape competing with the grid.
+  if (config_.enroll && phase_ != Phase::PickStart) {
+    for (size_t i = 1; i < entry_.points(); ++i) {
+      const uint8_t from = entry_.pointAt(i - 1);
+      const uint8_t to = entry_.pointAt(i);
+      renderer.drawLine(
+          l.gridLeft + (from % patternlock::kCols) * l.pitch, l.gridTop + (from / patternlock::kCols) * l.pitch,
+          l.gridLeft + (to % patternlock::kCols) * l.pitch, l.gridTop + (to / patternlock::kCols) * l.pitch, true);
+    }
+  }
+
   for (uint8_t cell = 0; cell < patternlock::kCells; ++cell) {
     const int cx = l.gridLeft + (cell % patternlock::kCols) * l.pitch;
     const int cy = l.gridTop + (cell / patternlock::kCols) * l.pitch;
@@ -556,8 +575,20 @@ void PatternLockActivity::draw(const HalDisplay::RefreshMode mode) {
 
   char line[96];
   writeStatusLine(line, sizeof(line));
+  // Enrollment says which of the two walks this is, in words, above the count.
+  // Without it the second walk is the first one over again with no sign that
+  // anything happened: the same grid, the same empty meter, a sentence about
+  // points. Found on the panel, 2026-11-26, by the first person to use the
+  // screen who had not written it.
+  int statusY = l.statusY;
+  if (config_.enroll && phase_ != Phase::PickStart) {
+    renderer.drawCenteredText(UI_10_FONT_ID, l.statusY,
+                              phase_ == Phase::Walk ? tr(STR_PATTERN_ENROLL_PASS1) : tr(STR_PATTERN_ENROLL_PASS2), true,
+                              EpdFontFamily::BOLD);
+    statusY += renderer.getLineHeight(UI_10_FONT_ID) * 3 / 2;
+  }
   renderer.drawCenteredText(
-      UI_10_FONT_ID, l.statusY, line, true,
+      UI_10_FONT_ID, statusY, line, true,
       (lockedOut_ || lastAttemptWrong_ || mismatch_) ? EpdFontFamily::BOLD : EpdFontFamily::REGULAR);
 
   if (l.ownTouch) {
@@ -619,8 +650,14 @@ void PatternLockActivity::writeStatusLine(char* out, const size_t outLen) {
   } else if (!entry_.longEnough()) {
     // The floor is the caller's, and during an enrollment it is the number a
     // rider is being asked to reach rather than the one they are failing.
-    if (config_.enroll && phase_ == Phase::Confirm && entry_.points() == 1) {
-      snprintf(out, outLen, "%s", tr(STR_PATTERN_ENROLL_AGAIN));
+    if (config_.enroll) {
+      // Both ends, not just the floor. A rider choosing a pattern is deciding
+      // how long to make it, and "At least 8 points" leaves them guessing where
+      // it stops -- they find the cap by walking into it. The gate keeps the
+      // floor-only line: there the length is already decided and the maximum is
+      // a hint about somebody's secret.
+      snprintf(out, outLen, tr(STR_PATTERN_ENROLL_RANGE), static_cast<int>(entry_.minPoints()),
+               static_cast<int>(entry_.maxPoints()));
     } else {
       snprintf(out, outLen, tr(STR_PATTERN_LOCK_SHORT), static_cast<int>(entry_.minPoints()));
     }
