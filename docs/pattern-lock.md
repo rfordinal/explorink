@@ -258,12 +258,16 @@ verifier is then called with `speculative = true`, and both sides of that matter
 
 ## Verified, and not
 
-**Host-tested, 2026-11-23, extended 2026-11-26**: 21 tests in
+**Host-tested, 2026-11-23, extended 2026-11-26**: 27 tests in
 `test/pattern_lock/`, all green -- the grid walk, walls, revisits, the length cap,
 undo down to the start, the encoding, the wipe, `isWellFormed` against both its
 accept and its reject cases and against a caller's own range, a caller's range
 being clamped rather than obeyed, every path the screen can produce validating,
-four space counts, and no encoding collision.
+four space counts, and no encoding collision. The last six are enrollment's:
+two identical walks comparing equal, a walk differing by one step, a prefix of
+the first walk, a null buffer, the wallet's floor of 8 not being storable below
+8, and every one of the sixteen start cells a picker can choose producing
+patterns the gate validates afterwards.
 
 **The producer is walked against its own validator exhaustively, and the count is
 exact**: all 808,526 paths of 4 to 12 points from an interior start are generated
@@ -440,10 +444,14 @@ construction from `buttonHintsRect()` and by luck from the side boxes.
 
 **Still not checked, and T-2079 is where it is tracked:**
 
-1. **`env:sticky` and `env:simulator`** carry the devel flag and nothing has run
+1. **Enrollment has not been on a panel at all.** The mode is host-tested where
+   it is testable -- the comparison, the floor, the start cells -- and the three
+   phases, the wipes on every exit path and the picker's own cursor are read off
+   the code. T-2094's hardware pass is what settles it, on one C3 and one S3.
+2. **`env:sticky` and `env:simulator`** carry the devel flag and nothing has run
    the screen there. Both are the same code paths as envs already passed; this is
    the weakest of the gaps.
-2. **Ghosting.** A framebuffer read cannot show what the panel keeps. Whether a
+3. **Ghosting.** A framebuffer read cannot show what the panel keeps. Whether a
    `FAST_REFRESH` per cursor move leaves the old ring visible is an eye
    question, and nobody has looked at the glass while walking a pattern.
 
@@ -478,6 +486,67 @@ than a change to this screen:
 
 What this screen gave up to take the job is written in "What the hidden path
 buys": the dot PIN could claim a shoulder learns nothing, and a grid cannot.
+
+## Enrollment: choosing a pattern on the same screen
+
+`Config::enroll` turns the gate into "choose a pattern". Three phases, and the
+rider walks the grid in all of them:
+
+| Phase | What the grid does | CONFIRM | BACK |
+|---|---|---|---|
+| pick the start | the cursor moves freely, nothing is recorded | fixes the start cell | leaves, cancelled |
+| walk | a normal walk from that cell | takes the first walk | one point back, then to the picker |
+| walk again | a second walk from the same cell | compares, then stores | one point back, then to the walk |
+
+The meter is not drawn in the picker. There is no walk yet, and an empty scale
+under the grid reads as a control waiting for presses the picker does not take.
+
+**Only a matching second walk reaches the `Verifier`**, once, with `speculative`
+false. The caller's verifier *stores* instead of checking -- for the wallet it
+makes K, derives the KEK and writes the wrap. A mismatch never reaches it and
+stores nothing: the screen wipes both walks, says "The two walks differ" and
+returns to the first walk, keeping the chosen start cell.
+
+A verifier that answers anything but `Ok` to that one call means the walks
+agreed and the store failed -- NVS, a refused overwrite. The screen says "Could
+not save the pattern" rather than "Wrong pattern", because sending a rider back
+to re-walk a pattern that was never the problem is the kind of message that
+makes somebody set a shorter one.
+
+**Why this is a mode and not a second screen.** The geometry, the step rules,
+the wall behaviour and the whole touch model are the same, and a second copy of
+them is a second place for them to drift apart. The thing that must not drift is
+what counts as a legal walk: a pattern enrollment can store and the gate cannot
+walk is a wallet nobody opens (`isWellFormed`, and the `Config::minPoints`
+comment). The same `Config` carries the same floor to both.
+
+**What it bends.** The screen holds the first walk in RAM between the two
+phases -- the one thing the gate's "owns no secret" rule otherwise forbids. It
+is wiped through `secureWipe()` on the match, on the mismatch, on BACK and in
+`onExit()`, which covers the cancelled exit and the screen being torn down. The
+comparison is `patternlock::samePattern()`: fixed length over the whole buffer,
+no early exit, host-tested including the prefix case (a second walk that is the
+first one minus its last point).
+
+**Auto-submit is ignored in enrollment**, and logged when a caller asks for
+both. An auto-submitted first walk would be taken as a confirmed one, which
+means storing a pattern the rider typed once.
+
+BACK is one phase back rather than straight out, so a rider who mistyped the
+confirm can redo the pattern without leaving and re-entering the whole setup.
+Leaving is still two presses away from the confirm phase.
+
+### The first caller: setting the wallet up (T-2094)
+
+`WalletUnlockActivity` pushes this mode when the device has no wrap **and** the
+card has no encrypted wallet. It makes K and the salt from
+`wallet::randomBytes()`, calls `KeyStore::provision(..., force=false)` with
+`kProvisionIterations` (18,000), installs K in the session so the rider is not
+asked to unlock what they have just set up, and wipes both buffers.
+
+A device with no wrap but an **encrypted** card keeps the dead end it had. A
+fresh K there would be a wallet that looks ready and draws nothing, with the
+card's documents sealed under a key that is gone.
 
 ## The bench command
 
