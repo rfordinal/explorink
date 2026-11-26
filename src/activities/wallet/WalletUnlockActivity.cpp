@@ -45,14 +45,11 @@ void WalletUnlockActivity::onEnter() {
     // A dead end draws its own reason. No gate: a grid that cannot succeed
     // whatever a rider walks is a screen that lies.
     //
-    // FULL, not HALF. This screen is almost empty and whatever it replaces is
-    // not -- the gate's own grid and its four hint boxes, most often. A HALF
-    // refresh left those boxes on the panel as outlines under a one-line
-    // message, which reads as three dead buttons rather than as ghosting
-    // (measured on an X3, 2026-11-26). It is the same rule the sleep splash
-    // already pays for: a full-screen change to a sparse frame is the clean
-    // path's job (firmware docs/t5s3-partial-refresh.md, "Sleep to Home").
-    draw(HalDisplay::FULL_REFRESH);
+    // HALF, never FULL. `docs/refresh-modes.md`: both clear the panel absolutely
+    // and both reseed the differential baseline, and FULL only adds a
+    // multi-flash on the way. A sparse frame replacing a dense one needs the
+    // clean, which HALF already is.
+    draw(HalDisplay::HALF_REFRESH);
     return;
   }
   openGate();
@@ -148,9 +145,7 @@ void WalletUnlockActivity::loop() {
 
 void WalletUnlockActivity::render(RenderLock&& lock) {
   // The manager already holds the lock; draw into the frame it is offering.
-  // FULL for the same reason onEnter() uses it: this screen only ever shows a
-  // dead end, and it is always replacing something denser than itself.
-  draw(HalDisplay::FULL_REFRESH);
+  draw(HalDisplay::HALF_REFRESH);
 }
 
 void WalletUnlockActivity::draw(const HalDisplay::RefreshMode mode) {
