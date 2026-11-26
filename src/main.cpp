@@ -1,4 +1,5 @@
 #include <Arduino.h>
+#include <BatteryMonitor.h>
 #include <BoardConfig.h>
 #include <Epub.h>
 #include <FontCacheManager.h>
@@ -2514,6 +2515,7 @@ constexpr bool kGaugeCmdEnabled = true;
 constexpr bool kGaugeCmdEnabled = false;
 #endif
 
+#ifdef ENABLE_GAUGE_CMD
 // The BQ27220's data memory, read and write. Register access alone cannot reach
 // it: a data-memory parameter is moved through ManufacturerAccessControl
 // (0x3E/0x3F) into the MACData block (0x40..0x5F), with MACDataSum() (0x60) and
@@ -2539,12 +2541,11 @@ constexpr uint16_t kSubExitCfgUpdateReinit = 0x0091;
 // SLUUBD4A 3.3 says "two identical words stored in ROM with a value of
 // 0x8000 8000"; its own worked example at 6.1 step 1 writes 0x0414 then 0x3672
 // instead. Linux's bq27xxx table carries 0x04143672 as the unseal key for the
-// bq27425, so that pair is not a typo in the example either. Both are tried,
-// 3.3's first because it is the normative text.
+// bq27425, so that pair is not a typo in the example either.
 //
-// **Neither has ever run here.** Board B arrived UNSEALED, which is TI's
-// documented default state, so the provisioning that fixed T-2076 never touched
-// this path. On a sealed board (board A) it is unverified.
+// **6.1's pair is tried first, against the normative text, on evidence.** The
+// SDK's own `bq27220LoadStep()` sends only that pair and gets into a sealed
+// gauge on this board; 3.3's pair has never been seen to work on one.
 constexpr uint16_t kUnsealKeyA = 0x8000;   // SLUUBD4A 3.3
 constexpr uint16_t kUnsealKeyB1 = 0x0414;  // SLUUBD4A 6.1 step 1
 constexpr uint16_t kUnsealKeyB2 = 0x3672;
@@ -2640,21 +2641,30 @@ bool writeWord(uint8_t addr, uint16_t dmAddr, uint16_t value) {
   return w.endTransmission(true) == 0;
 }
 
-// The keys must be sent consecutively "with no other data being written to the
+// **This gauge ignores key words sent back to back.** The first version waited
+// 5 ms between them and failed on a sealed board B, 2026-11-26, with both key
+// pairs -- while the SDK's own sequence, which waits 1500 ms between every
+// Control() word, got into the same part minutes earlier. The same chip is
+// already known to ignore a Control() subcommand split in two (`writeReg16` in
+// freeink-sdk's BatteryMonitor.cpp), so the gap is the difference, not the keys.
+//
+// The pair must still be consecutive "with no other data being written to the
 // Control() register in between" (SLUUBD4A 3.3), so the security check happens
-// after a pair, never between the two halves of one.
+// after a pair and never between the two halves of one.
+constexpr unsigned long kKeyGapMs = 1500;
+
 bool unsealWithKeys(uint8_t addr, uint16_t first, uint16_t second) {
   if (!controlSub(addr, first)) return false;
-  delay(5);
+  delay(kKeyGapMs);
   if (!controlSub(addr, second)) return false;
-  delay(5);
+  delay(kKeyGapMs);
   uint8_t sec = 0;
   return security(addr, sec) && sec != 3;
 }
 
 bool unseal(uint8_t addr) {
-  if (unsealWithKeys(addr, kUnsealKeyA, kUnsealKeyA)) return true;
-  return unsealWithKeys(addr, kUnsealKeyB1, kUnsealKeyB2);
+  if (unsealWithKeys(addr, kUnsealKeyB1, kUnsealKeyB2)) return true;
+  return unsealWithKeys(addr, kUnsealKeyA, kUnsealKeyA);
 }
 
 // ENTER_CFG_UPDATE's own note says the host must wait at least 2 s before the
@@ -2862,88 +2872,112 @@ Result run(const uint16_t cellMah, const bool doWrite) {
 }
 
 }  // namespace gaugeprov
+#endif  // ENABLE_GAUGE_CMD
 
-// **The device teaches its own gauge what cell it is attached to.** T-2076.
-// `gaugeprov` above has the mechanism and the reasons; this decides when.
+// **The device teaches its own gauge what cell it is attached to.** T-2076: a
+// BQ27220 nobody has programmed carries TI's factory `Design Capacity` and
+// `Learned Full Charge Capacity` of 3000 mAh, and `StateOfCharge()` is
+// `RemainingCapacity()` over `FullChargeCapacity()` (SLUUBD4A 2.21) -- so the
+// T5 S3 Pro's full 1500 mAh pack reported 58 %. Mechanism, registers and the
+// charge-termination gap behind it: parent `docs/t5s3-power-path.md`, "A full
+// cell reads half".
 //
-// **Not a factory step, which is why it is here and not in a bench command.**
-// Both boards were provisioned by hand on 2026-11-23/24 and both were back at
-// TI's 3000 mAh three days later, measured -- the gauge returns to its defaults
-// whenever it loses power, so a board back from a flat cell needs it again. A
-// boot with nothing to do costs two I2C register reads.
+// **Not a factory step, which is why it is in the loop.** Both boards were
+// provisioned by hand with `CMD:BATT PROVISION WRITE` on 2026-11-23/24, and
+// both read 3000 at both data-memory addresses again three days later: the
+// gauge returns to TI's defaults whenever it loses power. A board back from a
+// flat cell needs it again, and a rider cannot run a bench command.
 //
-// **It blocks for several seconds on the boot that writes**, because
-// ENTER_CFG_UPDATE alone wants 2 s (SLUUBD4A 2.2.21). That is why it waits for
-// the first frames to be on the panel: a stall with a drawn screen is a few
-// unresponsive seconds, and the same stall in setup() would be a black device.
+// **The write itself is the SDK's**, `BatteryMonitor::loadDesignCapacity()` --
+// a step machine that takes about 8 s, writes nothing on a gauge that already
+// matches, and never blocks the loop. Reachable since the pin bump (T-2087),
+// and called by nothing until this: not by the SDK, not by us.
+//
+// **Why the second line, two minutes later.** `FullChargeCapacity()` is loaded
+// from data memory "on initialization" (SLUUBD4A 1.1.2), and on this board that
+// reload outlasts the write by *minutes*, not milliseconds. Measured 2026-11-26:
+// the register still read 3000 a minute after a successful write and across a
+// reboot, and 1500 some time inside the next 24. That lag read as a failed
+// write for most of an afternoon and sent this task down a wrong path, so the
+// log now states both moments rather than the first one.
 namespace gaugeload {
 
-// Past the first renders. Not tuned -- anything that leaves the panel drawn
-// would do, and a write-less boot never gets this far into the branch anyway.
-constexpr unsigned long kSettleMs = 10000;
+// Past the first renders, so a boot-time I2C sweep is not competing with them.
+constexpr unsigned long kStartMs = 10000;
+// The normal run is about 8 s. Far enough past it that a healthy board never
+// trips it, near enough to land in a boot log somebody is reading.
+constexpr unsigned long kStuckMs = 30000;
+// How long to give FullChargeCapacity() to follow the data memory before
+// printing what it settled on.
+constexpr unsigned long kSettleMs = 120000;
 
-// The same tolerance the gauge's own learning uses: a cycle moves Learned Full
-// Charge Capacity at most 256 mAh (SLUUBD4A 1.1.3), so a legitimately learned
-// FCC sits near the cell and TI's 3000 does not. Without a band here every boot
-// would rewrite flash as soon as the gauge learned one mAh of its own.
-bool settled(const uint16_t dc, const uint16_t fcc, const uint16_t mah) {
-  return dc == mah && fcc <= mah + mah / 4;
+// `DesignCapacity()` and `FullChargeCapacity()`, the two registers the
+// percentage is computed from. Read here rather than through BatteryMonitor
+// because its public Status carries a percentage and not a capacity -- and a
+// percentage is the wrong instrument: it falls back to voltage when the gauge
+// read fails, so the first version of this log said 100 % while the gauge
+// itself said 63 %.
+bool readCapacities(uint16_t& dc, uint16_t& fcc) {
+  const uint8_t addr = BoardConfig::ACTIVE.batteryGauge.gaugeAddr;
+  powerbus::begin();
+  return powerbus::read16(addr, 0x3C, dc) && powerbus::read16(addr, 0x12, fcc);
 }
 
 void tick() {
-  static bool pending = true;
-  static uint8_t reads = 0;
-  if (!pending) return;
-  const uint16_t mah = gaugeprov::cellMah();
-  if (mah == 0) {
-    pending = false;  // no vendor figure for this board -- gaugeprov::cellMah()
+  enum Phase : uint8_t { Loading, Settling, Done };
+  static Phase phase = Loading;
+  static bool complained = false;
+  static unsigned long startedMs = 0;
+  static unsigned long doneMs = 0;
+  static uint16_t dcAtDone = 0;
+  static uint16_t fccAtDone = 0;
+
+  if (phase == Done) return;
+
+  // **One board, not whatever the profile says.** The SDK reads
+  // `batteryGauge.designCapacityMah != 0` as consent, and both X3 profiles set
+  // 650 -- the **X4's** spec-sheet figure, with no Xteink source behind it for
+  // the X3, shipping in the same `env:default` binary the X3 runs. A real X3 was
+  // read on 2026-11-26 and holds TI's 3000 with its gauge unsealed, so the write
+  // would go straight through; it is persistent, and the gauge learns
+  // FullChargeCapacity back down at most 256 mAh per cycle (SLUUBD4A 1.1.3).
+  // Widening this needs an Xteink figure for that cell first -- parent
+  // `docs/TODO.md`, T-2089. Same gate, same reason, as CMD:BATT PROVISION.
+  if (BoardConfig::ACTIVE.board != BoardConfig::Board::LilyGoT5S3) {
+    phase = Done;
     return;
   }
-  if (millis() < kSettleMs) return;
+  if (millis() < kStartMs) return;
 
-  const uint8_t addr = BoardConfig::ACTIVE.batteryGauge.gaugeAddr;
-  powerbus::begin();
-  uint16_t dc = 0, fcc = 0;
-  if (!powerbus::read16(addr, 0x3C, dc) || !powerbus::read16(addr, 0x12, fcc)) {
-    // A gauge that does not answer is retried a few times and then dropped: the
-    // bus is shared, and a boot where it is busy is not a reason to hold a
-    // pending flag for the rest of the session.
-    if (++reads >= 5) {
-      pending = false;
-      LOG_ERR("GAUGE", "Capacity check: the gauge at 0x%02X did not answer", static_cast<unsigned>(addr));
+  if (phase == Loading) {
+    if (startedMs == 0) startedMs = millis();
+    if (BatteryMonitor::loadDesignCapacity()) {
+      if (!complained && millis() - startedMs > kStuckMs) {
+        complained = true;
+        LOG_ERR("GAUGE", "Design capacity load still running after %lu ms", millis() - startedMs);
+      }
+      return;
     }
-    return;
-  }
-  pending = false;
-  if (settled(dc, fcc, mah)) {
-    LOG_INF("GAUGE", "Capacity already set: dc=%u fcc=%u mAh", static_cast<unsigned>(dc),
-            static_cast<unsigned>(fcc));
+    doneMs = millis();
+    readCapacities(dcAtDone, fccAtDone);
+    LOG_INF("GAUGE", "Design capacity load settled in %lu ms: dc=%u fcc=%u mAh (cell is %u)", doneMs - startedMs,
+            static_cast<unsigned>(dcAtDone), static_cast<unsigned>(fccAtDone),
+            static_cast<unsigned>(BoardConfig::ACTIVE.batteryGauge.designCapacityMah));
+    phase = Settling;
     return;
   }
 
-  // Said before the write, not only after it: this blocks for seconds, and a
-  // log that only speaks once it is over cannot explain the stall it caused.
-  LOG_INF("GAUGE", "Capacity wrong (dc=%u fcc=%u, cell is %u mAh) -- writing, this takes a few seconds",
-          static_cast<unsigned>(dc), static_cast<unsigned>(fcc), static_cast<unsigned>(mah));
-  const unsigned long startedMs = millis();
-  const gaugeprov::Result r = gaugeprov::run(mah, /*doWrite=*/true);
-  if (!r.blockOk) {
-    LOG_ERR("GAUGE", "Capacity write refused: block echo=%s sum=%s sec=%u", r.echoOk ? "ok" : "bad",
-            r.sumOk ? "ok" : "bad", static_cast<unsigned>(r.sec));
+  if (millis() - doneMs < kSettleMs) return;
+  phase = Done;
+  uint16_t dc = 0;
+  uint16_t fcc = 0;
+  if (!readCapacities(dc, fcc)) {
+    LOG_ERR("GAUGE", "Capacity re-read failed");
     return;
   }
-  if (!r.ok) {
-    LOG_ERR("GAUGE", "Capacity write failed at %s, sec=%u", r.stage, static_cast<unsigned>(r.secAfter));
-    return;
-  }
-  // The registers, never a percentage. The first version of this line printed
-  // BatteryMonitor's percentage and read 100 % while the gauge itself said 63 %,
-  // because a percentage falls back to voltage when the gauge read fails -- so
-  // the one line meant to make a silent refusal visible was hiding one.
-  LOG_INF("GAUGE", "Capacity %s in %lu ms: dc=%u fcc=%u (verify %s, sec %u -> %u)",
-          r.writes == 0 ? "already matched" : "written", millis() - startedMs, static_cast<unsigned>(r.dcAfter),
-          static_cast<unsigned>(r.fccAfter), r.verified ? "ok" : "bad", static_cast<unsigned>(r.sec),
-          static_cast<unsigned>(r.secAfter));
+  if (dc == dcAtDone && fcc == fccAtDone) return;  // nothing lagged; the line above already said it
+  LOG_INF("GAUGE", "Capacity after %lu s: dc=%u fcc=%u mAh (was %u/%u)", kSettleMs / 1000, static_cast<unsigned>(dc),
+          static_cast<unsigned>(fcc), static_cast<unsigned>(dcAtDone), static_cast<unsigned>(fccAtDone));
 }
 
 }  // namespace gaugeload
