@@ -2503,8 +2503,12 @@ reads `batteryGauge.designCapacityMah != 0` as consent, and both X3 profiles set
 the X3, and ships in the same `env:default` binary. The write is persistent and
 the gauge learns `FullChargeCapacity` back down by at most 256 mAh per cycle
 (SLUUBD4A 1.1.3), so a wrong capacity is not something the next charge undoes.
-Widening the gate means reading a real X3's gauge first and finding a vendor
-figure for its cell -- the same rule `CMD:BATT PROVISION` already states.
+A real X3 was read the same day and is in exactly the state the T5 boards were:
+`CMD:BATT DM 0x929F` answers `u16=0x0BB8`, TI's 3000 mAh, `0x929D` the same, the
+gauge unsealed. So the gate is load-bearing, not precautionary -- an ungated
+loader would write 650 into that board at its next boot. Widening it needs an
+Xteink figure for the X3's cell first, the same rule `CMD:BATT PROVISION`
+already states. Parent repo, T-2089.
 
 **What it prints**, every boot, including the common one where nothing was
 written:
