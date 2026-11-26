@@ -1809,6 +1809,120 @@ board's slot holds the other board's image.
    intervals. This is bring-up step 4 in parent `docs/lora.md` and the thing
    every protocol decision above it is waiting on. **Not done.**
 
+### Re-run after the SDK pin bump, 2026-11-26
+
+**Why re-run at all.** The `freeink-sdk` pin moved 503 commits (T-2087,
+`99c07e2c`) and the gauge now writes its design capacity at boot (T-2076,
+`e3b5966b`). Both touch the board the radio sits on -- the SDK owns the SPI and
+power rails, the gauge write runs on the shared I2C bus at boot -- so the link
+had to be proven again rather than assumed from 2026-10-20.
+
+**The build.** `gauge-autoload` / `explorink-t5s3pro-v0.2.3-106-g0`, linked
+Nov 26 2026 15:18:40, `elf_sha256=26252366dd936e10...`, confirmed with
+`tools/flash.py --check` to be what `app0` boots on **both** boards. The two
+boards hold the same bytes here because both were flashed from one build
+directory without a relink between them; archived as
+`docs/firmware-builds/2026-11-26-t5s3pro{,-b}-gauge-autoload-0-good/`.
+
+**Step 3, both directions `[measured]`.** `MESH ON` on board B, `ADVERT` on A,
+`PEERS` on B, then the reverse:
+
+```
+B hears A:  LORA_PEERS:count=1 rejected=0 mesh=1
+            LORA_PEER:0 key=3e8f8e75 name=EI-3e8f rssi=-27 snr=11 age=15s adv=1 loc=-
+A hears B:  LORA_PEER:0 key=c6c28a10 name=EI-c6c2 rssi=-27 snr=11 age=7s adv=2 loc=-
+```
+
+Same two keys as 2026-10-20, so **the identity file survived the SDK bump**:
+board B logged `identity loaded from /explorink/lora/identity.bin` and answered
+`stored=1`. Note the path -- the card root is `/explorink` since the 2026-10-31
+migration, and the older entries above still say `/trailink`.
+
+Desk distance again, so -27 dBm says nothing about range.
+
+**Two foreign MeshCore nodes were in A's table as well**, heard without anybody
+asking for them:
+
+```
+LORA_PEER:1 key=613e445d name=AT-W-RAX-REPEATER    rssi=-96 snr=10 age=782s adv=1 loc=48.165055,16.366605
+LORA_PEER:2 key=3fe2cd68 name=AT-W-1050-WieGue-rep rssi=-97 snr=3  age=846s adv=1 loc=48.181179,16.348913
+```
+
+Both coordinates are Vienna. `rejected=0` over the whole table, so a signed
+advert written by somebody else's node verified and parsed on our build -- the
+first evidence in this file that the channel is shared with a real network and
+not only with our own two boards.
+
+**It does not measure range.** `[open]` A MeshCore advert is flooded, so the
+RSSI belongs to the last hop and the row says nothing about how far the
+originating repeater is. The desk is about 55 km from those coordinates; what
+reached us may have come through a relay closer by. Settling it needs the path
+information an advert does not carry, so it waits on the range walk in step 6.
+
+#### The product path, with no console command in it
+
+**The run above proved the radio and not the product.** Every step of it went
+through `CMD:LORA MESH ON`, which is the bench override: it forces the radio up
+on any screen and ignores `loraMeshOn` (see "Two holders" above). So it says
+nothing about what a rider's own thumb gets. Re-run the same day on board A
+with the console used **only to read**:
+
+1. `Settings > Group` showed `LoRa radio: ON` and `Broadcast my position: At
+   most every 2 min`, both already set on this board.
+2. **On Home, the radio was down** -- `LORA_STATE:ready=0 rail=0 mesh=0
+   hold=0x0`. That is the screen gate: the switch says the radio *may* run.
+3. Opening `Group` from Home brought it up: `ready=1 listening=1 rail=1 mesh=1
+   **hold=0x1**`. `0x1` is the screen holder, not the console's `0x2` -- the
+   panel's own `Radio` row read `Listening` beside it.
+4. `Announce me now`, pressed as a button, put a signed advert on the air.
+   Board B heard it three seconds later: `key=3e8f8e75 name=EI-3e8f rssi=-31
+   snr=12 age=3s adv=1 loc=-`, `rejected=0`. `loc=-` is the clockless pairing
+   advert of the section above, and the screen header said so in advance --
+   `No time yet -- announcing name only, no position`.
+5. Leaving the screen parked it again: `rail=0 mesh=0 hold=0x0`.
+
+So the rider-facing path works end to end on this build, and the two gates
+behave as documented in both directions.
+
+#### But the Group screen does not repaint when a node is heard
+
+**Found in that same run, and it is the half the console cannot see.** With
+board A sitting on the Group screen, board B announced. Board A's own table
+took the row -- `LORA_PEER:0 key=c6c28a10 name=EI-c6c2 rssi=-30 snr=11
+age=24s`, `rejected=0` -- while the panel still read **`Nothing heard yet`**.
+One button press and the row drew: `[RFB] EI-c6c2  -30 dBm  SNR 11  37s ago
+x1`.
+
+The list fills correctly; only the repaint is missing, so the screen shows what
+was true at the last input event. A rider watching the Group screen while a
+mate announces sees nothing happen -- on the one screen whose entire job is to
+show that something happened. `T-2093`.
+
+**This is the instrument rule paying off in the other direction.** The console
+was right, the panel was wrong, and the earlier run -- which only ever asked
+the console -- would have reported this screen as working.
+
+#### `CMD:LORA` can go silent while the board is healthy
+
+Board A answered `CMD:LORA` one minute, then returned **nothing at all** to
+`MESH OFF` and to three `CMD:LORA` state queries over the next three minutes.
+It read exactly like the handler deadlocking on its own lock, which is a real
+shape here: the handler takes `LoraLock` for its whole body
+(`src/main.cpp:4398`) and `meshStop()` takes it again, which is why that mutex
+is recursive (`src/main.cpp:1026`).
+
+It was neither. `CMD:LOOPGAP` answered in the same window, from the same
+`loop()`, so the parser and the main loop were both alive -- and `CMD:LORA`
+started answering again a few minutes later with no reset, reporting the
+`MESH OFF` that had looked lost (`hold` had gone `0x3` to `0x1`). Every reply
+in this run arrived after a `Restoring normal CPU frequency` line: the board
+idles at 80 MHz and the USB CDC reply can be dropped on the way out.
+
+**So prove the parser with a cheap non-LoRa verb before calling the radio
+console dead.** `CMD:LOOPGAP` costs nothing and answers from the same loop. A
+missing `LORA_` reply alone is not evidence about the radio, and on this bench
+it was not even evidence about the console.
+
 ### Flashing these two boards needs `/dev/serial/by-id/`, not `/dev/ttyACM*`
 
 Both boards were flashed on 2026-10-20 and **the first two uploads hit the same
