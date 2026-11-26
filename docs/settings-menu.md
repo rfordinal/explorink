@@ -433,3 +433,26 @@ firmware-picker path, serial `CMD:GOTO_*`) rather than trusting the first
 pass's conclusion. Not exercised on hardware: the `LocationCustom` migration
 path, and a `Custom` value surviving a load -- both read off the code, not
 measured.
+
+## Walking it with `press.py`
+
+Four buttons reach this screen and none of them is a tab key. **Row 0 is the
+tab bar itself**: `Confirm` on row 0 cycles Display -> Map -> Group -> Controls
+-> System -> Display (`SettingsActivity.cpp`, the `selectedSettingIndex == 0`
+branch), and `Back` on any row jumps back to row 0, a second `Back` leaving the
+screen.
+
+`left` and `right` do **not** change tabs. They fall through to the list, which
+on a fresh entry reads as the cursor jumping into the rows for no reason.
+
+So from a fresh entry the walk to the Group tab is:
+
+```
+python3 tools/press.py --port <by-id> --reply-timeout 20 back confirm confirm
+```
+
+**Screenshot between steps, not only at the end.** `Confirm` one row early
+toggles a setting rather than moving, and on this screen that writes the
+rider's own configuration -- there is no undo and nothing on the panel says a
+value changed. Found 2026-11-26, after `right right` put the cursor on
+`Quick Resume on Timeout` instead of on the next tab.

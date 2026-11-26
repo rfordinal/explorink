@@ -1893,10 +1893,15 @@ age=24s`, `rejected=0` -- while the panel still read **`Nothing heard yet`**.
 One button press and the row drew: `[RFB] EI-c6c2  -30 dBm  SNR 11  37s ago
 x1`.
 
-The list fills correctly; only the repaint is missing, so the screen shows what
-was true at the last input event. A rider watching the Group screen while a
-mate announces sees nothing happen -- on the one screen whose entire job is to
-show that something happened. `T-2093`.
+The list fills correctly and the panel did not follow it for at least 24
+seconds -- the advert was sent, the table read `age=24s`, and the screen still
+said `Nothing heard yet`. One press drew it. A rider watching the Group screen
+while a mate announces sees nothing happen, on the one screen whose entire job
+is to show that something happened. `T-2093`.
+
+**Whether a slower periodic repaint exists was not tested.** The window
+observed was one press long, so what is proven is that a heard node does not
+repaint the screen promptly -- not that nothing but input ever does.
 
 **This is the instrument rule paying off in the other direction.** The console
 was right, the panel was wrong, and the earlier run -- which only ever asked
