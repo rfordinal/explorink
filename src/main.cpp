@@ -1,4 +1,5 @@
 #include <Arduino.h>
+#include <BatteryMonitor.h>
 #include <BoardConfig.h>
 #include <Epub.h>
 #include <FontCacheManager.h>
@@ -2437,6 +2438,73 @@ static void loraDrain() {
   }
 }
 #endif  // ENABLE_LORA_CMD
+
+// **The gauge is told what cell it is attached to, by the device itself.**
+// T-2076: a BQ27220 that has never been programmed carries TI's factory Design
+// Capacity of 3000 mAh, and StateOfCharge() is RemainingCapacity() over
+// FullChargeCapacity() (SLUUBD4A 2.21) -- so the T5 S3 Pro's full 1500 mAh pack
+// reported 58 %. The gauge cannot fix that by itself: it syncs RM to FCC only at
+// a termination it qualifies, which needs AverageCurrent() under Taper Current
+// (100 mA) while the BQ25896 stops at ITERM = 256 mA, so [FC] never sets
+// (docs/t5s3-power-path.md, "A full cell reads half").
+//
+// **Not a factory step, which is why it lives in the loop.** Design Capacity
+// returns to TI's 3000 whenever the gauge loses power, so a board provisioned
+// once comes back wrong after a dead cell. The SDK's step machine takes about
+// 8 s in all, writes nothing on a gauge that already matches, and refuses a
+// sealed part -- so a boot that has nothing to do costs one I2C read.
+//
+// Until this call existed the fix was CMD:BATT PROVISION WRITE on a bench, and
+// a rider should never have to run a bench command to see a true percentage.
+//
+// **Why one board and not whatever the profile says.** The SDK reads
+// designCapacityMah != 0 as consent, and both X3 profiles set 650 -- the X4's
+// spec-sheet cell figure (docs/power-management.md), with no Xteink source
+// behind it for the X3, and the X3 carries the same BQ27220 at the same address
+// on the same env:default binary. The write is persistent and the gauge learns
+// FullChargeCapacity back down at most 256 mAh per cycle (SLUUBD4A 1.1.3), so a
+// wrong number is not something the next charge undoes. LilyGo's 1500 mAh comes
+// from LilyGo's own parameter table, so that is the one board this runs on --
+// the same rule CMD:BATT PROVISION already states for its own board gate. Add a
+// board here with a cell figure from its vendor, never from another board's
+// profile.
+namespace gaugeload {
+
+// The normal run is about 8 s. This is far enough past it that a healthy board
+// never trips it, and near enough that it still lands in a boot log somebody is
+// reading. A load that never ends means a wedged bus or a part that refuses the
+// unseal, and that has to be visible rather than silently pending forever.
+constexpr unsigned long kStuckMs = 30000;
+
+void tick() {
+  static bool pending = true;
+  static bool complained = false;
+  static unsigned long startedMs = 0;
+  if (!pending) return;
+  if (BoardConfig::ACTIVE.board != BoardConfig::Board::LilyGoT5S3) {
+    pending = false;
+    return;
+  }
+  if (startedMs == 0) startedMs = millis();
+  if (BatteryMonitor::loadDesignCapacity()) {
+    if (!complained && millis() - startedMs > kStuckMs) {
+      complained = true;
+      LOG_ERR("GAUGE", "Design capacity load still running after %lu ms", millis() - startedMs);
+    }
+    return;
+  }
+  pending = false;
+  uint16_t percent = 0;
+  const bool ok = BatteryMonitor().readPercentageChecked(percent);
+  // Printed on every boot, including the common one where nothing was written:
+  // the percentage beside it is what makes a gauge that quietly refused the
+  // write distinguishable from one that had nothing to do.
+  LOG_INF("GAUGE", "Design capacity %u mAh settled in %lu ms, battery reads %s%u%%",
+          static_cast<unsigned>(BoardConfig::ACTIVE.batteryGauge.designCapacityMah), millis() - startedMs,
+          ok ? "" : "unknown/", static_cast<unsigned>(percent));
+}
+
+}  // namespace gaugeload
 #if defined(ENABLE_BATT_CMD) || defined(ENABLE_CHARGE_CMD)
 // I2C for the two power chips on the gauge bus: the BQ27220 fuel gauge (0x55)
 // and the BQ25896 charger (0x6B) on the T5 S3 Pro. Shared by CMD:BATT and
@@ -5948,6 +6016,12 @@ void loop() {
   if (gpio.wasUsbStateChanged()) {
     activityManager.requestUpdate();
   }
+
+  // One step of the gauge's design-capacity load, before the activity rather
+  // than after it: the step machine paces itself off millis() and is a no-op
+  // once settled, so it belongs inside the window POWER_TELEMETRY measures and
+  // not hidden behind it.
+  gaugeload::tick();
 
   const unsigned long activityStartTime = millis();
   activityManager.loop();
