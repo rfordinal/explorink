@@ -43,6 +43,43 @@ mbedtls does the primitives (`WalletCryptoDevice.cpp`): the firmware already lin
 it for the OTA image (`src/network/FirmwareFlasher.cpp`) and on the ESP32-C3 its
 AES and SHA-256 run on the hardware accelerators.
 
+## K and the pattern are two different secrets
+
+The one thing a reader of this document gets wrong first. **The pattern decrypts
+nothing.** It opens the box that K sits in, on this board.
+
+```
+pattern + deviceSecret  --PBKDF2-->  KEK
+KEK + wrap (from NVS)   --unwrap-->  K
+K + a file on the card  --AES----->  a document on the panel
+```
+
+| | K | pattern |
+|---|---|---|
+| what it is | 32 random bytes | a walk of 8 to 12 cells on a 4x4 grid |
+| made where | the phone, or `walletgen.py` on the laptop | chosen by the rider |
+| scope | one wallet, every device that reads it | one device |
+| what it unlocks | every asset and the manifest | the wrap, and only on this board |
+| lives where | RAM while unlocked; wrapped in NVS between unlocks | nowhere -- wiped after every attempt |
+
+Four consequences, and each one is a design property rather than a side effect:
+
+- **Changing the pattern costs nothing.** The same K is re-wrapped under a new
+  KEK and a new salt. No asset is re-encrypted and the card is not touched.
+- **The same K reads the same card on any device, with a different pattern on
+  each.** The pattern is tied to `deviceSecret`, which never leaves the board, so
+  a pattern carries no meaning off the board that made it.
+- **Whoever holds K needs no pattern at all.** K reads the card on a laptop. That
+  is why a leaked `provision.json` is a leaked wallet while a shoulder-surfed
+  pattern is not, and why the phone -- which holds K -- never learns the pattern.
+- **The pattern is the only route to K through the product**, and not the only
+  route to K. An attacker who dumps the flash has the wrap and attacks it offline,
+  with no rate limiter and no 1 s PBKDF2 in the way. See the threat boundary
+  above; `scripts/pattern_space.py` counts the space it would search.
+
+The mechanism, the NVS layout and the wiping rules are "The key's lifetime"
+below.
+
 ## Assets: CTR, because a window has to be seekable
 
 `IV = sha256(payload)[0:8] || u32 version little endian || u32 zero`
