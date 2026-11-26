@@ -27,7 +27,11 @@ WalletUnlockActivity::WalletUnlockActivity(GfxRenderer& renderer, MappedInputMan
 
 void WalletUnlockActivity::onEnter() {
   Activity::onEnter();
-  noWrap_ = !wallet::KeyStore::isProvisioned() || wallet::KeyStore::patternStart() == wallet::kPatternNoStart;
+  noWrap_ = !wallet::KeyStore::isProvisioned();
+  // A wrap with no start cell is the pre-gate wallet, not a missing one. The
+  // gate cannot open on a cell nobody stored, and re-provisioning is the only
+  // way forward -- so say that rather than claiming the key is absent.
+  noPattern_ = !noWrap_ && wallet::KeyStore::patternStart() == wallet::kPatternNoStart;
   failures_ = wallet::KeyStore::failures();
   lockedOut_ = wallet::isLockedOut(failures_);
   // The delay the persisted failure count already earned. A power cycle does not buy
@@ -38,10 +42,11 @@ void WalletUnlockActivity::onEnter() {
   // report the wallet's resident heap (docs/wallet-crypto.md).
   LOG_INF(kLogTag, "heap on the gate: %lu free, %lu largest block", static_cast<unsigned long>(ESP.getFreeHeap()),
           static_cast<unsigned long>(ESP.getMaxAllocHeap()));
-  if (noWrap_) LOG_ERR(kLogTag, "no wrap or no start cell in NVS: this device has no wallet key");
+  if (noWrap_) LOG_ERR(kLogTag, "no wrap in NVS: this device has no wallet key");
+  if (noPattern_) LOG_ERR(kLogTag, "a wrap with no start cell: provisioned before the pattern gate");
   if (lockedOut_) LOG_ERR(kLogTag, "locked out after %u failures", static_cast<unsigned>(failures_));
 
-  if (noWrap_ || lockedOut_) {
+  if (noWrap_ || noPattern_ || lockedOut_) {
     // A dead end draws its own reason. No gate: a grid that cannot succeed
     // whatever a rider walks is a screen that lies.
     //
@@ -158,9 +163,22 @@ void WalletUnlockActivity::draw(const HalDisplay::RefreshMode mode) {
                  tr(STR_WALLET_UNLOCK_HINT));
 
   const int y = metrics.topPadding + metrics.headerHeight + lineHeight * 4;
-  renderer.drawCenteredText(UI_10_FONT_ID, y,
-                            noWrap_ ? tr(STR_WALLET_UNLOCK_NO_WRAP) : tr(STR_WALLET_UNLOCK_LOCKED_OUT), true,
-                            EpdFontFamily::BOLD);
+  // Two lines, bold label over plain detail, mirroring RouteEmptyActivity --
+  // the house shape for an empty-state explanation. One line was not a style
+  // choice, it was a bug: "This wallet predates the pattern lock. Set it up
+  // again." is 52 characters and `drawCenteredText` clipped it at BOTH ends on
+  // the X4 Pro's 480 px panel while fitting the X3's 528 px (2026-11-26). A
+  // message sized against one panel is the defect CLAUDE.md's "Styles must be
+  // universal" names; splitting at the sentence keeps every line short enough
+  // that no panel in the line has to be measured again.
+  const char* label = noWrap_      ? tr(STR_WALLET_UNLOCK_NO_WRAP)
+                      : noPattern_ ? tr(STR_WALLET_UNLOCK_NO_PATTERN)
+                                   : tr(STR_WALLET_UNLOCK_LOCKED_OUT);
+  const char* detail = noWrap_      ? tr(STR_WALLET_UNLOCK_NO_WRAP_SUB)
+                       : noPattern_ ? tr(STR_WALLET_UNLOCK_NO_PATTERN_SUB)
+                                    : tr(STR_WALLET_UNLOCK_LOCKED_OUT_SUB);
+  renderer.drawCenteredText(UI_10_FONT_ID, y, label, true, EpdFontFamily::BOLD);
+  renderer.drawCenteredText(UI_10_FONT_ID, y + lineHeight, detail, true);
 
   const auto labels = mappedInput.mapLabels(tr(STR_BACK), "", "", "");
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);

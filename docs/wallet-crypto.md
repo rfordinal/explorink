@@ -333,6 +333,32 @@ claim otherwise. `docs/pattern-lock.md`, "What the hidden path buys", has the
 rest, including that `CMD:SCREENSHOT` is ungated and puts the cursor in a
 framebuffer a host can poll (T-2081).
 
+### A wallet provisioned before the gate cannot be opened, and there is no migration
+
+NVS holds the wrap, the salt, the iteration count -- and, since the pattern
+gate, `pstart`. A device provisioned under the directional PIN has every one of
+those except the last, which means the gate has no cell to open on and nothing a
+rider walks can match.
+
+**Nothing can migrate it.** The KEK is derived from the secret, and no amount of
+reading NVS re-derives a PIN from a wrap. The wrap is intact and the key inside
+it is intact; the only thing that could open it has stopped existing. Such a
+wallet has to be provisioned again, and the documents already on the card are
+then readable only if K is held somewhere else -- the phone's own keystore, in
+practice (`../../docs/android-wallet.md`).
+
+The screen says exactly that and no more: **"This wallet predates the pattern
+lock / Set it up again"**. It is a separate state from "no wallet key on this
+device" on purpose. The first cut lumped the two together, and an X4 Pro
+carrying a 2026-11-23 wallet showed the panel claiming it had no key while
+holding one (2026-11-26). A screen that says something untrue about a rider's
+documents is worse than one that says nothing.
+
+Scope, so this is not read as bigger than it is: the only devices in that state
+are the two test boards. `ENABLE_WALLET` is in `base` and so reaches release
+images, but no release has ever been provisioned with a real wallet
+(`wallet-plan.md`).
+
 ### Rate limiting is a UX defence, not a cryptographic one
 
 | consecutive failures | next attempt waits |

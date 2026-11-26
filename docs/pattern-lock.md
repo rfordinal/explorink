@@ -309,9 +309,49 @@ budget spent on one button press: 903 ms of PBKDF2 plus the panel work behind
 it. It did not trip, and nothing here says how much headroom a slower card or a
 longer list would leave. Open -- T-2089.
 
-**Still not on a panel**: `env:x4pro` and `env:t5s3pro`. The gate compiles into
-every environment, so the protocol wants one C3 and one S3
-(`../../docs/device-test-protocol.md`, step 1), and only the C3 half has run.
+**On the panel, 2026-11-26, Xteink X4 Pro** (board `b8:1f:3f:d4:89:bc`,
+800x480, `env:x4pro` plus `-DENABLE_WALLET_TEST_CMDS=1`, ESP32-S3) -- the S3
+half, which the protocol asks for because this gate compiles into every
+environment (`../../docs/device-test-protocol.md`, step 1):
+
+| Checked | Result |
+|---|---|
+| The gate at 800x480 | grid, cursor on the stored cell 5, twelve segments, "At least 8 points" -- same layout, narrower panel |
+| The whole walk and CONFIRM | unlocked, `WalletUnlock` replaced itself with `Wallet` |
+| Provisioning on an S3 | 1,034,466 us, against 1,047 ms measured on this board on 2026-11-23 -- the KDF cost did not move |
+
+**What the board was carrying is the part worth keeping.** It still held a
+wallet provisioned on 2026-11-23, under the directional PIN. That is the
+upgrade case, and it surfaced a defect in the first cut of this change: a wrap
+with no stored start cell was lumped in with no wrap at all, so the panel said
+**"No wallet key on this device"** on a device that has one. The key was there
+and unwrappable; only the PIN that reaches it had stopped existing. It is its
+own state and its own sentence now -- "This wallet predates the pattern lock /
+Set it up again".
+
+There is **no migration**, and the screen should not imply one. The KEK needs
+the secret, and nothing can re-derive a PIN from a wrap. A wallet provisioned
+before this gate has to be provisioned again, which means the documents on the
+card are readable only if K is still held somewhere else -- the phone's own
+keystore, in practice (`../../docs/android-wallet.md`).
+
+A second layout defect came off the same board. The locked-out and pre-gate
+messages were single strings, and "This wallet predates the pattern lock. Set
+it up again." is 52 characters: it fit the X3's 528 px and was clipped at
+**both** ends on this 480 px panel. Two lines now, bold label over plain
+detail, mirroring `RouteEmptyActivity` -- which is the house shape for an
+empty-state explanation and was there to copy. A one-line message is sized
+against one panel, and that is the defect CLAUDE.md's "Styles must be
+universal" names.
+
+**Still not on a panel**: `env:t5s3pro`, and this gate's **own touch controls**.
+The X4 Pro drew the theme's hint boxes, so `TouchPolicy::hintsVisible()` was
+true on it -- the TOUCH_ANYWHERE path where the screen draws its own BACK/OK
+boxes (`PatternLockActivity.h`) has still never been seen. Nor has the browse
+list behind the gate on an S3: this board's card carries a tree encrypted under
+a different key, so the unlock correctly ended on "Wrong key, or the wallet
+list was altered" rather than a list. That half was proven on this same board
+on 2026-11-23 and the gate swap does not touch it.
 
 **On the panel, 2026-11-23, T5 S3 Pro** (board `7c:2c:67:8a:4c:b4`, 540x960,
 `env:t5s3pro`, driven by `CMD:PATTERNLOCK` + `CMD:BUTTON` with the framebuffer

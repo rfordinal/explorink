@@ -31,11 +31,19 @@
 //
 // ## Why it draws at all
 //
-// Two dead ends have no pattern to enter and so no gate to push: this device has
-// no wrap (a card provisioned elsewhere), or the failure count is already at the
-// hard stop. Pushing a gate for either would put a grid on the panel that cannot
-// succeed whatever a rider walks. A sentence saying why is the honest screen, and
-// it is the only drawing left here.
+// Three dead ends have no pattern to enter and so no gate to push: this device
+// has no wrap at all (a card provisioned elsewhere), it has a wrap but no stored
+// start cell, or the failure count is already at the hard stop. Pushing a gate
+// for any of them would put a grid on the panel that cannot succeed whatever a
+// rider walks. A sentence saying why is the honest screen, and it is the only
+// drawing left here.
+//
+// **The middle one is the upgrade path and it gets its own sentence.** A wrap
+// with no `pstart` is a wallet provisioned before this gate existed, under the
+// directional PIN -- the key is right there and unwrappable, and nothing can
+// enter the PIN any more. Saying "no wallet key on this device" there is false,
+// and it was what this screen said until an X4 Pro carrying a 2026-11-23 wallet
+// was put in front of it (2026-11-26).
 //
 // It replaced a six-to-ten-symbol directional PIN on 2026-11-26. The PIN's own
 // claim -- "a shoulder looking at the panel must learn nothing" -- did not
@@ -64,6 +72,10 @@ class WalletUnlockActivity final : public Activity {
   uint8_t failures_ = 0;
   bool lockedOut_ = false;
   bool noWrap_ = false;
+  // A wrap exists but no start cell does: provisioned before the pattern gate.
+  // Separate from noWrap_ because the two states deserve different sentences --
+  // one device has no key and the other has a key nobody can reach.
+  bool noPattern_ = false;
   // The gate has been queued or is on top of this screen. Guards the one-shot
   // push: onEnter queues it, and the manager runs the push a loop later, so
   // loop() would otherwise queue a second one in between.
