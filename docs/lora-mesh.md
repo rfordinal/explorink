@@ -1884,28 +1884,38 @@ with the console used **only to read**:
 So the rider-facing path works end to end on this build, and the two gates
 behave as documented in both directions.
 
-#### But the Group screen does not repaint when a node is heard
+#### The panel follows the radio on a timer, and the two timers are far apart
 
-**Found in that same run, and it is the half the console cannot see.** With
-board A sitting on the Group screen, board B announced. Board A's own table
-took the row -- `LORA_PEER:0 key=c6c28a10 name=EI-c6c2 rssi=-30 snr=11
-age=24s`, `rejected=0` -- while the panel still read **`Nothing heard yet`**.
-One button press and the row drew: `[RFB] EI-c6c2  -30 dBm  SNR 11  37s ago
-x1`.
+**This section said the Group screen does not repaint at all. That was wrong
+and is corrected here rather than footnoted.** With board A on the Group screen
+and board B announcing, board A's table took the row -- `LORA_PEER:0
+key=c6c28a10 name=EI-c6c2 rssi=-30 snr=11 age=24s`, `rejected=0` -- while the
+panel still read `Nothing heard yet`. A button press drew it, and the press was
+read as the only thing that could have.
 
-The list fills correctly and the panel did not follow it for at least 24
-seconds -- the advert was sent, the table read `age=24s`, and the screen still
-said `Nothing heard yet`. One press drew it. A rider watching the Group screen
-while a mate announces sees nothing happen, on the one screen whose entire job
-is to show that something happened. `T-2093`.
+It was not. `GroupActivity::loop()` re-reads the radio every
+`kCheckIntervalMs` = **20 s** (`src/activities/group/GroupActivity.h:129`) and
+repaints whenever `listSignature()` differs, which a new peer makes it do. The
+frame was grabbed inside that window and the press merely beat the timer.
+**A screen looked at once, seconds after an event, cannot tell "never" from
+"not yet"** -- and the cadence was a constant in the code the whole time.
+`[read]`: nobody has yet watched that screen repaint with no thumb on it.
 
-**Whether a slower periodic repaint exists was not tested.** The window
-observed was one press long, so what is proven is that a heard node does not
-repaint the screen promptly -- not that nothing but input ever does.
+**The map is the real gap, and it is five minutes wide.** Its only
+group-driven redraw is `MapActivity::serviceGroupAges()`
+(`src/activities/map/MapActivity.cpp:8596`), gated by `kGroupAgeRefreshMs`,
+which is `kGroupAgeStepMinutes` minutes -- and that constant is **5**
+(`src/activities/map/GroupFix.h:125`). Nothing on the path that stores an
+arriving fix asks for a frame. So a marker can sit five minutes behind a
+position the device has already received and verified `[read]`. Measured the
+same day: about three minutes with the fix in the roster and no bubble on the
+panel, which is consistent with that tick and does not prove it, because nobody
+waited the tick out. `T-2093` carries the work.
 
-**This is the instrument rule paying off in the other direction.** The console
-was right, the panel was wrong, and the earlier run -- which only ever asked
-the console -- would have reported this screen as working.
+**The instrument rule still applies, just not where it was first pointed.** The
+console was right and the panel was behind it. What the first write-up got
+wrong was the cause: it blamed an absent mechanism instead of reading the one
+that exists.
 
 #### `CMD:LORA` can go silent while the board is healthy
 
