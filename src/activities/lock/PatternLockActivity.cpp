@@ -282,6 +282,12 @@ void PatternLockActivity::onStep(const patternlock::Step step) {
     }
     if (nextRow < 0 || nextRow >= patternlock::kRows || nextCol < 0 || nextCol >= patternlock::kCols) return;
     startPick_ = static_cast<uint8_t>(nextRow * patternlock::kCols + nextCol);
+    // A refusal from the previous attempt is about a pattern that no longer
+    // exists -- the rider is picking a new start. Leaving it up means the
+    // picker never shows its own prompt and the first presses of the retry look
+    // like they are being refused. Found in review, 2026-11-26.
+    lastAttemptWrong_ = false;
+    mismatch_ = false;
     redraw(HalDisplay::FAST_REFRESH);
     return;
   }
@@ -505,7 +511,12 @@ PatternLockActivity::Layout PatternLockActivity::layout() const {
   // What actually sits under the last grid row: a full pitch of air, the meter,
   // and the status line. Measured rather than assumed, so the block is centred on
   // its real height -- the first cut centred on the allowance and sat low.
-  const int belowGrid = l.pitch + l.meterHeight + lineHeight * 2;
+  // The caption an enrollment draws above the count is part of the content, so
+  // the block is centred on a height that includes it. Without this the
+  // arithmetic and the drawing disagree about how tall the screen is -- survivable
+  // on today's panels only because the band has slack (review, 2026-11-26).
+  const int statusLines = config_.enroll ? lineHeight * 3 / 2 : 0;
+  const int belowGrid = l.pitch + l.meterHeight + lineHeight * 2 + statusLines;
   const int contentHeight = l.pitch * (patternlock::kRows - 1) + belowGrid;
   const int slack = band - contentHeight;
   l.gridTop = bandTop + (slack > 0 ? slack / 2 : 0);
@@ -537,11 +548,18 @@ void PatternLockActivity::draw(const HalDisplay::RefreshMode mode) {
                  config_.hint != nullptr ? config_.hint : tr(STR_PATTERN_LOCK_HINT));
 
   // The path, drawn **only while enrolling**. A rider choosing a pattern has to
-  // see what they walked or they cannot repeat it, and hiding it there buys
-  // nothing: whoever is watching the panel is watching the cursor move anyway.
-  // At the gate it stays hidden, which is the whole point of that screen
-  // (docs/pattern-lock.md, "What the hidden path buys"). Maintainer's call,
-  // 2026-11-26, off the first panel run of this screen.
+  // see what they walked or they cannot repeat it. At the gate it stays hidden,
+  // which is the whole point of that screen (docs/pattern-lock.md, "What the
+  // hidden path buys"). Maintainer's call, 2026-11-26, off the first panel run.
+  //
+  // **Against a shoulder this costs nothing** -- a watcher follows the cursor
+  // either way. **Against a host on the cable it costs the whole pattern in one
+  // grab**: `CMD:SCREENSHOT` is ungated in every build, and where the gate
+  // forces an attacker to poll once per press and reassemble (T-2081), this
+  // hands over the finished path during the one moment it is becoming a KEK.
+  // Same cable then reads the wrap out of plaintext NVS. Said here because the
+  // first version of this comment claimed the shoulder argument covered both,
+  // and it does not (review, 2026-11-26).
   //
   // Thin, and drawn before the dots so the lattice sits on top of it: the line
   // is a trace of where the cursor went, not a shape competing with the grid.

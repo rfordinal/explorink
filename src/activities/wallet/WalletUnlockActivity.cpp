@@ -32,12 +32,31 @@ void WalletUnlockActivity::onEnter() {
   // An unprovisioned device with an encrypted card is the dead end; an
   // unprovisioned device with no encrypted card is the one that can be set up.
   // The card decides, not the NVS alone (see the class comment).
-  offerSetup_ = !provisioned && !wallet::treeIsEncrypted();
-  noWrap_ = !provisioned && !offerSetup_;
+  // **An unreadable card is not an empty one.** `treeIsEncrypted()` is one
+  // `Storage.exists()` call, and that answers false for a card that is out, not
+  // mounted, or erroring -- so without this check the safety branch below
+  // degrades into "offer to make a new key" exactly when the device cannot see
+  // whether there are documents to lose. Nothing is destroyed either way (a new
+  // wrap needs `!isProvisioned()`, and `provision(force=false)` refuses an
+  // existing one), but a rider would enroll a key, put the card back, and meet a
+  // gate that takes their pattern and then cannot read the wallet behind it.
+  // Found in review, 2026-11-26.
+  noCard_ = !Storage.ready();
+  offerSetup_ = !provisioned && !noCard_ && !wallet::treeIsEncrypted();
+  noWrap_ = !provisioned && !noCard_ && !offerSetup_;
   // A wrap with no start cell is the pre-gate wallet, not a missing one. The
   // gate cannot open on a cell nobody stored, and re-provisioning is the only
   // way forward -- so say that rather than claiming the key is absent.
-  noPattern_ = !noWrap_ && wallet::KeyStore::patternStart() == wallet::kPatternNoStart;
+  //
+  // `offerSetup_` has to be excluded explicitly. `noWrap_` stopped meaning
+  // "unprovisioned" when the card test arrived, so an unprovisioned device with
+  // no wallet on the card reached this line and matched `patternStart() ==
+  // kPatternNoStart`, which is true of every unprovisioned device -- setting a
+  // state that means "a wrap exists whose start cell is missing". The panel was
+  // right, because `offerSetup_` wins the message below, and a `LOG_ERR` that
+  // ships in every build said the opposite of the truth. Found in review,
+  // 2026-11-26.
+  noPattern_ = !noWrap_ && !offerSetup_ && !noCard_ && wallet::KeyStore::patternStart() == wallet::kPatternNoStart;
   failures_ = wallet::KeyStore::failures();
   lockedOut_ = wallet::isLockedOut(failures_);
   // The delay the persisted failure count already earned. A power cycle does not buy
@@ -48,12 +67,13 @@ void WalletUnlockActivity::onEnter() {
   // report the wallet's resident heap (docs/wallet-crypto.md).
   LOG_INF(kLogTag, "heap on the gate: %lu free, %lu largest block", static_cast<unsigned long>(ESP.getFreeHeap()),
           static_cast<unsigned long>(ESP.getMaxAllocHeap()));
+  if (noCard_) LOG_ERR(kLogTag, "no readable card: deciding nothing about a wallet");
   if (noWrap_) LOG_ERR(kLogTag, "no wrap in NVS and an encrypted card: this device cannot read it");
   if (offerSetup_) LOG_INF(kLogTag, "no wallet on this device: offering setup");
   if (noPattern_) LOG_ERR(kLogTag, "a wrap with no start cell: provisioned before the pattern gate");
   if (lockedOut_) LOG_ERR(kLogTag, "locked out after %u failures", static_cast<unsigned>(failures_));
 
-  if (offerSetup_ || noWrap_ || noPattern_ || lockedOut_) {
+  if (offerSetup_ || noCard_ || noWrap_ || noPattern_ || lockedOut_) {
     // A dead end draws its own reason. No gate: a grid that cannot succeed
     // whatever a rider walks is a screen that lies.
     //
@@ -231,7 +251,7 @@ void WalletUnlockActivity::loop() {
     finish();
     return;
   }
-  if (!offerSetup_) {
+  if (!offerSetup_) {  // noCard_ cannot reach here: offerSetup_ already excludes it
     // The other dead ends have nothing to press: every button but BACK is inert,
     // so the screen cannot be walked into a state that says something untrue.
     return;
@@ -275,14 +295,16 @@ void WalletUnlockActivity::draw(const HalDisplay::RefreshMode mode) {
   // message sized against one panel is the defect CLAUDE.md's "Styles must be
   // universal" names; splitting at the sentence keeps every line short enough
   // that no panel in the line has to be measured again.
-  const char* label = offerSetup_  ? tr(STR_WALLET_SETUP_OFFER)
-                      : noWrap_    ? tr(STR_WALLET_UNLOCK_NO_WRAP)
-                      : noPattern_ ? tr(STR_WALLET_UNLOCK_NO_PATTERN)
-                                   : tr(STR_WALLET_UNLOCK_LOCKED_OUT);
-  const char* detail = offerSetup_  ? tr(STR_WALLET_SETUP_OFFER_SUB)
-                       : noWrap_    ? tr(STR_WALLET_UNLOCK_NO_WRAP_SUB)
-                       : noPattern_ ? tr(STR_WALLET_UNLOCK_NO_PATTERN_SUB)
-                                    : tr(STR_WALLET_UNLOCK_LOCKED_OUT_SUB);
+  const char* label = noCard_       ? tr(STR_WALLET_NO_CARD)
+                      : offerSetup_ ? tr(STR_WALLET_SETUP_OFFER)
+                      : noWrap_     ? tr(STR_WALLET_UNLOCK_NO_WRAP)
+                      : noPattern_  ? tr(STR_WALLET_UNLOCK_NO_PATTERN)
+                                    : tr(STR_WALLET_UNLOCK_LOCKED_OUT);
+  const char* detail = noCard_       ? tr(STR_WALLET_NO_CARD_SUB)
+                       : offerSetup_ ? tr(STR_WALLET_SETUP_OFFER_SUB)
+                       : noWrap_     ? tr(STR_WALLET_UNLOCK_NO_WRAP_SUB)
+                       : noPattern_  ? tr(STR_WALLET_UNLOCK_NO_PATTERN_SUB)
+                                     : tr(STR_WALLET_UNLOCK_LOCKED_OUT_SUB);
   renderer.drawCenteredText(UI_10_FONT_ID, y, label, true, EpdFontFamily::BOLD);
   renderer.drawCenteredText(UI_10_FONT_ID, y + lineHeight, detail, true);
 

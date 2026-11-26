@@ -128,14 +128,21 @@ bool KeyStore::provision(const uint8_t key[kWalletKeyLen], const char* pattern, 
     secureWipe(wrapped, sizeof(wrapped));
     return false;
   }
-  // `pstart` is written before the wrap on purpose. A power cut between them
-  // leaves a start cell with no wrap, which `isProvisioned()` already reports as
-  // unprovisioned; the other order leaves a wrap whose start cell is missing,
-  // which is a wallet nobody can open.
+  // **The wrap is written last, and everything else before it.** `isProvisioned()`
+  // reads the wrap alone, so a failure or a power cut anywhere above leaves a
+  // device that still reports unprovisioned and can be set up again. Any other
+  // order leaves the opposite: a stored wrap and a function that returned false.
+  //
+  // That used to be the case for the failure counter, which sat after the wrap.
+  // It mattered only once this screen could retry: a false return sends the
+  // rider back to pick a new pattern, the next `provision()` sees a wrap and
+  // refuses without `force`, and `goToWallet()` then routes past the setup offer
+  // for ever -- a device provisioned under the one pattern it had just told the
+  // rider had failed, with no way to unlock and no way to re-enroll. Found in
+  // review, 2026-11-26.
   const bool stored = prefs.putBytes(kKeySalt, salt, saltLen) == saltLen && prefs.putUInt(kKeyIters, iterations) > 0 &&
-                      prefs.putUChar(kKeyPatternStart, startCell) > 0 &&
-                      prefs.putBytes(kKeyWrap, wrapped, sizeof(wrapped)) == sizeof(wrapped) &&
-                      prefs.putUChar(kKeyFails, 0) > 0;
+                      prefs.putUChar(kKeyPatternStart, startCell) > 0 && prefs.putUChar(kKeyFails, 0) > 0 &&
+                      prefs.putBytes(kKeyWrap, wrapped, sizeof(wrapped)) == sizeof(wrapped);
   prefs.end();
   secureWipe(wrapped, sizeof(wrapped));
   if (!stored) {
@@ -187,8 +194,7 @@ bool KeyStore::unwrap(const char* pattern, const size_t patternLen, uint8_t out[
   return ok;
 }
 
-UnlockResult KeyStore::tryUnlock(const char* patternText, uint32_t& unwrapMicros, uint8_t& failures,
-                                 uint32_t& waitMs) {
+UnlockResult KeyStore::tryUnlock(const char* patternText, uint32_t& unwrapMicros, uint8_t& failures, uint32_t& waitMs) {
   unwrapMicros = 0;
   waitMs = 0;
   failures = KeyStore::failures();

@@ -99,6 +99,10 @@ class WalletUnlockActivity final : public Activity {
   // Separate from noWrap_ because the two states deserve different sentences --
   // one device has no key and the other has a key nobody can reach.
   bool noPattern_ = false;
+  // The card cannot be read at all. Its own state because every other one here
+  // is a statement about what the card holds, and this is the one where the
+  // device cannot see the card to make such a statement (see onEnter).
+  bool noCard_ = false;
   // No wrap and no encrypted tree: this device can be set up, here, now.
   // Deliberately not the same state as noWrap_ -- see the class comment.
   bool offerSetup_ = false;

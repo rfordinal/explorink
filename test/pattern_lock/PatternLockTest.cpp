@@ -393,3 +393,31 @@ TEST(PatternLock, EveryStartCellAnEnrollmentCanPickIsUsable) {
     EXPECT_TRUE(patternlock::isWellFormed(path, start, 8, 12)) << "start cell " << static_cast<int>(start);
   }
 }
+
+// The one input shape that separates samePattern() from a strcmp: two buffers
+// holding the same walk with different garbage past the terminator. Every other
+// comparison test in this file passes against `strcmp(a, b) == 0`, so without
+// this one the fixed-length, whole-buffer property the header spends thirteen
+// lines justifying has no coverage at all (review, 2026-11-26).
+//
+// It also pins the header's own warning: the enrollment's buffers must be
+// zero-initialised, and a caller that forgets gets an unequal compare rather
+// than a silent pass.
+TEST(PatternLock, SamePatternReadsPastTheTerminatorWhereStrcmpStops) {
+  Entry e(5, 8, 12);
+  for (const Step s : {Step::Right, Step::Down, Step::Left, Step::Left, Step::Up, Step::Up, Step::Right}) {
+    ASSERT_TRUE(e.step(s));
+  }
+
+  char clean[patternlock::kPathBufBytes] = {0};
+  char dirty[patternlock::kPathBufBytes];
+  for (char& c : dirty) c = 'X';
+  e.encode(clean);
+  e.encode(dirty);
+
+  // The same walk, the same characters up to and including the terminator.
+  EXPECT_STREQ(clean, dirty);
+  // And not the same buffer, which is what this comparison answers.
+  EXPECT_FALSE(patternlock::samePattern(clean, dirty));
+  EXPECT_TRUE(patternlock::samePattern(clean, clean));
+}
