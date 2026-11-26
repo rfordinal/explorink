@@ -444,14 +444,10 @@ construction from `buttonHintsRect()` and by luck from the side boxes.
 
 **Still not checked, and T-2079 is where it is tracked:**
 
-1. **Enrollment has not been on a C3.** The S3 run below covers the screens and
-   the wrap; `env:default` builds clean and nothing has walked the setup on an
-   X3, where the panel is 792x528 and PBKDF2 is 903 ms rather than 1,047 ms.
-   T-2094.
-2. **`env:sticky` and `env:simulator`** carry the devel flag and nothing has run
+1. **`env:sticky` and `env:simulator`** carry the devel flag and nothing has run
    the screen there. Both are the same code paths as envs already passed; this is
    the weakest of the gaps.
-3. **Ghosting.** A framebuffer read cannot show what the panel keeps. Whether a
+2. **Ghosting.** A framebuffer read cannot show what the panel keeps. Whether a
    `FAST_REFRESH` per cursor move leaves the old ring visible is an eye
    question, and nobody has looked at the glass while walking a pattern.
 
@@ -482,8 +478,32 @@ rider's own path was never typed anywhere.
 Shots in the parent repo: `docs/device-shots/2026-11-26-t5s3prob-wallet-setup-*`
 and `-wallet-gate-no-path-540x960.png`.
 
-**What this run does not cover**: the C3, and the gate reached the way a rider
-reaches it. A provisioned board with no wallet on the card never shows the gate
+### The same walk on a C3, 2026-11-26, Xteink X3
+
+Board `7c:e8:b1:6f:c2:9c`, `env:default`, 792x528. NVS wiped the same way. Its
+card still held an encrypted wallet from the gate pass of 2026-11-23, which
+turned the first attempt into a test of the **safety branch** nobody had seen on
+hardware: no key in NVS plus an encrypted card draws "No wallet key on this
+device / This card was set up somewhere else" and **offers no setup**, which is
+exactly what stops a fresh K from making somebody's documents unreadable. Only
+after that manifest was renamed aside did the offer appear.
+
+| Checked | Result |
+|---|---|
+| No key, encrypted card | the dead end, no setup offer |
+| No key, no wallet on the card | the setup offer |
+| The picker, the walls, the floor at 8 | same as the S3 |
+| The path, the caption, the range | drawn, "First walk" / "Second walk, to check", "8 to 12 points" |
+| A matching second walk | `provisioned: 18000 PBKDF2 iterations, 16-byte salt, start cell 9, wrap stored` |
+| The whole save | **3,221 ms** of main loop against the 5 s watchdog -- 903 ms of KDF and about 1.8 s of panel waits (three `X3_DRF`) |
+| Reboot, then the same pattern | `WALLETUNLOCK_OK unwrap_us=909273`, and 905,262 us on a second run |
+| A wrong pattern | `wrong_pattern attempts=1 of 10` |
+
+**The C3 is the board to watch for the watchdog**, not the S3: 3,221 ms against
+2,543 ms, and the difference is the panel rather than the KDF. T-2089 already
+tracks that the second half of an unlock is unbounded.
+
+**What neither run covers**: the gate reached the way a rider reaches it. A provisioned board with no wallet on the card never shows the gate
 at all -- `goToWallet()` sends it to the browse list, which says the card is
 empty -- so the unlock here was driven through `CMD:WALLETUNLOCK`, which is the
 same `KeyStore::tryUnlock()` the gate's verifier calls, and the gate screen
