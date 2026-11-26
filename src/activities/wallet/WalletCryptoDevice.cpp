@@ -182,7 +182,7 @@ void Session::armRetryDelay(const uint8_t failures) {
   // itself about to be refused pushes its own deadline forward, so the wait can
   // never be served and the count never moves again.
   //
-  // Measured on an X3, 2026-11-24, the first time this path ran on hardware:
+  // Measured on an X3, 2026-11-26, the first time this path ran on hardware:
   // after the fourth wrong pattern every later attempt answered
   // `rate_limited ... wait_ms=1000` for ever, with `attempts` frozen at 4,
   // however long the caller waited. That is not the ten-failure hard stop this

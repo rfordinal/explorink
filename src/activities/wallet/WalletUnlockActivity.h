@@ -37,7 +37,7 @@
 // succeed whatever a rider walks. A sentence saying why is the honest screen, and
 // it is the only drawing left here.
 //
-// It replaced a six-to-ten-symbol directional PIN on 2026-11-24. The PIN's own
+// It replaced a six-to-ten-symbol directional PIN on 2026-11-26. The PIN's own
 // claim -- "a shoulder looking at the panel must learn nothing" -- did not
 // survive the move and the gate's header says so; what did survive is every
 // number in `docs/wallet-crypto.md`, because the pattern length was chosen to

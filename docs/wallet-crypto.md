@@ -99,8 +99,12 @@ browse list and the page both drew -- one 48,000-byte FIT asset, 165 ms off the
 card, decrypted with the payload-hash IV before it reached the panel. A page that
 rendered at all is the proof: a wrong IV is noise, not a document. **Both timings
 are one run per board**, ESP32-S3: 1,047 ms to provision on the X4 Pro, 1,047 ms
-to provision and 1,027 ms to unwrap on the T5 S3 Pro. The C3 figure further down
-stays unmeasured -- an S3 does not answer for it
+to provision and 1,027 ms to unwrap on the T5 S3 Pro. **The C3 figure was
+measured on 2026-11-26**, on an X3 running `env:default`: 903,157 us to
+provision and 902,558 us to unwrap, same 18,000 iterations. It had stood here
+as "unmeasured -- an S3 does not answer for it" since the wrap was written; the
+19,900 iters/s the generator's default was sized against predicted ~904 ms, so
+the default was right all along
 (`docs/device-shots/2026-11-23-x4pro-wallet-page-contentiv-480x800.png` in the
 parent repo).
 
@@ -142,7 +146,7 @@ the three agree.
 
 ## Driving the whole chain from a host
 
-**This recipe was rewritten for the pattern gate on 2026-11-24 and has not been
+**This recipe was rewritten for the pattern gate on 2026-11-26 and has not been
 run since.** The chain is the same; the two commands that took a PIN take a
 pattern now. A dated run of the PIN version is recorded above and stays there as
 evidence of what the panel did on 2026-11-23, not as instructions.
@@ -310,7 +314,7 @@ no keyboard, and because a rider enters it in gloves at a roadside.
 
 ### What replaced what, and what was given up
 
-Until 2026-11-24 this was a **directional PIN**: 6 to 10 presses of U/D/L/R, so
+Until 2026-11-26 this was a **directional PIN**: 6 to 10 presses of U/D/L/R, so
 4^6 to 4^10, 12.0 to 20.0 bits. It was replaced by `PatternLockActivity`, the
 shared gate (`docs/pattern-lock.md`), which the whole device can reuse and which
 a second caller -- a screen lock -- already wants.
@@ -414,7 +418,7 @@ command's contract, pinned by
 no attempt: a typo is not a guess.
 
 **`wrong_pin` and `malformed_pin` were the old spellings**, renamed with the gate
-on 2026-11-24. Free, because this command is `env:default` only and has never
+on 2026-11-26. Free, because this command is `env:default` only and has never
 been in a release image -- which is not the same scope as `ENABLE_WALLET` itself,
 which is in `base` and does reach one.
 
@@ -502,8 +506,14 @@ the watchdog, **the reboot is itself the answer** that the count is too large.
 writes: an upper bound on an unlock, not the clean figure.
 
 `iters_per_s` comes straight out of the reply. The count to put in the format doc is
-the **largest one whose `ms` stays under 1,000** -- that is the unlock's whole
-budget, because everything else in an unlock is a screen refresh. Round it down to
+the **largest one whose `ms` stays under 1,000**.
+
+**That is not the unlock's whole budget, and this sentence used to say it was.**
+"Everything else in an unlock is a screen refresh" reads as if the refresh were
+free. Measured on an X3 on 2026-11-26: one CONFIRM put the main loop at
+**4,109 ms** against the same 5 s watchdog -- 903 ms of KDF and about 1.8 s of
+panel waits for the gate leaving and the list arriving. The KDF is the half this
+cap bounds; the other half is unbounded and unmeasured on a full card. T-2089. Round it down to
 something round, and change `provision.json`'s count rather than the format: the
 count is provisioning data, not part of the on-disk contract.
 
@@ -573,16 +583,12 @@ hardware.
   -- **read off the source, never executed here**;
 - NVS: every `Preferences` call, the device secret's first generation, and whether
   the failure counter survives a power cycle in practice;
-- the gate's *drawing* with a real verifier behind it: the twelve-segment meter,
-  the delay message, the lockout message, and what the panel does during the
-  905 ms the verifier blocks for. Its *logic* is reachable from a host through
-  `CMD:WALLETUNLOCK`, which runs the same `KeyStore::tryUnlock()`, but **no board
-  has drawn this gate with that verifier attached** (`docs/pattern-lock.md`,
-  "Verified, and not");
-- the two dead-end screens `WalletUnlockActivity` still draws itself: no wrap on
-  this device, and already locked out;
-- the stored start cell surviving a power cycle, and `forgetWrap()` taking it
-  with the wrap;
+- the gate on an **S3** -- the whole chain above ran on an X3 only, and the gate
+  compiles into every environment, so the protocol wants one board of each chip
+  family (`../../docs/device-test-protocol.md`, step 1);
+- the no-wrap dead end. Its twin, the lockout screen, is confirmed; this one
+  needs a device with a provisioned-elsewhere card;
+- `forgetWrap()` taking the start cell with the wrap;
 - `esp_fill_random`'s quality;
 - the PBKDF2 timing, which is the whole point of the command above;
 - the real heap figures.
@@ -596,10 +602,13 @@ hardware.
   pattern codec, the rate-limit table: **host-tested** against verbatim generator
   output with an independent crypto library, and every failure path proved to
   fire.
-- The pattern gate replacing the directional PIN, 2026-11-24: **host-tested on
-  both sides** (860 firmware tests, 206 in `tools/tests`) and **built for
-  `env:default` and `env:t5s3pro`**, zero warnings. `env:x4pro` has not been
-  built -- T15's disk is full -- and **no board has run any of it**.
+- The pattern gate replacing the directional PIN, 2026-11-26: **host-tested**
+  (863 firmware tests, 206 in `tools/tests`), built for `env:default`,
+  `env:x4pro`, `env:t5s3pro` and `env:simulator` with zero warnings, and
+  **run end to end on an X3** -- provision, both refusals, unlock, the panel
+  gate, the browse list off a decrypted manifest, a wrong pattern, the limiter's
+  full ladder and the lockout screen (`docs/pattern-lock.md`, "On the panel,
+  2026-11-26"). Not yet on an S3.
 - The encrypted tree **rendered host-side** through the device's own reader code
   (`wallet_preview --key`): the decrypted QR is **byte-identical** to the cleartext
   tree's render and still decodes to the exact payload through `zxing-cpp`.

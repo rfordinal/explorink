@@ -167,7 +167,7 @@ What it does **not** protect: someone watching the entry. The cursor has to be
 visible or the grid is pointless, and a watcher who sees every press has the
 pattern. The dot PIN this replaced could claim more -- "a shoulder looking at the
 panel must learn nothing" -- and a grid cannot. That claim was **given up, not
-forgotten**, when the wallet moved to this screen on 2026-11-24: anybody reading
+forgotten**, when the wallet moved to this screen on 2026-11-26: anybody reading
 `docs/wallet-crypto.md` is reading about a gate a watcher can read off the panel,
 and nothing in the product text may say otherwise.
 
@@ -258,7 +258,7 @@ verifier is then called with `speculative = true`, and both sides of that matter
 
 ## Verified, and not
 
-**Host-tested, 2026-11-23, extended 2026-11-24**: 21 tests in
+**Host-tested, 2026-11-23, extended 2026-11-26**: 21 tests in
 `test/pattern_lock/`, all green -- the grid walk, walls, revisits, the length cap,
 undo down to the start, the encoding, the wipe, `isWellFormed` against both its
 accept and its reject cases and against a caller's own range, a caller's range
@@ -280,13 +280,38 @@ only by hand over `CMD:PATTERNLOCK` plus `CMD:BUTTON` on a board. That is exactl
 where both reviews found their worst defects, and it is why they were found by
 reading rather than by a red test. T-2083.
 
-**Not on any panel, 2026-11-24: the wallet's 8-to-12 range.** Every frame below
-was taken with 4-to-8 patterns, before `Config::minPoints`/`maxPoints` existed.
-A twelve-segment meter has never been drawn, and neither has this gate with a
-real `tryUnlock()` behind it -- that verifier blocks the loop for 905 ms per
-CONFIRM and nothing has measured what the panel does during it. Both are
-hardware-pass work on `wallet-pattern-gate`, on one board per environment the
-wallet reaches (`default`, `x4pro`, `t5s3pro`).
+**On the panel, 2026-11-26, Xteink X3** (board `7c:e8:b1:6f:c2:9c`, 792x528
+framebuffer, `env:default`, ESP32-C3) -- the first run of this gate with a real
+secret behind it, driven by `CMD:BUTTON` written straight to the port and read
+back with `CMD:SCREENSHOT`:
+
+| Checked | Result |
+|---|---|
+| The gate opens on the cell NVS stored | cursor ring on cell 5, before any press |
+| The meter is the caller's length | twelve segments, status line "At least 8 points" |
+| Seven presses | "8 of 12 points", cursor on cell 12, **path not drawn** |
+| CONFIRM on the stored pattern | verifier 902,552 us, `unlocked on 8 points`, popped to `WalletUnlock`, which replaced itself with `Wallet` |
+| The browse list behind it | "Gate bench, 1 page" off a manifest that only the unwrapped key could decrypt |
+| CONFIRM on a wrong 8-point walk | bold "Wrong pattern", meter back to one, entry at the start cell |
+| That attempt against the limiter | `attempts` went 0 to 1 -- the panel moves the same counter the serial command does |
+| The locked-out dead end | message drawn, **no `PatternLock` pushed at all** -- the shim refuses a gate that cannot succeed |
+
+**The C3's PBKDF2 cost, measured at last.** `docs/wallet-crypto.md` carried
+"the C3 figure stays unmeasured -- an S3 does not answer for it" from the day
+the wrap was written. At 18,000 iterations on this X3: **903,157 us to
+provision, 902,558 us to unwrap**. The prediction from 19,900 iters/s was
+~904 ms, so the generator's default was right.
+
+**And the number that is uncomfortable.** An unlock pushes the main loop to a
+**4,109 ms** maximum (`LOOP New max loop duration`), against a task watchdog
+that panics at 5 s (`CONFIG_ESP_TASK_WDT_TIMEOUT_S=5`). That is 82 % of the
+budget spent on one button press: 903 ms of PBKDF2 plus the panel work behind
+it. It did not trip, and nothing here says how much headroom a slower card or a
+longer list would leave. Open -- T-2089.
+
+**Still not on a panel**: `env:x4pro` and `env:t5s3pro`. The gate compiles into
+every environment, so the protocol wants one C3 and one S3
+(`../../docs/device-test-protocol.md`, step 1), and only the C3 half has run.
 
 **On the panel, 2026-11-23, T5 S3 Pro** (board `7c:2c:67:8a:4c:b4`, 540x960,
 `env:t5s3pro`, driven by `CMD:PATTERNLOCK` + `CMD:BUTTON` with the framebuffer
@@ -361,12 +386,12 @@ and OK answer a thumb. Four points were entered by tapping alone --
 So the claim is: **on a board with two hardware keys the gate is usable in both
 touch modes.** Confirmed by thumb in both, which is the only instrument for it.
 
-**And on an X3, 2026-11-24** (`7c:e8:b1:6f:c2:9c`, `env:default`, ESP32-C3,
+**And on an X3, 2026-11-26** (`7c:e8:b1:6f:c2:9c`, `env:default`, ESP32-C3,
 528x792 -- the third framebuffer geometry and the last one unseen): the gate
 draws, a step moves the cursor, the wall holds (four `right` presses from the
 interior start leave three points and the cursor on the right column), a
 six-point walk plus CONFIRM unlocks, and CONFIRM at three points is inert.
-`../../docs/device-shots/2026-11-24-x3-pattern-gate-528x792.png`.
+`../../docs/device-shots/2026-11-26-x3-pattern-gate-528x792.png`.
 
 Worth knowing for the next pass on that board: the theme puts the side hints on
 **opposite edges** there -- "Up" left, "Down" right -- where the T5 S3 Pro stacks
@@ -384,7 +409,7 @@ construction from `buttonHintsRect()` and by luck from the side boxes.
 
 ## The first real caller: the wallet
 
-Until 2026-11-24 the only thing that pushed this screen was the bench harness.
+Until 2026-11-26 the only thing that pushed this screen was the bench harness.
 The document wallet is the first caller that brings a secret, and the shape of
 that call is what the Config fields were built for.
 
@@ -428,7 +453,7 @@ CMD:PATTERNLOCK 0145        -> PATTERNLOCK_ERR:malformed   (1 to 4 is a diagonal
 CMD:PATTERNLOCK 5678        -> PATTERNLOCK_ERR:malformed   (7 to 8 jumps a row)
 ```
 
-That last line **was this doc's own worked example** until 2026-11-24, written
+That last line **was this doc's own worked example** until 2026-11-26, written
 as a success. Cell 7 is row 1 column 3 and cell 8 is row 2 column 0, so it is
 the exact error the paragraph above it warns about, in the paragraph that warns
 about it. The grid is drawn out in "What a pattern is" for a reason: reading

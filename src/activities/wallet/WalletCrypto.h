@@ -383,7 +383,7 @@ inline bool isLockedOut(uint8_t failures) { return failures >= kMaxUnlockFailure
 // never the delay table -- that is a pure function and the host tests had it
 // right from the start. What was wrong was **when the deadline is armed**, and
 // that was unreachable from a host because it sat next to `millis()`. Pulling it
-// out is the whole lesson of the 2026-11-24 X3 run: a tested table and an
+// out is the whole lesson of the 2026-11-26 X3 run: a tested table and an
 // untested interaction add up to a wallet that locks its owner out for ever
 // after four typos.
 struct RetryGate {

@@ -2078,7 +2078,7 @@ TEST(WalletCryptoRateLimit, FreeTriesThenDoublingThenAHardStop) {
 }
 
 TEST(WalletCryptoRateLimit, TheDeadlineIsArmedOncePerCountNotOncePerAttempt) {
-  // The regression this test exists for, found on an X3 on 2026-11-24 the first
+  // The regression this test exists for, found on an X3 on 2026-11-26 the first
   // time the unlock path ran on hardware. Arming on every attempt made an
   // attempt that was itself being refused push its own deadline forward, so the
   // wait could never be served: four wrong patterns and the wallet answered

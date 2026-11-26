@@ -16,7 +16,7 @@ Three screens:
   (`src/activities/wallet/WalletUnlockActivity.h`). It owns the wrap, the rate
   limiter and the stored start cell, and pushes the shared `PatternLockActivity`
   to do the entering; it draws only the two dead ends that have no pattern to
-  enter. Was a directional PIN with its own keypad until 2026-11-24
+  enter. Was a directional PIN with its own keypad until 2026-11-26
   (`pattern-lock.md`, "The first real caller"). P3.
 
 **Encryption is a separate document.** The crypto path, the key's lifetime, the
