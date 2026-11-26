@@ -444,16 +444,50 @@ construction from `buttonHintsRect()` and by luck from the side boxes.
 
 **Still not checked, and T-2079 is where it is tracked:**
 
-1. **Enrollment has not been on a panel at all.** The mode is host-tested where
-   it is testable -- the comparison, the floor, the start cells -- and the three
-   phases, the wipes on every exit path and the picker's own cursor are read off
-   the code. T-2094's hardware pass is what settles it, on one C3 and one S3.
+1. **Enrollment has not been on a C3.** The S3 run below covers the screens and
+   the wrap; `env:default` builds clean and nothing has walked the setup on an
+   X3, where the panel is 792x528 and PBKDF2 is 903 ms rather than 1,047 ms.
+   T-2094.
 2. **`env:sticky` and `env:simulator`** carry the devel flag and nothing has run
    the screen there. Both are the same code paths as envs already passed; this is
    the weakest of the gaps.
 3. **Ghosting.** A framebuffer read cannot show what the panel keeps. Whether a
    `FAST_REFRESH` per cursor move leaves the old ring visible is an eye
    question, and nobody has looked at the glass while walking a pattern.
+
+### Enrollment on the panel, 2026-11-26, LilyGo T5 S3 Pro board B
+
+Board `30:ed:a0:a8:37:74`, `env:t5s3pro` plus `ENABLE_WALLET_TEST_CMDS`, NVS
+wiped first (`esptool erase-region 0x9000 0x5000`) so the board had no wallet
+key at all. Driven by `CMD:BUTTON` and read back with `CMD:SCREENSHOT`; the
+rider's own path was never typed anywhere.
+
+| Checked | Result |
+|---|---|
+| Home > Wallet on a cold board | "Set up wallet / No wallet on this device", BACK and OK |
+| OK | the picker: 4x4 grid, ring on the interior default, "Pick a start cell", no meter |
+| Picker walls | UP from row 1 moved to row 0, a second UP changed nothing |
+| Start fixed on cell 6 | meter appears at one segment, "First walk", "8 to 12 points" |
+| CONFIRM at 7 points | nothing happened -- the floor is the wallet's 8, not the file's 4 |
+| The path while walking | thin lines between the walked cells, under the lattice |
+| CONFIRM at 8 points | "Second walk, to check", meter back to one, cursor on the start cell |
+| A different second walk | bold "The two walks differ", back to the first walk, `provisioned=0` |
+| A matching second walk | device secret generated, `provisioned: 18000 PBKDF2 iterations, 16-byte salt, start cell 6, wrap stored`, key in the session, popped to the wallet list |
+| `CMD:WALLETSTATUS` | `provisioned=1 unlocked=1 iters=18000 pattern_start=6` |
+| The whole save | 2,543 ms of main loop, against a 5 s task watchdog |
+| Reboot, then the same pattern | `WALLETUNLOCK_OK unwrap_us=1026272` -- three runs, 1,026 to 1,027 ms |
+| A wrong pattern | `wrong_pattern attempts=1 of 10` |
+| The gate on the same board | `CMD:PATTERNLOCK` walked four points: **no lines, no caption**, "4 of 12 points" |
+
+Shots in the parent repo: `docs/device-shots/2026-11-26-t5s3prob-wallet-setup-*`
+and `-wallet-gate-no-path-540x960.png`.
+
+**What this run does not cover**: the C3, and the gate reached the way a rider
+reaches it. A provisioned board with no wallet on the card never shows the gate
+at all -- `goToWallet()` sends it to the browse list, which says the card is
+empty -- so the unlock here was driven through `CMD:WALLETUNLOCK`, which is the
+same `KeyStore::tryUnlock()` the gate's verifier calls, and the gate screen
+itself was proved on an X3 three days earlier with a laptop-made wallet.
 
 ## The first real caller: the wallet
 
@@ -500,6 +534,23 @@ rider walks the grid in all of them:
 
 The meter is not drawn in the picker. There is no walk yet, and an empty scale
 under the grid reads as a control waiting for presses the picker does not take.
+
+**The path IS drawn while enrolling**, as thin lines between the cells, under
+the lattice. That is the opposite of the gate and it is deliberate: a rider
+choosing a pattern has to see what they walked or they cannot repeat it, and
+hiding it buys nothing here -- whoever is watching the panel is watching the
+cursor move anyway, which is the limit "What the hidden path buys" already
+states. Maintainer's call, 2026-11-26, off the first panel run.
+
+**The status area says two things while enrolling.** A bold caption -- "First
+walk" / "Second walk, to check" -- over the count. Without the caption the
+second walk is the first one over again with no sign that anything happened:
+same grid, same empty meter, same sentence about points. And the count gives
+**both ends** of the range, "8 to 12 points", because a rider is choosing how
+long to make it; the gate keeps its floor-only "At least 8 points", where the
+length is already decided and the maximum would be a hint about a secret.
+All three were missing from the first cut and all three were found by the first
+person to use the screen who had not written it.
 
 **Only a matching second walk reaches the `Verifier`**, once, with `speculative`
 false. The caller's verifier *stores* instead of checking -- for the wallet it

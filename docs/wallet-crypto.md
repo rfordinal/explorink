@@ -221,7 +221,10 @@ CMD:WALLETUNLOCK 567ba98c
 ```
 
 **Since T-2094 there is a path with no laptop in it at all, and it is the
-product's path.** On a board with no wrap and no encrypted wallet on the card,
+product's path. Proved on a T5 S3 Pro, 2026-11-26** -- a board whose NVS was
+wiped first was set up with buttons only, stored an 18,000-iteration wrap on
+start cell 6, and unwrapped it after a reboot in 1,026 ms. The table is in
+`pattern-lock.md`, "Enrollment on the panel". On a board with no wrap and no encrypted wallet on the card,
 Home > Wallet offers setup: pick a start cell, walk 8 to 12 points, walk them
 again, and the device makes K, the salt and the wrap itself. Nothing above is
 needed for it and nothing above can produce a key the device will accept
