@@ -2500,17 +2500,22 @@ Measured on board B: 3000/3000 at 63 % before, **1500/1500 at 95 %** after.
 
 **`FullChargeCapacity()` lags the data memory by minutes.** It is loaded from
 there "on initialization" (SLUUBD4A 1.1.2), and that reload far outlasts the
-status bit that announces the end of the write. Measured 2026-11-26: the
-register read 3000 a minute after a successful write and again across a reboot,
-and 1500 some time inside the next twenty-four. Read inside that window the
-loader looks like it writes Design Capacity and abandons FCC -- a wrong
+status bit that announces the end of the write. Measured 2026-11-26 by polling a second
+board on purpose: the write landed at 15:03, `fcc` still read 3000 at 15:05:11
+and read 1500 at 15:07:55 -- **between 1.9 and 4.6 minutes**. Read inside that
+window the loader looks like it writes Design Capacity and abandons FCC, a wrong
 conclusion that was acted on for an afternoon. **Never judge a capacity write by
 one read taken straight after it.**
+
+The same impatience bites one level earlier: the register read taken the moment
+the loader reports done answered `0xFF00` once, printed as `dc=65280 mAh`.
+`readCapacities()` retries for up to two seconds and refuses a capacity no cell
+in this line has.
 
 So the log states two moments:
 
 ```
-INF GAUGE: Design capacity load settled in 9377 ms: dc=1500 fcc=3000 mAh (cell is 1500)
+INF GAUGE: Design capacity load settled in 9318 ms: dc=1500 fcc=3000 mAh (cell is 1500)
 INF GAUGE: Capacity after 120 s: dc=1500 fcc=1500 mAh (was 1500/3000)
 ```
 
