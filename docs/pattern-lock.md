@@ -444,10 +444,15 @@ construction from `buttonHintsRect()` and by luck from the side boxes.
 
 **Still not checked, and T-2079 is where it is tracked:**
 
-1. **`env:sticky` and `env:simulator`** carry the devel flag and nothing has run
+1. **Three states are read off the code, not seen.** The unreadable-card branch
+   needs the card pulled at runtime, which is a hand on the device; the
+   "could not save the pattern" line needs an NVS write to fail; and this
+   screen's own BACK/OK boxes need a board in `TOUCH_ANYWHERE`. All three came
+   out of the 2026-11-26 review rather than a panel.
+2. **`env:sticky` and `env:simulator`** carry the devel flag and nothing has run
    the screen there. Both are the same code paths as envs already passed; this is
    the weakest of the gaps.
-2. **Ghosting.** A framebuffer read cannot show what the panel keeps. Whether a
+3. **Ghosting.** A framebuffer read cannot show what the panel keeps. Whether a
    `FAST_REFRESH` per cursor move leaves the old ring visible is an eye
    question, and nobody has looked at the glass while walking a pattern.
 
@@ -503,7 +508,22 @@ after that manifest was renamed aside did the offer appear.
 2,543 ms, and the difference is the panel rather than the KDF. T-2089 already
 tracks that the second half of an unlock is unbounded.
 
-**What neither run covers**: the gate reached the way a rider reaches it. A provisioned board with no wallet on the card never shows the gate
+### env:x4pro, 2026-11-26 -- the gate only
+
+The third environment this change reaches (`ENABLE_WALLET` is in `base`). Board
+`b8:1f:3f:d4:89:bc`, 480x800, the smallest panel in the line and the one where a
+52-character sentence was clipped at both ends three days earlier. It holds a
+working wallet from that pass, so it shows the **gate**, not the setup: grid,
+meter, "At least 8 points", **no path drawn**, everything inside the band.
+
+Two things it did not exercise, and neither is this screen's fault: the setup
+flow (the board is provisioned, and wiping it would destroy a wallet another
+session built), and **this screen's own BACK/OK boxes** -- that board draws the
+theme's hint row, so `TouchPolicy::touchAnywhere()` is false on it as
+configured. The own-touch branch is still the one path in this screen that no
+hardware run has ever taken.
+
+**What no run covers**: the gate reached the way a rider reaches it. A provisioned board with no wallet on the card never shows the gate
 at all -- `goToWallet()` sends it to the browse list, which says the card is
 empty -- so the unlock here was driven through `CMD:WALLETUNLOCK`, which is the
 same `KeyStore::tryUnlock()` the gate's verifier calls, and the gate screen

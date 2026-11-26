@@ -564,6 +564,16 @@ session.** The command logs two loud lines saying so every time it runs, and it 
 what makes the whole crypto path verifiable without a phone. It goes when the
 device can receive plaintext documents and seal them itself.
 
+**The wrap is the last thing `provision()` writes**, and that order is load
+bearing rather than tidy: `isProvisioned()` reads the wrap alone, so a failed
+write or a power cut anywhere earlier leaves a device that still reports
+unprovisioned and can be set up again. The failure counter used to sit after the
+wrap, which meant a failure there returned false with a usable wrap already
+stored -- harmless until enrollment could retry, and then terminal: the rider is
+sent back to choose a new pattern, the next `provision()` refuses without
+`force`, and the wallet is locked under the one pattern the screen said had
+failed. Found in review, 2026-11-26.
+
 It **refuses an already provisioned device** unless the fifth argument is `force`:
 overwriting a wrap makes every asset already on the card unreadable for ever, and
 that has to be asked for, not defaulted into. A malformed key, salt, pattern or
