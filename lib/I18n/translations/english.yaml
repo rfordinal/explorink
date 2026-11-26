@@ -718,8 +718,6 @@ STR_PATTERN_LOCK_SHORT: "At least %d points"
 STR_PATTERN_LOCK_WRONG: "Wrong pattern"
 STR_PATTERN_LOCK_LOCKED_OUT: "Too many wrong patterns"
 STR_PATTERN_LOCK_WAIT: "Wait %d s before trying again"
-# Enrollment. Every line stays short: a 52-character sentence clipped at both
-# ends on the X4 Pro 480 px panel while fitting the X3 (2026-11-26).
 STR_PATTERN_ENROLL_START: "Pick a start cell"
 STR_PATTERN_ENROLL_AGAIN: "Walk the pattern again"
 STR_PATTERN_ENROLL_MISMATCH: "The two walks differ"
