@@ -534,6 +534,29 @@ Two independent causes, both in the simulator fork rather than in this repo:
 which side broke it, and on this pass that cost two extra worktrees and two
 builds to find out.
 
+### And it happened again on `develop` itself, 2026-11-26
+
+T-2076 added `#include <Wire.h>` unconditionally to `src/main.cpp`, because the
+gauge's capacity is now read at boot rather than only by a bring-up command.
+Three environments were built -- `default`, `x4pro`, `t5s3pro` -- all clean, and
+the change was merged. `develop` then carried
+
+```
+src/main.cpp:63:10: fatal error: Wire.h: No such file or directory
+```
+
+for an hour, until a review asked about the env nobody had built. The same two
+reduced headers are the reason: the simulator ships its own `BoardConfig.h` with
+no `batteryGauge` member and an eight-line `BatteryMonitor` with no
+`loadDesignCapacity()`, so **every** unguarded reference to the gauge broke
+there and nowhere else.
+
+The lesson is the one two paragraphs up, so the only thing worth adding is how
+cheap the check is: `pio run -e simulator` is a **native** build and takes
+**11 to 42 seconds**, against three to ten minutes for an ESP32 env. It is the
+fastest environment in the tree and the only one that catches this class. Build
+it first, not last.
+
 ## No CI has ever run on this repo
 
 **Measured 2026-09-09.** Five workflows are registered and `active` --

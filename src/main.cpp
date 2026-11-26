@@ -1,5 +1,7 @@
 #include <Arduino.h>
-#include <BatteryMonitor.h>
+#ifndef SIMULATOR
+#include <BatteryMonitor.h>  // the simulator's shim has no loadDesignCapacity()
+#endif
 #include <BoardConfig.h>
 #include <Epub.h>
 #include <FontCacheManager.h>
@@ -57,10 +59,17 @@
 #include "lora/PresenceMesh.h"
 #endif
 
-// The charger and the gauge sit on the same I2C bus. Unconditional since
-// 2026-11-26: the gauge's capacity is written at boot (gaugeload below), not
-// only by a bring-up command.
+// The charger and the gauge sit on the same I2C bus. Reached at boot since
+// 2026-11-26 (gaugeload below) and not only by a bring-up command, so this is
+// no longer behind the command flags -- but it still cannot be unconditional.
+// **env:simulator is a native build with no Wire.h and no BoardConfig**
+// (platformio.ini, "the simulator ships its own reduced BoardConfig.h ... so
+// the native build never pulls in ESP32 GPIO or Wire headers"), and making
+// this include unconditional broke that environment on develop for an hour.
+// Three environments built clean and nine exist.
+#ifndef SIMULATOR
 #include <Wire.h>
+#endif
 
 #ifdef ENABLE_SDBUS_CMD
 #include <esp_rom_crc.h>
@@ -2440,6 +2449,7 @@ static void loraDrain() {
 }
 #endif  // ENABLE_LORA_CMD
 
+#ifndef SIMULATOR
 // I2C for the two power chips on the gauge bus: the BQ27220 fuel gauge (0x55)
 // and the BQ25896 charger (0x6B) on the T5 S3 Pro. Shared by CMD:BATT and
 // CMD:CHARGE rather than written twice, because CMD:CHARGE's whole safety story
@@ -2704,25 +2714,30 @@ bool seal(uint8_t addr) { return controlSub(addr, kSubSealed); }
 // StateOfCharge() is RemainingCapacity() over FullChargeCapacity()
 // (SLUUBD4A 2.21) -- so a full pack reads near half.
 //
-// **It is a mechanism and not a command**, because the device has to do it to
-// itself. `CMD:BATT PROVISION` was the fix until 2026-11-26 and a rider cannot
-// run a bench command; worse, the fix does not stick -- both boards provisioned
-// by hand on 2026-11-23/24 were back at 3000/3000 three days later, measured
-// (parent `docs/t5s3-power-path.md`). So `gaugeload::tick()` below runs this at
-// boot and the command is one more caller of the same code.
+// **This is the bench half. The boot half is the SDK's**, driven by
+// `gaugeload::tick()` below: `BatteryMonitor::loadDesignCapacity()`, a step
+// machine that never blocks the loop. A rider cannot run a console command, and
+// the fix does not stick either -- both boards provisioned by hand on
+// 2026-11-23/24 were back at 3000/3000 three days later, measured. So the
+// device does it to itself and this command is for inspecting a board or
+// forcing a write without waiting for a reboot.
 //
-// **Why not the SDK's `BatteryMonitor::loadDesignCapacity()`.** It was wired up
-// first, since the pin bump made it reachable, and on board B it wrote
-// `Design Capacity` and left `FullChargeCapacity` at 3000 -- so the percentage
-// stayed at 63 % on a full cell, the gauge got sealed, and the retry ran again
-// every boot with the same result. Measured twice on 2026-11-26. This path
-// writes both words of the CEDV block with one checksum and polls the register
-// read-back, which is the version that has ever produced a correct percentage.
+// **The two are not the same code, and that is deliberate after a wrong turn.**
+// For part of 2026-11-26 this function *was* the boot path, because the SDK
+// loader looked like it wrote `Design Capacity` and abandoned
+// `FullChargeCapacity` -- the register still read 3000 a minute after the write
+// and across a reboot. It was an impatient read: FCC is loaded from data memory
+// "on initialization" (SLUUBD4A 1.1.2) and follows it in 1.9 to 4.6 minutes,
+// measured by polling a second board on purpose. The SDK loader does write both.
+// Parent `docs/t5s3-power-path.md`, "The device loads it itself".
 //
 // **Three deliberate limits, each one someone else's lesson.**
 //
-// *It compares before it writes, and writes nothing on a gauge that already
-// matches.* The data memory is flash with finite endurance, which is the reason
+// *It compares before it writes, and writes nothing on a gauge whose two words
+// already match.* (The SDK's loader is the one that still sends a SEAL on such
+// a boot -- `bq27220LoadStep`'s `close()` -- so "nothing to do" is not quite
+// "nothing happens" over there.) The data memory is flash with finite
+// endurance, which is the reason
 // Linux refuses to push a devicetree capacity into an NVM-backed bq27xxx at all
 // unless a build option says otherwise (`bq27xxx_battery_update_dm_block()`,
 // "update to %u disallowed for flash/NVM data memory").
@@ -2760,8 +2775,13 @@ constexpr uint8_t kDesignOffset = 4;
 // vendor's own specification, not from another board's profile and not from the
 // gauge's own guess.
 uint16_t cellMah() {
+  // **The figure comes from the board profile, not from a second copy of it.**
+  // It was spelled 1500 here and read from `designCapacityMah` in the boot
+  // path; they agreed, and nothing held them together. LilyGo's own parameter
+  // table ("3.7 V 1500 mAh LiPo") is what the profile carries, through
+  // Free-Ink/freeink-sdk#227.
   return BoardConfig::ACTIVE.board == BoardConfig::Board::LilyGoT5S3
-             ? 1500  // LilyGo's parameter table: "3.7 V 1500 mAh LiPo"
+             ? BoardConfig::ACTIVE.batteryGauge.designCapacityMah
              : 0;
 }
 
@@ -2779,6 +2799,7 @@ struct Result {
   const char* stage = "";     // where it stopped, when !ok
   uint16_t dcAfter = 0;
   uint16_t fccAfter = 0;
+  bool afterReadable = false;  // dcAfter/fccAfter mean nothing when this is false
   bool verified = false;
   uint8_t secAfter = 0;
 };
@@ -2791,7 +2812,16 @@ Result run(const uint16_t cellMah, const bool doWrite) {
   const uint8_t addr = BoardConfig::ACTIVE.batteryGauge.gaugeAddr;
   Result r;
   powerbus::begin();
-  gaugedm::security(addr, r.sec);
+  // **The read has to succeed before its answer may be trusted.** Dropping this
+  // return left `r.sec` at 0 on an I2C failure, which every branch below reads
+  // as "unsealed, go ahead" -- and as "no seal to restore" afterwards. The
+  // pre-2026-11-26 code carried this flag for exactly that reason.
+  const bool secOk = gaugedm::security(addr, r.sec);
+  if (!secOk) {
+    r.stage = "security";
+    gaugedm::security(addr, r.secAfter);
+    return r;  // blockOk stays false: the caller reports a refusal, not a write
+  }
 
   // **A sealed gauge is unsealed to read, not refused.** Until 2026-11-26 this
   // read the block first and gave up on the bad checksum a sealed part answers
@@ -2855,12 +2885,21 @@ Result run(const uint16_t cellMah, const bool doWrite) {
   // (SLUUBD4A 1.1.2) and the re-initialisation outlasts the bit, so a single
   // read here is a false negative on the one path whose whole job is to be
   // believed.
+  // powerbus::read16 leaves its out-parameter untouched when the transaction
+  // fails, so a failing last iteration would otherwise print whatever the
+  // previous one left -- or 0 -- beside `verify=bad`, which is the same
+  // false-evidence shape this poll exists to avoid.
   for (int i = 0; i < 50 && r.ok; ++i) {
-    const bool dcOk = powerbus::read16(addr, 0x3C, r.dcAfter);
-    const bool fccOk = powerbus::read16(addr, 0x12, r.fccAfter);
-    if (dcOk && fccOk && r.dcAfter == cellMah && r.fccAfter == cellMah) {
-      r.verified = true;
-      break;
+    uint16_t dc = 0;
+    uint16_t fcc = 0;
+    r.afterReadable = powerbus::read16(addr, 0x3C, dc) && powerbus::read16(addr, 0x12, fcc);
+    if (r.afterReadable) {
+      r.dcAfter = dc;
+      r.fccAfter = fcc;
+      if (dc == cellMah && fcc == cellMah) {
+        r.verified = true;
+        break;
+      }
     }
     delay(100);
   }
@@ -2911,18 +2950,19 @@ constexpr unsigned long kStuckMs = 30000;
 // printing what it settled on.
 constexpr unsigned long kSettleMs = 120000;
 
-// `DesignCapacity()` and `FullChargeCapacity()`, the two registers the
-// percentage is computed from. Read here rather than through BatteryMonitor
-// because its public Status carries a percentage and not a capacity -- and a
-// percentage is the wrong instrument: it falls back to voltage when the gauge
-// read fails, so the first version of this log said 100 % while the gauge
-// itself said 63 %.
 // A capacity no cell in this product line has. The gauge answers with bus idle
 // bytes while it re-initialises after a write -- `0xFF00` printed as
 // `dc=65280 mAh` on board A, 2026-11-26, in the one log line whose job is to be
 // believed. That reads as a destroyed gauge and is only an impatient read.
 bool plausibleMah(const uint16_t mah) { return mah > 0 && mah < 20000; }
 
+// `DesignCapacity()` and `FullChargeCapacity()`, the two registers the
+// percentage is computed from. Read here rather than through BatteryMonitor
+// because its public Status carries a percentage and not a capacity -- and a
+// percentage is the wrong instrument: it falls back to voltage when the gauge
+// read fails, so the first version of this log said 100 % while the gauge
+// itself said 63 %.
+//
 // Up to two seconds, because the read immediately after EXIT_CFG_UPDATE is the
 // one that lies. Still far short of what FullChargeCapacity() needs to follow
 // the data memory -- that is minutes, and is what the second log line is for.
@@ -2939,10 +2979,18 @@ bool readCapacities(uint16_t& dc, uint16_t& fcc) {
   return false;
 }
 
+enum Phase : uint8_t { Loading, Settling, Done };
+Phase phase = Loading;
+
+// **True while the SDK's sequence is in flight, so sleep can wait for it.**
+// `tick()` runs after loop()'s auto-sleep check, and deep sleep is a chip
+// reset: cut between ENTER_CFG_UPDATE and EXIT_CFG_UPDATE, the gauge is left
+// with gauging suspended until something boots and finishes the job. The window
+// is about 8 s, once per boot, on one board -- and bounded by kStuckMs, which
+// retires the phase rather than holding sleep off forever.
+bool busy() { return phase == Loading; }
+
 void tick() {
-  enum Phase : uint8_t { Loading, Settling, Done };
-  static Phase phase = Loading;
-  static bool complained = false;
   static unsigned long startedMs = 0;
   static unsigned long doneMs = 0;
   static uint16_t dcAtDone = 0;
@@ -2968,18 +3016,32 @@ void tick() {
   if (phase == Loading) {
     if (startedMs == 0) startedMs = millis();
     if (BatteryMonitor::loadDesignCapacity()) {
-      if (!complained && millis() - startedMs > kStuckMs) {
-        complained = true;
-        LOG_ERR("GAUGE", "Design capacity load still running after %lu ms", millis() - startedMs);
+      if (millis() - startedMs > kStuckMs) {
+        // **It gives up rather than polling for the life of the session.** The
+        // first version only logged and kept calling, which is a timeout that
+        // turns nothing off. The gauge retries from scratch on the next boot.
+        phase = Done;
+        LOG_ERR("GAUGE", "Design capacity load gave up after %lu ms", millis() - startedMs);
       }
       return;
     }
     doneMs = millis();
     const bool readable = readCapacities(dcAtDone, fccAtDone);
+    const uint16_t want = BoardConfig::ACTIVE.batteryGauge.designCapacityMah;
     if (readable) {
+      // **An ERR when the gauge did not end up where it was sent.** The SDK's
+      // step 0 returns without writing on any Design Capacity that is neither
+      // TI's 3000 nor the target, so a gauge sitting at some third value logs a
+      // perfectly clean "settled" line and stays wrong. Only Design Capacity is
+      // judged here: FullChargeCapacity follows it minutes later, which is what
+      // the second line below is for.
+      if (dcAtDone != want) {
+        LOG_ERR("GAUGE", "Design capacity is %u mAh, not the %u this board's cell needs (fcc=%u)",
+                static_cast<unsigned>(dcAtDone), static_cast<unsigned>(want),
+                static_cast<unsigned>(fccAtDone));
+      }
       LOG_INF("GAUGE", "Design capacity load settled in %lu ms: dc=%u fcc=%u mAh (cell is %u)", doneMs - startedMs,
-              static_cast<unsigned>(dcAtDone), static_cast<unsigned>(fccAtDone),
-              static_cast<unsigned>(BoardConfig::ACTIVE.batteryGauge.designCapacityMah));
+              static_cast<unsigned>(dcAtDone), static_cast<unsigned>(fccAtDone), static_cast<unsigned>(want));
     } else {
       dcAtDone = fccAtDone = 0;
       LOG_INF("GAUGE", "Design capacity load settled in %lu ms, capacities not readable yet", doneMs - startedMs);
@@ -3004,6 +3066,7 @@ void tick() {
 }
 
 }  // namespace gaugeload
+#endif  // !SIMULATOR
 
 #ifdef ENABLE_CHARGE_CMD
 // BQ25896 register writes for the bench, and the rules they obey.
@@ -5334,6 +5397,11 @@ void loop() {
                                static_cast<unsigned>(cellMah), r.writes, r.unsealedToRead ? 1u : 0u);
             } else if (!r.ok) {
               logSerial.printf("BATT_PROV_ERR:%s sec=%u\n", r.stage, static_cast<unsigned>(r.secAfter));
+            } else if (!r.afterReadable) {
+              // The write went through; the read-back did not. Saying so beats
+              // printing the numbers the failed read left behind.
+              logSerial.printf("BATT_PROV:wrote=%u dc=? fcc=? verify=unreadable sec=%u\n", r.writes,
+                               static_cast<unsigned>(r.secAfter));
             } else {
               logSerial.printf("BATT_PROV:wrote=%u dc=%u fcc=%u verify=%s sec=%u\n", r.writes,
                                static_cast<unsigned>(r.dcAfter), static_cast<unsigned>(r.fccAfter),
@@ -6119,7 +6187,13 @@ void loop() {
   }
 
   const unsigned long sleepTimeoutMs = SETTINGS.getSleepTimeoutMs();
-  if (sleepTimeoutMs > 0 && millis() - lastActivityTime >= sleepTimeoutMs) {
+#ifndef SIMULATOR
+  // A gauge write in flight outranks the sleep timer -- see gaugeload::busy().
+  const bool gaugeBusy = gaugeload::busy();
+#else
+  const bool gaugeBusy = false;
+#endif
+  if (!gaugeBusy && sleepTimeoutMs > 0 && millis() - lastActivityTime >= sleepTimeoutMs) {
     LOG_DBG("SLP", "Auto-sleep triggered after %lu ms of inactivity", sleepTimeoutMs);
     enterDeepSleep(true);
     // This should never be hit as `enterDeepSleep` calls esp_deep_sleep_start
@@ -6167,7 +6241,9 @@ void loop() {
   // than after it: the step machine paces itself off millis() and is a no-op
   // once settled, so it belongs inside the window POWER_TELEMETRY measures and
   // not hidden behind it.
+#ifndef SIMULATOR
   gaugeload::tick();
+#endif
 
   const unsigned long activityStartTime = millis();
   activityManager.loop();
