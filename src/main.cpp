@@ -1,5 +1,4 @@
 #include <Arduino.h>
-#include <BatteryMonitor.h>
 #include <BoardConfig.h>
 #include <Epub.h>
 #include <FontCacheManager.h>
@@ -57,9 +56,10 @@
 #include "lora/PresenceMesh.h"
 #endif
 
-#if defined(ENABLE_BATT_CMD) || defined(ENABLE_CHARGE_CMD)
-#include <Wire.h>  // the charger and the gauge sit on the same I2C bus
-#endif
+// The charger and the gauge sit on the same I2C bus. Unconditional since
+// 2026-11-26: the gauge's capacity is written at boot (gaugeload below), not
+// only by a bring-up command.
+#include <Wire.h>
 
 #ifdef ENABLE_SDBUS_CMD
 #include <esp_rom_crc.h>
@@ -2439,73 +2439,6 @@ static void loraDrain() {
 }
 #endif  // ENABLE_LORA_CMD
 
-// **The gauge is told what cell it is attached to, by the device itself.**
-// T-2076: a BQ27220 that has never been programmed carries TI's factory Design
-// Capacity of 3000 mAh, and StateOfCharge() is RemainingCapacity() over
-// FullChargeCapacity() (SLUUBD4A 2.21) -- so the T5 S3 Pro's full 1500 mAh pack
-// reported 58 %. The gauge cannot fix that by itself: it syncs RM to FCC only at
-// a termination it qualifies, which needs AverageCurrent() under Taper Current
-// (100 mA) while the BQ25896 stops at ITERM = 256 mA, so [FC] never sets
-// (docs/t5s3-power-path.md, "A full cell reads half").
-//
-// **Not a factory step, which is why it lives in the loop.** Design Capacity
-// returns to TI's 3000 whenever the gauge loses power, so a board provisioned
-// once comes back wrong after a dead cell. The SDK's step machine takes about
-// 8 s in all, writes nothing on a gauge that already matches, and refuses a
-// sealed part -- so a boot that has nothing to do costs one I2C read.
-//
-// Until this call existed the fix was CMD:BATT PROVISION WRITE on a bench, and
-// a rider should never have to run a bench command to see a true percentage.
-//
-// **Why one board and not whatever the profile says.** The SDK reads
-// designCapacityMah != 0 as consent, and both X3 profiles set 650 -- the X4's
-// spec-sheet cell figure (docs/power-management.md), with no Xteink source
-// behind it for the X3, and the X3 carries the same BQ27220 at the same address
-// on the same env:default binary. The write is persistent and the gauge learns
-// FullChargeCapacity back down at most 256 mAh per cycle (SLUUBD4A 1.1.3), so a
-// wrong number is not something the next charge undoes. LilyGo's 1500 mAh comes
-// from LilyGo's own parameter table, so that is the one board this runs on --
-// the same rule CMD:BATT PROVISION already states for its own board gate. Add a
-// board here with a cell figure from its vendor, never from another board's
-// profile.
-namespace gaugeload {
-
-// The normal run is about 8 s. This is far enough past it that a healthy board
-// never trips it, and near enough that it still lands in a boot log somebody is
-// reading. A load that never ends means a wedged bus or a part that refuses the
-// unseal, and that has to be visible rather than silently pending forever.
-constexpr unsigned long kStuckMs = 30000;
-
-void tick() {
-  static bool pending = true;
-  static bool complained = false;
-  static unsigned long startedMs = 0;
-  if (!pending) return;
-  if (BoardConfig::ACTIVE.board != BoardConfig::Board::LilyGoT5S3) {
-    pending = false;
-    return;
-  }
-  if (startedMs == 0) startedMs = millis();
-  if (BatteryMonitor::loadDesignCapacity()) {
-    if (!complained && millis() - startedMs > kStuckMs) {
-      complained = true;
-      LOG_ERR("GAUGE", "Design capacity load still running after %lu ms", millis() - startedMs);
-    }
-    return;
-  }
-  pending = false;
-  uint16_t percent = 0;
-  const bool ok = BatteryMonitor().readPercentageChecked(percent);
-  // Printed on every boot, including the common one where nothing was written:
-  // the percentage beside it is what makes a gauge that quietly refused the
-  // write distinguishable from one that had nothing to do.
-  LOG_INF("GAUGE", "Design capacity %u mAh settled in %lu ms, battery reads %s%u%%",
-          static_cast<unsigned>(BoardConfig::ACTIVE.batteryGauge.designCapacityMah), millis() - startedMs,
-          ok ? "" : "unknown/", static_cast<unsigned>(percent));
-}
-
-}  // namespace gaugeload
-#if defined(ENABLE_BATT_CMD) || defined(ENABLE_CHARGE_CMD)
 // I2C for the two power chips on the gauge bus: the BQ27220 fuel gauge (0x55)
 // and the BQ25896 charger (0x6B) on the T5 S3 Pro. Shared by CMD:BATT and
 // CMD:CHARGE rather than written twice, because CMD:CHARGE's whole safety story
@@ -2581,7 +2514,6 @@ constexpr bool kGaugeCmdEnabled = true;
 constexpr bool kGaugeCmdEnabled = false;
 #endif
 
-#ifdef ENABLE_GAUGE_CMD
 // The BQ27220's data memory, read and write. Register access alone cannot reach
 // it: a data-memory parameter is moved through ManufacturerAccessControl
 // (0x3E/0x3F) into the MACData block (0x40..0x5F), with MACDataSum() (0x60) and
@@ -2755,8 +2687,266 @@ bool exitCfgUpdate(uint8_t addr) {
 bool seal(uint8_t addr) { return controlSub(addr, kSubSealed); }
 
 }  // namespace gaugedm
-#endif  // ENABLE_GAUGE_CMD
-#endif  // ENABLE_BATT_CMD || ENABLE_CHARGE_CMD
+
+// **Teaching the gauge what cell it is attached to.** T-2076: the T5 S3 Pro's
+// BQ27220 carries TI's factory `Design Capacity` and `Learned Full Charge
+// Capacity` of 3000 mAh against LilyGo's own 1500 mAh cell, and
+// StateOfCharge() is RemainingCapacity() over FullChargeCapacity()
+// (SLUUBD4A 2.21) -- so a full pack reads near half.
+//
+// **It is a mechanism and not a command**, because the device has to do it to
+// itself. `CMD:BATT PROVISION` was the fix until 2026-11-26 and a rider cannot
+// run a bench command; worse, the fix does not stick -- both boards provisioned
+// by hand on 2026-11-23/24 were back at 3000/3000 three days later, measured
+// (parent `docs/t5s3-power-path.md`). So `gaugeload::tick()` below runs this at
+// boot and the command is one more caller of the same code.
+//
+// **Why not the SDK's `BatteryMonitor::loadDesignCapacity()`.** It was wired up
+// first, since the pin bump made it reachable, and on board B it wrote
+// `Design Capacity` and left `FullChargeCapacity` at 3000 -- so the percentage
+// stayed at 63 % on a full cell, the gauge got sealed, and the retry ran again
+// every boot with the same result. Measured twice on 2026-11-26. This path
+// writes both words of the CEDV block with one checksum and polls the register
+// read-back, which is the version that has ever produced a correct percentage.
+//
+// **Three deliberate limits, each one someone else's lesson.**
+//
+// *It compares before it writes, and writes nothing on a gauge that already
+// matches.* The data memory is flash with finite endurance, which is the reason
+// Linux refuses to push a devicetree capacity into an NVM-backed bq27xxx at all
+// unless a build option says otherwise (`bq27xxx_battery_update_dm_block()`,
+// "update to %u disallowed for flash/NVM data memory").
+//
+// *It is two parameters, not a profile.* LilyGo's own driver for this board
+// writes a full CEDV table, but its header says that table was fitted for the
+// T-Embed CC1101; a discharge curve fitted to another board's cell, written
+// into flash, is worse than TI's defaults. Capacity is a fact about this board
+// and is all that is claimed here.
+//
+// *It never writes an arbitrary address.* Named parameters only, no generic
+// write. "None of the data written to memory is bounded by the fuel gauge"
+// (SLUUBD4A 3.1), so a typo in a hex address is a misconfigured gauge rather
+// than an error.
+//
+// The procedure is TI's, not anyone's code: unseal (3.3), ENTER_CFG_UPDATE
+// (2.2.21), block write through MACData with MACDataSum and MACDataLen written
+// together as a word (2.29-2.31), EXIT_CFG_UPDATE_REINIT so
+// FullChargeCapacity() is reloaded, then read back and verify.
+namespace gaugeprov {
+
+constexpr uint16_t kCedvProfile1Base = 0x929B;  // GaugingConfig, then FCC, then DesignCapacity
+constexpr uint8_t kFccOffset = 2;
+constexpr uint8_t kDesignOffset = 4;
+
+// **The capacity is a fact about one board, so this refuses to guess on any
+// other.** `env:default` is the ESP32-C3 binary for the X4 *and the X3*, and the
+// X3 carries the same BQ27220 at the same address -- measured 2026-11-26, with
+// TI's 3000 mAh in its data memory and its gauge unsealed, so a write would go
+// through. Without this gate the X3 would take the T5 S3 Pro's 1500 mAh,
+// persistently, and FullChargeCapacity only learns back down 256 mAh per cycle
+// (SLUUBD4A 1.1.3). The SDK's own X3 profiles pass 650, which is the **X4's**
+// spec-sheet figure with no Xteink source behind it for the X3 -- parent
+// `docs/TODO.md`, T-2089. Add a board here only with a cell figure from its
+// vendor's own specification, not from another board's profile and not from the
+// gauge's own guess.
+uint16_t cellMah() {
+  return BoardConfig::ACTIVE.board == BoardConfig::Board::LilyGoT5S3
+             ? 1500  // LilyGo's parameter table: "3.7 V 1500 mAh LiPo"
+             : 0;
+}
+
+struct Result {
+  bool blockOk = false;       // the CEDV block read back with a good checksum
+  bool echoOk = false;
+  bool sumOk = false;
+  uint8_t sec = 0;            // security level as the gauge was found
+  bool unsealedToRead = false;  // the seal was broken to get at the block
+  uint16_t dcNow = 0;
+  uint16_t fccNow = 0;
+  unsigned writes = 0;        // how many of the two words disagree
+  bool wrote = false;         // a write was attempted
+  bool ok = false;            // the whole sequence completed
+  const char* stage = "";     // where it stopped, when !ok
+  uint16_t dcAfter = 0;
+  uint16_t fccAfter = 0;
+  bool verified = false;
+  uint8_t secAfter = 0;
+};
+
+// Reads the two capacities, and writes them when `doWrite` and they disagree.
+// Blocks for several seconds when it writes: ENTER_CFG_UPDATE's own note says
+// the host must wait at least 2 s (SLUUBD4A 2.2.21) and the exit re-initialises
+// the gauge. Callers that are not a console command must pick their moment.
+Result run(const uint16_t cellMah, const bool doWrite) {
+  const uint8_t addr = BoardConfig::ACTIVE.batteryGauge.gaugeAddr;
+  Result r;
+  powerbus::begin();
+  gaugedm::security(addr, r.sec);
+
+  // **A sealed gauge is unsealed to read, not refused.** Until 2026-11-26 this
+  // read the block first and gave up on the bad checksum a sealed part answers
+  // with -- which is how the SDK loader, whose last act is to seal, locked this
+  // command out of the one board that needed it. The seal is restored below
+  // whenever it was found set, so the gauge is left as it was found.
+  if (r.sec == 3) r.unsealedToRead = gaugedm::unseal(addr);
+
+  uint8_t block[32] = {0};
+  uint8_t dataLen = 0;
+  const bool read = gaugedm::readBlock(addr, kCedvProfile1Base, block, dataLen, r.echoOk, r.sumOk);
+  // A sealed or unresponsive gauge answers with bytes that look exactly like a
+  // real block, so a bad checksum is a refusal to act, not a warning to print
+  // beside a write.
+  r.blockOk = read && r.sumOk;
+  if (!r.blockOk) {
+    if (r.unsealedToRead) gaugedm::seal(addr);
+    gaugedm::security(addr, r.secAfter);
+    return r;
+  }
+
+  r.fccNow = static_cast<uint16_t>((block[kFccOffset] << 8) | block[kFccOffset + 1]);
+  r.dcNow = static_cast<uint16_t>((block[kDesignOffset] << 8) | block[kDesignOffset + 1]);
+  r.writes = (r.dcNow != cellMah ? 1u : 0u) + (r.fccNow != cellMah ? 1u : 0u);
+  if (r.writes == 0 || !doWrite) {
+    if (r.unsealedToRead) gaugedm::seal(addr);
+    gaugedm::security(addr, r.secAfter);
+    r.ok = true;
+    return r;
+  }
+
+  r.wrote = true;
+  r.ok = r.unsealedToRead || r.sec != 3;
+  if (!r.ok) r.stage = "unseal";
+  if (r.ok) {
+    r.ok = gaugedm::enterCfgUpdate(addr);
+    if (!r.ok) r.stage = "cfgupdate";
+  }
+  if (r.ok && r.dcNow != cellMah) {
+    r.ok = gaugedm::writeWord(addr, kCedvProfile1Base + kDesignOffset, cellMah);
+    if (!r.ok) r.stage = "write_dc";
+    delay(10);
+  }
+  if (r.ok && r.fccNow != cellMah) {
+    r.ok = gaugedm::writeWord(addr, kCedvProfile1Base + kFccOffset, cellMah);
+    if (!r.ok) r.stage = "write_fcc";
+    delay(10);
+  }
+  // Leaving the gauge in CONFIG UPDATE suspends gauging, so the exit is
+  // attempted even when a write failed.
+  const bool exited = gaugedm::exitCfgUpdate(addr);
+  if (r.ok && !exited) {
+    r.ok = false;
+    r.stage = "exit";
+  }
+  // **Poll the verify instead of reading it once.** The first version read both
+  // registers the moment EXIT_CFG_UPDATE's own status bit cleared and reported
+  // `dc=1500 fcc=3000 verify=bad` on a write that had fully succeeded: the data
+  // memory held 1500 at both addresses and FullChargeCapacity() caught up a
+  // moment later. FCC is loaded from data memory "on initialization"
+  // (SLUUBD4A 1.1.2) and the re-initialisation outlasts the bit, so a single
+  // read here is a false negative on the one path whose whole job is to be
+  // believed.
+  for (int i = 0; i < 50 && r.ok; ++i) {
+    const bool dcOk = powerbus::read16(addr, 0x3C, r.dcAfter);
+    const bool fccOk = powerbus::read16(addr, 0x12, r.fccAfter);
+    if (dcOk && fccOk && r.dcAfter == cellMah && r.fccAfter == cellMah) {
+      r.verified = true;
+      break;
+    }
+    delay(100);
+  }
+  // Restore the seal only if the gauge was found sealed. The seal is a state
+  // the board arrived in and is not ours to change as a side effect.
+  if (r.sec == 3) gaugedm::seal(addr);
+  gaugedm::security(addr, r.secAfter);
+  return r;
+}
+
+}  // namespace gaugeprov
+
+// **The device teaches its own gauge what cell it is attached to.** T-2076.
+// `gaugeprov` above has the mechanism and the reasons; this decides when.
+//
+// **Not a factory step, which is why it is here and not in a bench command.**
+// Both boards were provisioned by hand on 2026-11-23/24 and both were back at
+// TI's 3000 mAh three days later, measured -- the gauge returns to its defaults
+// whenever it loses power, so a board back from a flat cell needs it again. A
+// boot with nothing to do costs two I2C register reads.
+//
+// **It blocks for several seconds on the boot that writes**, because
+// ENTER_CFG_UPDATE alone wants 2 s (SLUUBD4A 2.2.21). That is why it waits for
+// the first frames to be on the panel: a stall with a drawn screen is a few
+// unresponsive seconds, and the same stall in setup() would be a black device.
+namespace gaugeload {
+
+// Past the first renders. Not tuned -- anything that leaves the panel drawn
+// would do, and a write-less boot never gets this far into the branch anyway.
+constexpr unsigned long kSettleMs = 10000;
+
+// The same tolerance the gauge's own learning uses: a cycle moves Learned Full
+// Charge Capacity at most 256 mAh (SLUUBD4A 1.1.3), so a legitimately learned
+// FCC sits near the cell and TI's 3000 does not. Without a band here every boot
+// would rewrite flash as soon as the gauge learned one mAh of its own.
+bool settled(const uint16_t dc, const uint16_t fcc, const uint16_t mah) {
+  return dc == mah && fcc <= mah + mah / 4;
+}
+
+void tick() {
+  static bool pending = true;
+  static uint8_t reads = 0;
+  if (!pending) return;
+  const uint16_t mah = gaugeprov::cellMah();
+  if (mah == 0) {
+    pending = false;  // no vendor figure for this board -- gaugeprov::cellMah()
+    return;
+  }
+  if (millis() < kSettleMs) return;
+
+  const uint8_t addr = BoardConfig::ACTIVE.batteryGauge.gaugeAddr;
+  powerbus::begin();
+  uint16_t dc = 0, fcc = 0;
+  if (!powerbus::read16(addr, 0x3C, dc) || !powerbus::read16(addr, 0x12, fcc)) {
+    // A gauge that does not answer is retried a few times and then dropped: the
+    // bus is shared, and a boot where it is busy is not a reason to hold a
+    // pending flag for the rest of the session.
+    if (++reads >= 5) {
+      pending = false;
+      LOG_ERR("GAUGE", "Capacity check: the gauge at 0x%02X did not answer", static_cast<unsigned>(addr));
+    }
+    return;
+  }
+  pending = false;
+  if (settled(dc, fcc, mah)) {
+    LOG_INF("GAUGE", "Capacity already set: dc=%u fcc=%u mAh", static_cast<unsigned>(dc),
+            static_cast<unsigned>(fcc));
+    return;
+  }
+
+  // Said before the write, not only after it: this blocks for seconds, and a
+  // log that only speaks once it is over cannot explain the stall it caused.
+  LOG_INF("GAUGE", "Capacity wrong (dc=%u fcc=%u, cell is %u mAh) -- writing, this takes a few seconds",
+          static_cast<unsigned>(dc), static_cast<unsigned>(fcc), static_cast<unsigned>(mah));
+  const unsigned long startedMs = millis();
+  const gaugeprov::Result r = gaugeprov::run(mah, /*doWrite=*/true);
+  if (!r.blockOk) {
+    LOG_ERR("GAUGE", "Capacity write refused: block echo=%s sum=%s sec=%u", r.echoOk ? "ok" : "bad",
+            r.sumOk ? "ok" : "bad", static_cast<unsigned>(r.sec));
+    return;
+  }
+  if (!r.ok) {
+    LOG_ERR("GAUGE", "Capacity write failed at %s, sec=%u", r.stage, static_cast<unsigned>(r.secAfter));
+    return;
+  }
+  // The registers, never a percentage. The first version of this line printed
+  // BatteryMonitor's percentage and read 100 % while the gauge itself said 63 %,
+  // because a percentage falls back to voltage when the gauge read fails -- so
+  // the one line meant to make a silent refusal visible was hiding one.
+  LOG_INF("GAUGE", "Capacity %s in %lu ms: dc=%u fcc=%u (verify %s, sec %u -> %u)",
+          r.writes == 0 ? "already matched" : "written", millis() - startedMs, static_cast<unsigned>(r.dcAfter),
+          static_cast<unsigned>(r.fccAfter), r.verified ? "ok" : "bad", static_cast<unsigned>(r.sec),
+          static_cast<unsigned>(r.secAfter));
+}
+
+}  // namespace gaugeload
 
 #ifdef ENABLE_CHARGE_CMD
 // BQ25896 register writes for the bench, and the rules they obey.
@@ -5049,149 +5239,48 @@ void loop() {
           logSerial.printf("BATT_ERR:unknown:DM,SCAN,PROBE%s\n", kGaugeCmdEnabled ? ",GAUGE,PROVISION" : "");
 #ifdef ENABLE_GAUGE_CMD
         } else if (battArg.startsWith("PROVISION")) {
-          // **Teach the gauge what cell it is attached to.** T-2076: both T5 S3
-          // Pro boards carry TI's factory `Design Capacity` and `Learned Full
-          // Charge Capacity` of 3000 mAh against LilyGo's own 1500 mAh cell, and
-          // StateOfCharge() is RemainingCapacity() over FullChargeCapacity()
-          // (SLUUBD4A 2.21) -- so a full pack reads near half. Nothing in our
-          // stack ever configured this gauge; the same SDK file uploads a
-          // profile for the CW2017 and has no equivalent for the BQ27220.
+          // **The bench half of the capacity fix.** The mechanism, the limits
+          // and the TRM references live in `gaugeprov` above, because since
+          // 2026-11-26 the device runs the same code itself at boot
+          // (`gaugeload::tick()`) -- this command is one more caller, kept for
+          // inspecting a board and for forcing a write without waiting for a
+          // reboot.
           //
           //   CMD:BATT PROVISION        ->  BATT_PROV:dry sec=2 dc=3000->1500 fcc=3000->1500 writes=2
           //   CMD:BATT PROVISION WRITE  ->  BATT_PROV:wrote=2 dc=1500 fcc=1500 verify=ok sec=2
           //
-          // **Three deliberate limits, each one someone else's lesson.**
-          //
-          // *It compares before it writes, and writes nothing on a board that
-          // already matches.* The data memory is flash with finite endurance,
-          // which is the reason Linux refuses to push a devicetree capacity into
-          // an NVM-backed bq27xxx at all unless a build option says otherwise
-          // (`bq27xxx_battery_update_dm_block()`, "update to %u disallowed for
-          // flash/NVM data memory").
-          //
-          // *It is two parameters, not a profile.* LilyGo's own driver for this
-          // board writes a full CEDV table, but its header says that table was
-          // fitted for the T-Embed CC1101; a discharge curve fitted to another
-          // board's cell, written into flash, is worse than TI's defaults.
-          // Capacity is a fact about this board and is all that is claimed here.
-          //
-          // *It never writes an arbitrary address.* Same rule as CMD:CHARGE:
-          // named parameters only, no generic write. "None of the data written
-          // to memory is bounded by the fuel gauge" (SLUUBD4A 3.1), so a typo in
-          // a hex address is a misconfigured gauge rather than an error.
-          //
-          // The procedure is TI's, not anyone's code: unseal (3.3),
-          // ENTER_CFG_UPDATE (2.2.21), block write through MACData with
-          // MACDataSum and MACDataLen written together as a word (2.29-2.31),
-          // EXIT_CFG_UPDATE_REINIT so FullChargeCapacity() is reloaded, then
-          // read back and verify.
-          constexpr uint16_t kCedvProfile1Base = 0x929B;  // GaugingConfig, then FCC, then DesignCapacity
-          constexpr uint8_t kFccOffset = 2;
-          constexpr uint8_t kDesignOffset = 4;
-
-          // **The capacity is a fact about one board, so this refuses to guess
-          // on any other.** `ENABLE_BATT_CMD` is set for `env:default` too, and
-          // that is the ESP32-C3 binary for the X4 *and the X3* -- and the X3
-          // carries the same BQ27220 at the same address. Without this gate a
-          // `PROVISION WRITE` on an X3 would burn the T5 S3 Pro's 1500 mAh into
-          // a different board's gauge, persistently, with a reply that says it
-          // succeeded. Add a board here only with a cell figure from its
-          // vendor's own specification, not from a listicle and not from the
-          // gauge's own guess.
-          const uint16_t kCellMah = BoardConfig::ACTIVE.board == BoardConfig::Board::LilyGoT5S3
-                                        ? 1500  // LilyGo's parameter table: "3.7 V 1500 mAh LiPo"
-                                        : 0;
-
+          // A sealed gauge is unsealed to read and sealed again afterwards, so
+          // the dry run is not quite read-only on one -- `unsealed=1` says so in
+          // the reply. Before that it simply refused, which is how the SDK
+          // loader, whose last act is to seal, locked this command out.
           String provArg = battArg.substring(9);
           provArg.trim();
           const bool doWrite = provArg == "WRITE";
+          const uint16_t cellMah = gaugeprov::cellMah();
           if (provArg.length() > 0 && !doWrite) {
             logSerial.printf("BATT_ERR:provision:WRITE or nothing\n");
-          } else if (kCellMah == 0) {
+          } else if (cellMah == 0) {
             logSerial.printf("BATT_PROV_ERR:no cell capacity known for this board\n");
           } else {
-            powerbus::begin();
-            uint8_t block[32] = {0};
-            uint8_t dataLen = 0;
-            bool echoOk = false, sumOk = false;
-            uint8_t sec = 0;
-            const bool secOk = gaugedm::security(g.gaugeAddr, sec);
-            if (!gaugedm::readBlock(g.gaugeAddr, kCedvProfile1Base, block, dataLen, echoOk, sumOk) || !sumOk) {
-              // A sealed or unresponsive gauge answers with bytes that look
-              // exactly like a real block, so a bad checksum is a refusal to
-              // act, not a warning to print beside a write.
-              logSerial.printf("BATT_PROV_ERR:block echo=%s sum=%s sec=%u\n", echoOk ? "ok" : "bad",
-                               sumOk ? "ok" : "bad", static_cast<unsigned>(sec));
+            const gaugeprov::Result r = gaugeprov::run(cellMah, doWrite);
+            if (!r.blockOk) {
+              logSerial.printf("BATT_PROV_ERR:block echo=%s sum=%s sec=%u\n", r.echoOk ? "ok" : "bad",
+                               r.sumOk ? "ok" : "bad", static_cast<unsigned>(r.sec));
+            } else if (r.writes == 0) {
+              logSerial.printf("BATT_PROV:match dc=%u fcc=%u sec=%u writes=0 unsealed=%u\n",
+                               static_cast<unsigned>(r.dcNow), static_cast<unsigned>(r.fccNow),
+                               static_cast<unsigned>(r.sec), r.unsealedToRead ? 1u : 0u);
+            } else if (!doWrite) {
+              logSerial.printf("BATT_PROV:dry sec=%u dc=%u->%u fcc=%u->%u writes=%u unsealed=%u\n",
+                               static_cast<unsigned>(r.sec), static_cast<unsigned>(r.dcNow),
+                               static_cast<unsigned>(cellMah), static_cast<unsigned>(r.fccNow),
+                               static_cast<unsigned>(cellMah), r.writes, r.unsealedToRead ? 1u : 0u);
+            } else if (!r.ok) {
+              logSerial.printf("BATT_PROV_ERR:%s sec=%u\n", r.stage, static_cast<unsigned>(r.secAfter));
             } else {
-              const uint16_t fccNow = static_cast<uint16_t>((block[kFccOffset] << 8) | block[kFccOffset + 1]);
-              const uint16_t dcNow = static_cast<uint16_t>((block[kDesignOffset] << 8) | block[kDesignOffset + 1]);
-              const unsigned writes = (dcNow != kCellMah ? 1u : 0u) + (fccNow != kCellMah ? 1u : 0u);
-              if (writes == 0) {
-                logSerial.printf("BATT_PROV:match dc=%u fcc=%u sec=%u writes=0\n", static_cast<unsigned>(dcNow),
-                                 static_cast<unsigned>(fccNow), static_cast<unsigned>(sec));
-              } else if (!doWrite) {
-                logSerial.printf("BATT_PROV:dry sec=%u dc=%u->%u fcc=%u->%u writes=%u\n", static_cast<unsigned>(sec),
-                                 static_cast<unsigned>(dcNow), static_cast<unsigned>(kCellMah),
-                                 static_cast<unsigned>(fccNow), static_cast<unsigned>(kCellMah), writes);
-              } else {
-                // Restore the seal only if this command broke it. The seal is a
-                // state the board arrived in and is not ours to change as a side
-                // effect of a capacity fix.
-                const bool wasSealed = secOk && sec == 3;
-                bool ok = !wasSealed || gaugedm::unseal(g.gaugeAddr);
-                const char* stage = ok ? "" : "unseal";
-                if (ok) {
-                  ok = gaugedm::enterCfgUpdate(g.gaugeAddr);
-                  if (!ok) stage = "cfgupdate";
-                }
-                if (ok && dcNow != kCellMah) {
-                  ok = gaugedm::writeWord(g.gaugeAddr, kCedvProfile1Base + kDesignOffset, kCellMah);
-                  if (!ok) stage = "write_dc";
-                  delay(10);
-                }
-                if (ok && fccNow != kCellMah) {
-                  ok = gaugedm::writeWord(g.gaugeAddr, kCedvProfile1Base + kFccOffset, kCellMah);
-                  if (!ok) stage = "write_fcc";
-                  delay(10);
-                }
-                // Leaving the gauge in CONFIG UPDATE suspends gauging, so the
-                // exit is attempted even when a write failed.
-                const bool exited = gaugedm::exitCfgUpdate(g.gaugeAddr);
-                if (ok && !exited) {
-                  ok = false;
-                  stage = "exit";
-                }
-                // **Poll the verify instead of reading it once.** The first
-                // version read both registers the moment EXIT_CFG_UPDATE's own
-                // status bit cleared and reported `dc=1500 fcc=3000
-                // verify=bad` on a write that had fully succeeded: the data
-                // memory held 1500 at both addresses and FullChargeCapacity()
-                // caught up a moment later. FCC is loaded from data memory "on
-                // initialization" (SLUUBD4A 1.1.2) and the re-initialisation
-                // outlasts the bit, so a single read here is a false negative
-                // on the one command whose whole job is to be believed.
-                uint16_t dcAfter = 0, fccAfter = 0;
-                bool verified = false;
-                for (int i = 0; i < 50 && ok; ++i) {
-                  const bool dcOk = powerbus::read16(g.gaugeAddr, 0x3C, dcAfter);
-                  const bool fccOk = powerbus::read16(g.gaugeAddr, 0x12, fccAfter);
-                  if (dcOk && fccOk && dcAfter == kCellMah && fccAfter == kCellMah) {
-                    verified = true;
-                    break;
-                  }
-                  delay(100);
-                }
-                if (wasSealed) gaugedm::seal(g.gaugeAddr);
-                uint8_t secAfter = 0;
-                gaugedm::security(g.gaugeAddr, secAfter);
-                if (!ok) {
-                  logSerial.printf("BATT_PROV_ERR:%s sec=%u\n", stage, static_cast<unsigned>(secAfter));
-                } else {
-                  logSerial.printf("BATT_PROV:wrote=%u dc=%u fcc=%u verify=%s sec=%u\n", writes,
-                                   static_cast<unsigned>(dcAfter), static_cast<unsigned>(fccAfter),
-                                   verified ? "ok" : "bad", static_cast<unsigned>(secAfter));
-                }
-              }
+              logSerial.printf("BATT_PROV:wrote=%u dc=%u fcc=%u verify=%s sec=%u\n", r.writes,
+                               static_cast<unsigned>(r.dcAfter), static_cast<unsigned>(r.fccAfter),
+                               r.verified ? "ok" : "bad", static_cast<unsigned>(r.secAfter));
             }
           }
         } else if (battArg == "GAUGE") {
