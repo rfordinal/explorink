@@ -4,6 +4,7 @@
 #include <Logging.h>
 
 #include <cstdio>
+#include <cstring>
 
 #include "MappedInputManager.h"
 #include "TouchPolicy.h"
@@ -23,16 +24,16 @@ constexpr const char* kLogTag = "PATTERNLOCK";
 // cursor; on the T5 S3 Pro, 2026-11-23, that read as sixteen empty holes with one
 // of them swallowed. A ring says "you are here" without making the cursor a
 // different kind of point from the one it is standing on.
-constexpr int kNodeRadiusDiv = 9;       // node dot radius = pitch / 9
+constexpr int kNodeRadiusDiv = 9;  // node dot radius = pitch / 9
 constexpr int kMinNodeRadius = 4;
 // The grid takes a pitch of span/(cols+2) rather than span/cols, so its ink is
 // about half the panel's width instead of seven tenths. A lock grid is a thing to
 // aim at, not a wall: the first cut filled the screen with it and read as heavy
 // (T5 S3 Pro, 2026-11-23). Two extra pitches of air is the whole difference.
 constexpr int kPitchSpanDiv = patternlock::kCols + 2;
-constexpr int kCursorRingMul = 26;      // ring radius = node radius * 2.6
+constexpr int kCursorRingMul = 26;  // ring radius = node radius * 2.6
 constexpr int kCursorRingDiv = 10;
-constexpr int kCursorRingWidth = 3;     // thin enough to read, thick enough to survive a FAST refresh
+constexpr int kCursorRingWidth = 3;  // thin enough to read, thick enough to survive a FAST refresh
 
 // How far along the entry is: a segmented meter, one segment per possible point,
 // filled left to right. Same job as the wallet PIN's dots -- count without the
@@ -46,9 +47,9 @@ constexpr int kCursorRingWidth = 3;     // thin enough to read, thick enough to 
 //
 // The meter is exactly as wide as the grid above it, and every size here comes
 // off the grid's pitch, so a different panel moves both together.
-constexpr int kMeterHeightMul = 3;      // meter height = node radius * 3
+constexpr int kMeterHeightMul = 3;  // meter height = node radius * 3
 constexpr int kMeterBorder = 2;
-constexpr int kMeterInsetDiv = 3;       // a filled segment's inset = height / 3
+constexpr int kMeterInsetDiv = 3;  // a filled segment's inset = height / 3
 
 bool inside(const int x, const int y, const int left, const int top, const int width, const int height) {
   return x >= left && x < left + width && y >= top && y < top + height;
@@ -67,7 +68,13 @@ void PatternLockActivity::onEnter() {
   Activity::onEnter();
   entry_.wipe();
   lastAttemptWrong_ = false;
+  mismatch_ = false;
   speculativeOutstanding_ = false;
+  // An enrollment opens on the start picker; a gate has its start cell from the
+  // caller and never leaves Walk.
+  phase_ = config_.enroll ? Phase::PickStart : Phase::Walk;
+  startPick_ = config_.startCell < patternlock::kCells ? config_.startCell : patternlock::kDefaultStart;
+  patternlock::secureWipe(firstWalk_, sizeof(firstWalk_));
   lockedOut_ = config_.isLockedOut && config_.isLockedOut();
   if (lockedOut_) LOG_ERR(kLogTag, "entered locked out: the caller is refusing attempts");
   // A rule that is load-bearing at runtime and invisible when broken is a wish
@@ -77,6 +84,12 @@ void PatternLockActivity::onEnter() {
   if (config_.autoSubmit && !config_.onEntryEnded) {
     LOG_ERR(kLogTag, "auto-submit with no onEntryEnded: this caller cannot count a failed attempt");
   }
+  // Ignored rather than obeyed, and said out loud: an auto-submitted first walk
+  // would reach the verifier as if it had been confirmed, which during an
+  // enrollment means storing a pattern the rider has typed once.
+  if (config_.enroll && config_.autoSubmit) {
+    LOG_ERR(kLogTag, "enroll with auto-submit: ignoring auto-submit, a first walk must not be stored");
+  }
   redraw(HalDisplay::HALF_REFRESH);
 }
 
@@ -85,8 +98,11 @@ void PatternLockActivity::onExit() {
   // A walk that is still owed to the caller's counter is settled before the
   // screen dies, so leaving mid-entry is not a free set of guesses.
   settleEntry();
-  // The path dies with the screen, whichever way the screen ended.
+  // Both paths die with the screen, whichever way the screen ended -- the
+  // cancelled one included, which is the exit an enrollment is most likely to
+  // take.
   entry_.wipe();
+  patternlock::secureWipe(firstWalk_, sizeof(firstWalk_));
 }
 
 bool PatternLockActivity::handleHomeGesture() {
@@ -123,7 +139,7 @@ void PatternLockActivity::loop() {
   }
 
   if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
-    if (entry_.longEnough()) submit(false);
+    onConfirm();
     return;
   }
   if (mappedInput.wasReleased(MappedInputManager::Button::Left)) {
@@ -162,15 +178,17 @@ bool PatternLockActivity::handleTouch() {
   }
   if (lockedOut_) return true;  // the tap landed on the screen and means nothing here
   if (inside(x, y, l.okLeft, l.boxTop, l.boxWidth, l.boxHeight)) {
-    if (entry_.longEnough()) submit(false);
+    onConfirm();
     return true;
   }
 
   // A tap on a cell orthogonally next to the cursor is that step. Not "walk to
   // wherever I tapped": a path is a sequence of steps the rider chose, and
   // inferring the route between two cells would invent points they never entered.
-  const int cursorRow = entry_.cursorRow();
-  const int cursorCol = entry_.cursorCol();
+  // In the start picker the cursor is the cell being chosen, not a walked point.
+  const uint8_t cursorCell = phase_ == Phase::PickStart ? startPick_ : entry_.cursor();
+  const int cursorRow = cursorCell / patternlock::kCols;
+  const int cursorCol = cursorCell % patternlock::kCols;
   for (uint8_t cell = 0; cell < patternlock::kCells; ++cell) {
     const int row = cell / patternlock::kCols;
     const int col = cell % patternlock::kCols;
@@ -179,10 +197,14 @@ bool PatternLockActivity::handleTouch() {
     if (!inside(x, y, cx - l.pitch / 2, cy - l.pitch / 2, l.pitch, l.pitch)) continue;
     const int dr = row - cursorRow;
     const int dc = col - cursorCol;
-    if (dr == 0 && dc == 1) onStep(patternlock::Step::Right);
-    else if (dr == 0 && dc == -1) onStep(patternlock::Step::Left);
-    else if (dr == 1 && dc == 0) onStep(patternlock::Step::Down);
-    else if (dr == -1 && dc == 0) onStep(patternlock::Step::Up);
+    if (dr == 0 && dc == 1)
+      onStep(patternlock::Step::Right);
+    else if (dr == 0 && dc == -1)
+      onStep(patternlock::Step::Left);
+    else if (dr == 1 && dc == 0)
+      onStep(patternlock::Step::Down);
+    else if (dr == -1 && dc == 0)
+      onStep(patternlock::Step::Up);
     return true;
   }
   // A tap on dead space is not this screen's business. Reporting it as handled
@@ -191,6 +213,14 @@ bool PatternLockActivity::handleTouch() {
 }
 
 void PatternLockActivity::onBack() {
+  if (phase_ == Phase::PickStart) {
+    // Nothing has been entered at all. BACK is the cancel, and the caller
+    // re-pushes the screen if it wants another go.
+    finished_ = true;
+    setResult(ActivityResult{PatternLockResult{false}});
+    finish();
+    return;
+  }
   if (entry_.undo()) {
     // Undo abandons a candidate that has already been put to the verifier, so the
     // walk is over for accounting even though the screen stays up. Without this
@@ -204,6 +234,21 @@ void PatternLockActivity::onBack() {
     redraw(HalDisplay::FAST_REFRESH);
     return;
   }
+  if (config_.enroll) {
+    // One phase back rather than out: the second walk returns to the first, and
+    // the first returns to the start picker. A rider who mistyped the confirm
+    // should be able to redo the pattern without leaving and re-entering the
+    // whole setup, and leaving is still two presses away.
+    if (phase_ == Phase::Confirm) {
+      restartEnrollWalk(false);
+      return;
+    }
+    phase_ = Phase::PickStart;
+    mismatch_ = false;
+    lastAttemptWrong_ = false;
+    redraw(HalDisplay::HALF_REFRESH);
+    return;
+  }
   // Nothing entered and BACK: leave, cancelled. A gate the caller pushed is the
   // caller's to re-push; this screen does not decide that nobody may go back.
   finished_ = true;
@@ -213,12 +258,43 @@ void PatternLockActivity::onBack() {
 }
 
 void PatternLockActivity::onStep(const patternlock::Step step) {
+  if (phase_ == Phase::PickStart) {
+    // The picker walks the same grid with the same walls, so a rider learns one
+    // set of controls. It records nothing: the cell under the ring is the only
+    // state, and CONFIRM is what fixes it.
+    const int row = startPick_ / patternlock::kCols;
+    const int col = startPick_ % patternlock::kCols;
+    int nextRow = row;
+    int nextCol = col;
+    switch (step) {
+      case patternlock::Step::Left:
+        --nextCol;
+        break;
+      case patternlock::Step::Right:
+        ++nextCol;
+        break;
+      case patternlock::Step::Up:
+        --nextRow;
+        break;
+      case patternlock::Step::Down:
+        ++nextRow;
+        break;
+    }
+    if (nextRow < 0 || nextRow >= patternlock::kRows || nextCol < 0 || nextCol >= patternlock::kCols) return;
+    startPick_ = static_cast<uint8_t>(nextRow * patternlock::kCols + nextCol);
+    redraw(HalDisplay::FAST_REFRESH);
+    return;
+  }
+
   // A refused step is a wall or a full path. Nothing changed, so nothing is
   // redrawn: a refresh per refused press reads as a stutter and says nothing.
   if (!entry_.step(step)) return;
   lastAttemptWrong_ = false;
+  mismatch_ = false;
 
-  if (config_.autoSubmit && entry_.longEnough()) {
+  // Auto-submit is the gate's only, and enrollment ignores it (onEnter says so):
+  // a first walk submitted without a press would be stored unconfirmed.
+  if (config_.autoSubmit && !config_.enroll && entry_.longEnough()) {
     submit(true);
     // A hit already finished the screen; drawing the grid again here would be a
     // refresh of a frame nobody will look at.
@@ -245,6 +321,89 @@ void PatternLockActivity::onStep(const patternlock::Step step) {
   redraw(HalDisplay::FAST_REFRESH);
 }
 
+void PatternLockActivity::onConfirm() {
+  if (phase_ == Phase::PickStart) {
+    beginWalk();
+    return;
+  }
+  if (!entry_.longEnough()) return;
+  if (config_.enroll) {
+    submitEnroll();
+    return;
+  }
+  submit(false);
+}
+
+void PatternLockActivity::beginWalk() {
+  // The entry is rebuilt rather than told its start, because the start cell is
+  // the first point of the path and `Entry` writes it in its constructor.
+  entry_ = patternlock::Entry(startPick_, config_.minPoints, config_.maxPoints);
+  phase_ = Phase::Walk;
+  mismatch_ = false;
+  lastAttemptWrong_ = false;
+  redraw(HalDisplay::HALF_REFRESH);
+}
+
+void PatternLockActivity::restartEnrollWalk(const bool mismatch) {
+  patternlock::secureWipe(firstWalk_, sizeof(firstWalk_));
+  entry_.wipe();
+  phase_ = Phase::Walk;
+  mismatch_ = mismatch;
+  lastAttemptWrong_ = false;
+  // HALF: the whole message changes and the meter empties, which is a clean
+  // frame rather than a differential one.
+  redraw(HalDisplay::HALF_REFRESH);
+}
+
+void PatternLockActivity::submitEnroll() {
+  // Zero-initialised, and it has to stay that way: samePattern() compares the
+  // whole buffer including the tail past the terminator.
+  char path[patternlock::kPathBufBytes] = {0};
+  entry_.encode(path);
+
+  if (phase_ == Phase::Walk) {
+    std::memcpy(firstWalk_, path, sizeof(firstWalk_));
+    patternlock::secureWipe(path, sizeof(path));
+    entry_ = patternlock::Entry(startPick_, config_.minPoints, config_.maxPoints);
+    phase_ = Phase::Confirm;
+    // No point count in the log: it is the length of a pattern that is about to
+    // become this device's wallet key. LOG_DBG compiles out of a release build,
+    // LOG_INF does not.
+    LOG_INF(kLogTag, "first walk taken, asking for it again");
+    redraw(HalDisplay::HALF_REFRESH);
+    return;
+  }
+
+  const bool matched = patternlock::samePattern(path, firstWalk_);
+  if (!matched) {
+    patternlock::secureWipe(path, sizeof(path));
+    LOG_ERR(kLogTag, "the two walks differ: nothing stored");
+    restartEnrollWalk(true);
+    return;
+  }
+
+  // Only now does the caller see the path, and it sees it once. `speculative` is
+  // false because it is not a probe: this is the one call that stores.
+  const Verdict verdict = verifier_ ? verifier_(path, false) : Verdict::Wrong;
+  patternlock::secureWipe(path, sizeof(path));
+  patternlock::secureWipe(firstWalk_, sizeof(firstWalk_));
+
+  if (verdict == Verdict::Ok) {
+    LOG_INF(kLogTag, "enrolled");
+    finishUnlocked();
+    return;
+  }
+  // The walks agreed and the caller could not store them -- NVS, a refused
+  // overwrite, no entropy. Saying "wrong pattern" here would send a rider back
+  // to re-walk a pattern that was never the problem, so it is its own message
+  // and the whole enrollment starts again.
+  LOG_ERR(kLogTag, "the caller refused to store the pattern");
+  lastAttemptWrong_ = true;
+  entry_ = patternlock::Entry(startPick_, config_.minPoints, config_.maxPoints);
+  phase_ = Phase::PickStart;
+  redraw(HalDisplay::HALF_REFRESH);
+}
+
 void PatternLockActivity::settleEntry() {
   if (!speculativeOutstanding_) return;
   speculativeOutstanding_ = false;
@@ -267,8 +426,7 @@ void PatternLockActivity::submit(const bool speculative) {
     // the length of the pattern cuts the space an attacker has to search from
     // "4 to 8 points" to exactly N. The detail is a debug line.
     LOG_INF(kLogTag, "unlocked");
-    LOG_DBG(kLogTag, "unlocked on %u points%s", static_cast<unsigned>(entry_.points()),
-            speculative ? " (auto)" : "");
+    LOG_DBG(kLogTag, "unlocked on %u points%s", static_cast<unsigned>(entry_.points()), speculative ? " (auto)" : "");
     speculativeOutstanding_ = false;  // a walk that unlocked costs the caller nothing
     finishUnlocked();
     return;
@@ -385,15 +543,46 @@ void PatternLockActivity::draw(const HalDisplay::RefreshMode mode) {
     // not a seventeenth kind of point.
     renderer.fillRoundedRect(cx - l.nodeRadius, cy - l.nodeRadius, l.nodeRadius * 2, l.nodeRadius * 2, l.nodeRadius,
                              Color::Black);
-    if (cell == entry_.cursor()) {
+    if (cell == (phase_ == Phase::PickStart ? startPick_ : entry_.cursor())) {
       renderer.drawRoundedRect(cx - l.ringRadius, cy - l.ringRadius, l.ringRadius * 2, l.ringRadius * 2,
                                kCursorRingWidth, l.ringRadius, true);
     }
   }
 
-  // The meter: how many points are in, and nothing about which ones.
-  renderer.drawRoundedRect(l.meterLeft, l.meterTop, l.meterWidth, l.meterHeight, kMeterBorder, l.meterHeight / 2,
-                           true);
+  // The meter: how many points are in, and nothing about which ones. The start
+  // picker draws none -- there is no walk yet, and an empty scale under the grid
+  // reads as a thing that is waiting for presses the picker does not take.
+  if (phase_ != Phase::PickStart) drawMeter(l);
+
+  char line[96];
+  writeStatusLine(line, sizeof(line));
+  renderer.drawCenteredText(
+      UI_10_FONT_ID, l.statusY, line, true,
+      (lockedOut_ || lastAttemptWrong_ || mismatch_) ? EpdFontFamily::BOLD : EpdFontFamily::REGULAR);
+
+  if (l.ownTouch) {
+    // This screen's own BACK and OK, drawn only where the theme draws none.
+    renderer.drawRoundedRect(l.backLeft, l.boxTop, l.boxWidth, l.boxHeight, 2, l.boxHeight / 4, true);
+    renderer.drawRoundedRect(l.okLeft, l.boxTop, l.boxWidth, l.boxHeight, 2, l.boxHeight / 4, true);
+    const int textY = l.boxTop + (l.boxHeight - renderer.getLineHeight(UI_10_FONT_ID)) / 2;
+    const char* backLabel = tr(STR_BACK);
+    const char* okLabel = tr(STR_OK_BUTTON);
+    renderer.drawText(UI_10_FONT_ID, l.backLeft + (l.boxWidth - renderer.getTextWidth(UI_10_FONT_ID, backLabel)) / 2,
+                      textY, backLabel);
+    renderer.drawText(UI_10_FONT_ID, l.okLeft + (l.boxWidth - renderer.getTextWidth(UI_10_FONT_ID, okLabel)) / 2, textY,
+                      okLabel);
+  } else {
+    // UP/DOWN are the side buttons and they are fixed there, so they get labels --
+    // the two directions a rider cannot find by looking at the bottom band.
+    GUI.drawSideButtonHints(renderer, tr(STR_DIR_UP), tr(STR_DIR_DOWN));
+    const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_OK_BUTTON), tr(STR_DIR_LEFT), tr(STR_DIR_RIGHT));
+    GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+  }
+  renderer.displayBuffer(mode);
+}
+
+void PatternLockActivity::drawMeter(const Layout& l) {
+  renderer.drawRoundedRect(l.meterLeft, l.meterTop, l.meterWidth, l.meterHeight, kMeterBorder, l.meterHeight / 2, true);
   const int segInset = l.meterHeight / kMeterInsetDiv;
   const int innerLeft = l.meterLeft + kMeterBorder + segInset / 2;
   const int innerWidth = l.meterWidth - (kMeterBorder + segInset / 2) * 2;
@@ -408,43 +597,35 @@ void PatternLockActivity::draw(const HalDisplay::RefreshMode mode) {
       renderer.drawLine(x1, l.meterTop + segInset, x1, l.meterTop + l.meterHeight - segInset, true);
     }
   }
+}
 
-  char line[96];
+void PatternLockActivity::writeStatusLine(char* out, const size_t outLen) {
   const uint32_t wait = config_.waitSecondsLeft ? config_.waitSecondsLeft() : 0;
   if (lockedOut_) {
-    snprintf(line, sizeof(line), "%s", tr(STR_PATTERN_LOCK_LOCKED_OUT));
+    snprintf(out, outLen, "%s", tr(STR_PATTERN_LOCK_LOCKED_OUT));
   } else if (wait > 0) {
     // Read on every draw, so a backoff counts down instead of showing the number
     // it had when the screen opened.
-    snprintf(line, sizeof(line), tr(STR_PATTERN_LOCK_WAIT), static_cast<int>(wait));
+    snprintf(out, outLen, tr(STR_PATTERN_LOCK_WAIT), static_cast<int>(wait));
+  } else if (mismatch_) {
+    // Only an enrollment reaches this, and it says what actually happened: the
+    // two walks differed. "Wrong pattern" would be a lie -- there is no stored
+    // pattern yet to be wrong about.
+    snprintf(out, outLen, "%s", tr(STR_PATTERN_ENROLL_MISMATCH));
   } else if (lastAttemptWrong_) {
-    snprintf(line, sizeof(line), "%s", tr(STR_PATTERN_LOCK_WRONG));
+    snprintf(out, outLen, "%s", config_.enroll ? tr(STR_PATTERN_ENROLL_FAILED) : tr(STR_PATTERN_LOCK_WRONG));
+  } else if (phase_ == Phase::PickStart) {
+    snprintf(out, outLen, "%s", tr(STR_PATTERN_ENROLL_START));
   } else if (!entry_.longEnough()) {
-    snprintf(line, sizeof(line), tr(STR_PATTERN_LOCK_SHORT), static_cast<int>(entry_.minPoints()));
+    // The floor is the caller's, and during an enrollment it is the number a
+    // rider is being asked to reach rather than the one they are failing.
+    if (config_.enroll && phase_ == Phase::Confirm && entry_.points() == 1) {
+      snprintf(out, outLen, "%s", tr(STR_PATTERN_ENROLL_AGAIN));
+    } else {
+      snprintf(out, outLen, tr(STR_PATTERN_LOCK_SHORT), static_cast<int>(entry_.minPoints()));
+    }
   } else {
-    snprintf(line, sizeof(line), tr(STR_PATTERN_LOCK_PROMPT), static_cast<int>(entry_.points()),
+    snprintf(out, outLen, tr(STR_PATTERN_LOCK_PROMPT), static_cast<int>(entry_.points()),
              static_cast<int>(entry_.maxPoints()));
   }
-  renderer.drawCenteredText(UI_10_FONT_ID, l.statusY, line, true,
-                            (lockedOut_ || lastAttemptWrong_) ? EpdFontFamily::BOLD : EpdFontFamily::REGULAR);
-
-  if (l.ownTouch) {
-    // This screen's own BACK and OK, drawn only where the theme draws none.
-    renderer.drawRoundedRect(l.backLeft, l.boxTop, l.boxWidth, l.boxHeight, 2, l.boxHeight / 4, true);
-    renderer.drawRoundedRect(l.okLeft, l.boxTop, l.boxWidth, l.boxHeight, 2, l.boxHeight / 4, true);
-    const int textY = l.boxTop + (l.boxHeight - renderer.getLineHeight(UI_10_FONT_ID)) / 2;
-    const char* backLabel = tr(STR_BACK);
-    const char* okLabel = tr(STR_OK_BUTTON);
-    renderer.drawText(UI_10_FONT_ID, l.backLeft + (l.boxWidth - renderer.getTextWidth(UI_10_FONT_ID, backLabel)) / 2,
-                      textY, backLabel);
-    renderer.drawText(UI_10_FONT_ID, l.okLeft + (l.boxWidth - renderer.getTextWidth(UI_10_FONT_ID, okLabel)) / 2,
-                      textY, okLabel);
-  } else {
-    // UP/DOWN are the side buttons and they are fixed there, so they get labels --
-    // the two directions a rider cannot find by looking at the bottom band.
-    GUI.drawSideButtonHints(renderer, tr(STR_DIR_UP), tr(STR_DIR_DOWN));
-    const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_OK_BUTTON), tr(STR_DIR_LEFT), tr(STR_DIR_RIGHT));
-    GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
-  }
-  renderer.displayBuffer(mode);
 }

@@ -7,6 +7,7 @@
 #include <cstdio>
 
 #include "MappedInputManager.h"
+#include "TouchPolicy.h"
 #include "WalletCryptoDevice.h"
 #include "WalletKeyStore.h"
 #include "activities/ActivityManager.h"
@@ -27,7 +28,12 @@ WalletUnlockActivity::WalletUnlockActivity(GfxRenderer& renderer, MappedInputMan
 
 void WalletUnlockActivity::onEnter() {
   Activity::onEnter();
-  noWrap_ = !wallet::KeyStore::isProvisioned();
+  const bool provisioned = wallet::KeyStore::isProvisioned();
+  // An unprovisioned device with an encrypted card is the dead end; an
+  // unprovisioned device with no encrypted card is the one that can be set up.
+  // The card decides, not the NVS alone (see the class comment).
+  offerSetup_ = !provisioned && !wallet::treeIsEncrypted();
+  noWrap_ = !provisioned && !offerSetup_;
   // A wrap with no start cell is the pre-gate wallet, not a missing one. The
   // gate cannot open on a cell nobody stored, and re-provisioning is the only
   // way forward -- so say that rather than claiming the key is absent.
@@ -42,11 +48,12 @@ void WalletUnlockActivity::onEnter() {
   // report the wallet's resident heap (docs/wallet-crypto.md).
   LOG_INF(kLogTag, "heap on the gate: %lu free, %lu largest block", static_cast<unsigned long>(ESP.getFreeHeap()),
           static_cast<unsigned long>(ESP.getMaxAllocHeap()));
-  if (noWrap_) LOG_ERR(kLogTag, "no wrap in NVS: this device has no wallet key");
+  if (noWrap_) LOG_ERR(kLogTag, "no wrap in NVS and an encrypted card: this device cannot read it");
+  if (offerSetup_) LOG_INF(kLogTag, "no wallet on this device: offering setup");
   if (noPattern_) LOG_ERR(kLogTag, "a wrap with no start cell: provisioned before the pattern gate");
   if (lockedOut_) LOG_ERR(kLogTag, "locked out after %u failures", static_cast<unsigned>(failures_));
 
-  if (noWrap_ || noPattern_ || lockedOut_) {
+  if (offerSetup_ || noWrap_ || noPattern_ || lockedOut_) {
     // A dead end draws its own reason. No gate: a grid that cannot succeed
     // whatever a rider walks is a screen that lies.
     //
@@ -124,6 +131,84 @@ void WalletUnlockActivity::openGate() {
       });
 }
 
+bool WalletUnlockActivity::provisionWith(const char* pattern) {
+  // K is born here and dies here as a local. It goes two places: into the wrap
+  // in NVS, and into the session so the rider is not asked to unlock the wallet
+  // they just set up. Nothing writes it anywhere else, and no command can read
+  // it back out -- that is the whole point of the device making it
+  // (docs/wallet-provisioning.md, "Decided 2026-11-26").
+  uint8_t key[wallet::kWalletKeyLen];
+  uint8_t salt[wallet::kPbkdf2SaltLen];
+  wallet::randomBytes(key, sizeof(key));
+  wallet::randomBytes(salt, sizeof(salt));
+
+  size_t patternLen = 0;
+  while (pattern != nullptr && pattern[patternLen] != '\0') ++patternLen;
+
+  // force=false, always. An existing wrap is somebody's documents, and this
+  // screen is only ever reached when there is none -- so a true here could only
+  // ever destroy data that a check above said was not there.
+  const bool ok =
+      wallet::KeyStore::provision(key, pattern, patternLen, salt, sizeof(salt), wallet::kProvisionIterations, false);
+  if (ok) {
+    wallet::Session::instance().setKey(key);
+    LOG_INF(kLogTag, "wallet set up on this device: %lu PBKDF2 iterations",
+            static_cast<unsigned long>(wallet::kProvisionIterations));
+  } else {
+    LOG_ERR(kLogTag, "provisioning refused: nothing stored");
+  }
+  wallet::secureWipe(key, sizeof(key));
+  wallet::secureWipe(salt, sizeof(salt));
+  return ok;
+}
+
+void WalletUnlockActivity::openEnrollment() {
+  if (gateOpened_) return;
+  gateOpened_ = true;
+
+  PatternLockActivity::Config config;
+  config.title = tr(STR_WALLET_SETUP);
+  config.hint = tr(STR_WALLET_SETUP_HINT);
+  config.enroll = true;
+  // Where the picker opens, not where the walk must start -- the rider moves it.
+  // The interior default is the better opening guess: a first step branches four
+  // ways from there and two from a corner (PatternLock.h, the space table).
+  config.startCell = patternlock::kDefaultStart;
+  // The same floor the gate will demand afterwards. They must be the same two
+  // numbers or an enrollment can store a pattern the gate refuses to let anybody
+  // finish (PatternLock.h, isWellFormed).
+  config.minPoints = wallet::kPatternMinPoints;
+  config.maxPoints = wallet::kPatternMaxPoints;
+  // No rate limiter on setup: there is no secret to guess yet. No auto-submit
+  // either -- the enrollment ignores it, and a first walk must be confirmed by a
+  // press rather than by its length.
+  config.autoSubmit = false;
+
+  startActivityForResult(
+      std::make_unique<PatternLockActivity>(renderer, mappedInput, config,
+                                            [this](const char* path, const bool speculative) {
+                                              (void)speculative;  // enrollment calls once, never speculatively
+                                              return provisionWith(path) ? PatternLockActivity::Verdict::Ok
+                                                                         : PatternLockActivity::Verdict::Wrong;
+                                            }),
+      [this](const ActivityResult& result) {
+        const auto* gate = std::get_if<PatternLockResult>(&result.data);
+        const bool enrolled = gate != nullptr && gate->unlocked;
+        gateOpened_ = false;
+        if (!enrolled) {
+          // Cancelled, or the store failed and the rider left. Either way
+          // nothing is provisioned, so the stack is empty behind this screen
+          // and the manager takes it home.
+          LOG_INF(kLogTag, "setup left without a wallet");
+          finish();
+          return;
+        }
+        // Provisioned and the session already holds K, so this lands on the
+        // list rather than on a gate.
+        activityManager.goToWallet(openItem_, openCode_);
+      });
+}
+
 void WalletUnlockActivity::onGateResult(const bool unlocked) {
   gateOpened_ = false;
   if (!unlocked) {
@@ -142,10 +227,28 @@ void WalletUnlockActivity::onGateResult(const bool unlocked) {
 
 void WalletUnlockActivity::loop() {
   Activity::loop();
-  // Only the dead-end screens reach here with no gate in front: BACK leaves, and
-  // every other button is inert so the screen cannot be walked into a state that
-  // says something untrue.
-  if (mappedInput.wasReleased(MappedInputManager::Button::Back)) finish();
+  if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
+    finish();
+    return;
+  }
+  if (!offerSetup_) {
+    // The other dead ends have nothing to press: every button but BACK is inert,
+    // so the screen cannot be walked into a state that says something untrue.
+    return;
+  }
+  if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
+    openEnrollment();
+    return;
+  }
+  // A tap anywhere also starts setup where the theme draws no hint boxes. On a
+  // factory-default X4 Pro the only hardware keys are up and down -- confirm and
+  // back are PIN_UNASSIGNED (BoardConfig.h, XTEINK_X4_PRO) -- so without this
+  // the offer is a screen that cannot be accepted on that board. The gate itself
+  // already solves this with its own BACK/OK boxes; one sentence with one action
+  // does not need two.
+  int x = 0;
+  int y = 0;
+  if (TouchPolicy::touchAnywhere() && mappedInput.wasScreenTapped(x, y)) openEnrollment();
 }
 
 void WalletUnlockActivity::render(RenderLock&& lock) {
@@ -159,8 +262,9 @@ void WalletUnlockActivity::draw(const HalDisplay::RefreshMode mode) {
   const int lineHeight = renderer.getLineHeight(UI_10_FONT_ID);
 
   renderer.clearScreen();
-  GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight}, tr(STR_WALLET_UNLOCK),
-                 tr(STR_WALLET_UNLOCK_HINT));
+  GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight},
+                 offerSetup_ ? tr(STR_WALLET_SETUP) : tr(STR_WALLET_UNLOCK),
+                 offerSetup_ ? tr(STR_WALLET_SETUP_HINT) : tr(STR_WALLET_UNLOCK_HINT));
 
   const int y = metrics.topPadding + metrics.headerHeight + lineHeight * 4;
   // Two lines, bold label over plain detail, mirroring RouteEmptyActivity --
@@ -171,16 +275,19 @@ void WalletUnlockActivity::draw(const HalDisplay::RefreshMode mode) {
   // message sized against one panel is the defect CLAUDE.md's "Styles must be
   // universal" names; splitting at the sentence keeps every line short enough
   // that no panel in the line has to be measured again.
-  const char* label = noWrap_      ? tr(STR_WALLET_UNLOCK_NO_WRAP)
+  const char* label = offerSetup_  ? tr(STR_WALLET_SETUP_OFFER)
+                      : noWrap_    ? tr(STR_WALLET_UNLOCK_NO_WRAP)
                       : noPattern_ ? tr(STR_WALLET_UNLOCK_NO_PATTERN)
                                    : tr(STR_WALLET_UNLOCK_LOCKED_OUT);
-  const char* detail = noWrap_      ? tr(STR_WALLET_UNLOCK_NO_WRAP_SUB)
+  const char* detail = offerSetup_  ? tr(STR_WALLET_SETUP_OFFER_SUB)
+                       : noWrap_    ? tr(STR_WALLET_UNLOCK_NO_WRAP_SUB)
                        : noPattern_ ? tr(STR_WALLET_UNLOCK_NO_PATTERN_SUB)
                                     : tr(STR_WALLET_UNLOCK_LOCKED_OUT_SUB);
   renderer.drawCenteredText(UI_10_FONT_ID, y, label, true, EpdFontFamily::BOLD);
   renderer.drawCenteredText(UI_10_FONT_ID, y + lineHeight, detail, true);
 
-  const auto labels = mappedInput.mapLabels(tr(STR_BACK), "", "", "");
+  // Only the setup offer has a second thing to press, so only it labels one.
+  const auto labels = mappedInput.mapLabels(tr(STR_BACK), offerSetup_ ? tr(STR_OK_BUTTON) : "", "", "");
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
   renderer.displayBuffer(mode);
 }
