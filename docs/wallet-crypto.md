@@ -315,10 +315,25 @@ neither a `.dat` asset nor `manifest.json`** (`pathIsUnderWalletDir()`,
 clear either. Nothing legitimate is lost: an encrypted tree has no `.rle`
 sidecars by definition, and this firmware never reads one anyway.
 
-**What this does not close**: an 8.3 alias of an *asset* name still ends in
-`.dat`, so it is still sealed -- over the entry of the real asset it aliases.
-That is one document overwritten by somebody in radio range, which is the
-unauthenticated channel itself and is T-2098's job, not a gate's.
+**The gate runs before the directory is created, and that ordering is the
+fix, not a detail.** `handleBegin` calls `ensureDirectoryExists()` on the
+parent of every accepted path, and `SDCardManager` creates every component. A
+gate placed after it left a hole as bad as the one it closed: a push to
+`wallet/manifest.bak/x` made a **directory** called `manifest.bak` and only
+then refused the file. `Storage.exists()` is true for a directory and
+`Storage.remove()` cannot delete one, so every later sync would answer
+`ERR swap failed` for ever with nothing in the firmware able to undo it -- and
+on a cleartext card that directory also flips `treeIsEncrypted()`. Found in a
+second review round, 2026-11-27, and confirmed closed on both boards:
+`wallet/manifest.bak/x` and `wallet/manifest.enc/deep/x` are refused and the
+wallet directory afterwards holds only its asset shards.
+
+**Two things this does not close.** An 8.3 alias of an *asset* name still ends
+in `.dat`, so it is still sealed -- over the entry of the real asset it
+aliases: one document overwritten by somebody in radio range, which is the
+unauthenticated channel itself and is T-2098's job, not a gate's. And the gate
+is on the **BLE receiver only**: `POST /upload` and WebDAV `PUT` still write any
+path on the card, which is T-2103.
 
 ### The Wi-Fi upload endpoint bypasses all of this
 
