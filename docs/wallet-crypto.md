@@ -181,6 +181,125 @@ Fixed on all three implementations at once (device, phone, `tools/walletgen.py`)
 behind the flag bit, and the parity fixtures were regenerated, which is what proves
 the three agree.
 
+## Ingest: the device is the second writer of this format
+
+T-2095, 2026-11-27. Until this landed, `tools/walletgen.py` was the only thing
+that ever wrote an `EWA1` asset and the device only ever read one. A board makes
+its own K now (T-2094), so nothing off the device can produce a tree this board
+can read: the phone has to send the **plaintext** bitmap and the **device** has
+to seal it.
+
+The format does not change. Same 32-byte cleartext header, same AES-256-CTR
+payload, same IV rule as everything above. What changes is who writes it.
+
+`src/activities/wallet/WalletAssetIngest.h` is the sealer;
+`MapTransferReceiver` is where it is wired in, because the BLE transfer channel
+is the path a wallet asset already arrives on.
+
+### One pass, because the header carries the IV
+
+The 32-byte header arrives **first** and already holds `sha256_prefix` -- the
+first 8 bytes of the plaintext payload's hash, which is exactly what
+`buildAssetIvFromHash()` takes. So the IV is known before the first payload byte
+lands, and every chunk after it is encrypted where it arrives, at a running
+payload offset. No staging file, no second write of 585 KB, no 48 KB buffer.
+
+The header the device writes is the sender's, with `kFlagEncrypted` and
+`kFlagContentIv` set in byte 20 and **nothing else touched** -- geometry,
+version, presentation and the hash prefix all survive. Measured on an X3,
+2026-11-27: the other 31 bytes came back byte-identical.
+
+### The prefix is trusted early and checked late
+
+Building a keystream out of `sha256_prefix` means trusting a number nobody has
+verified yet, because the payload it hashes has not arrived. So the plaintext is
+hashed as it streams and compared with that prefix **before the rename**.
+
+This check is not optional and it is not belt-and-braces. A wrong prefix is not
+an error anywhere: every structural check passes, the file lands, and the asset
+decrypts to noise on the panel for ever. The hash is the only thing in the system
+that can catch it. Proved firing on hardware -- a flipped payload byte with an
+honest CRC, so the CRC could not catch it, answered `ERR hash mismatch` and left
+the previous good file untouched (X3, 2026-11-27).
+
+### `OK` means something weaker for a wallet asset, on purpose
+
+A tile transfer answers `OK <bytes> <crc32>` with the CRC read back **off the
+card**, which is what makes it mean "the card holds these bytes"
+(`MapTransferReceiver.h`, "Write to .part, rename at the end").
+
+That cannot work here. The card holds ciphertext, and its CRC is a number the
+sender has never seen -- the phone compares the reply with the CRC of the
+plaintext it sent (`../../docs/android-wallet.md`, 14.5). Get that wrong and the
+phone's ledger marks every asset changed for ever.
+
+So the CRC is accumulated from the **arriving plaintext** instead, taken before
+the flag byte is rewritten, and the read-back is skipped. The guarantee weakens
+from *the card holds these bytes* to **these bytes arrived whole and were
+written**. Nothing on the device re-reads a sealed asset to confirm it until the
+viewer opens it.
+
+### What is refused, with nothing left on the card
+
+Decided at `begin`, before the `.part` is opened, or on the chunk that completes
+the header:
+
+| refusal | why |
+|---|---|
+| `ERR wallet locked` | no session key. A locked wallet gets a refusal, not a half-written document |
+| `ERR no panel` | no live renderer, so the geometry gate cannot run |
+| `ERR already encrypted` | the sender used a key this board does not have; sealing again buries the payload under two keystreams |
+| `ERR bad asset` | magic, header parse, bit depth, an `assetType` this firmware does not know, or geometry that cannot be true |
+| `ERR wrong panel` | built for another panel in the line |
+| `ERR asset length` | the header's `rawLen` and the transfer's declared length disagree |
+| `ERR hash mismatch` | the plaintext does not hash to the prefix the keystream came from |
+
+**The path is the signal, not a flag on the wire.** A `.dat` under
+`/explorink/wallet` is sealed; everything else takes the old path untouched. A
+sender cannot ask for a document to be stored in the clear by clearing a bit, and
+cannot turn a map tile into a wallet asset by setting one.
+
+**No manifest is involved**, because the manifest is its own transfer and its own
+task (T-2096). That is why ingest does not call `checkAssetForPanel()`: a page
+image's stride normally comes from the manifest, so here it is derived from the
+file's own `rawLen / height` instead. The gate refuses nothing it cannot actually
+prove wrong.
+
+### The Wi-Fi upload endpoint bypasses all of this
+
+`POST /upload` (`CrossPointWebServer`, `docs/webserver-endpoints.md`) writes any
+path on the card directly and never passes through `MapTransferReceiver`. So a
+wallet asset uploaded that way lands **in the clear** today, under a path the
+viewer will later refuse to draw because `kFlagEncrypted` is not set. Found while
+testing T-2095 on 2026-11-27 -- the same endpoint is what pulled the sealed files
+back off the card for the proof below. Open, tracked as T-2103.
+
+### Measured on an X3, 2026-11-27
+
+`env:default`, commit `fedfd7fb`, wallet provisioned with a known K over
+`CMD:WALLETPROVISION` so the laptop could decrypt what the board wrote.
+
+| what | result |
+|---|---|
+| 52,304 B asset pushed plaintext over BLE | `OK 52304 dbc8ea61` -- the **plaintext** CRC, which the old read-back path could not have produced |
+| same, 585,750 B 1:1 page image | `OK 585750 8c915f52` |
+| both files pulled back off the card and decrypted with K and the content IV | **byte-identical to the plaintext**, 52,272 B and 585,718 B of payload |
+| `sha256(decrypted)[0:8]` vs the header prefix | matches on both |
+| header flags | `00` in, `03` out; other 31 bytes unchanged |
+| flipped payload byte, honest CRC | `ERR hash mismatch`, previous good file intact |
+| map tile push, same session | `OK 54394 4aa50b89`, read-back path unchanged |
+
+That decrypt is a stronger check than the panel: it is byte-exact rather than
+"it looked right", and it is the only thing that proves the IV, because a wrong
+IV produces noise and no error.
+
+**Cost against the transport: none visible.** The same 585,750 bytes took
+**72.1 s** sealed and **72.5 s** down the plain path, both at 7.9 kB/s, one
+board, one session. Sealing is not slower than the path it replaces: the
+whole-file CRC read-back it removes costs about what the AES and the SHA-256 it
+adds cost. The Wi-Fi figure the plan asked for could not be taken -- the Wi-Fi
+upload path does not reach this code at all (see above).
+
 ## Driving the whole chain from a host
 
 **This recipe was rewritten for the pattern gate on 2026-11-26 and has not been
@@ -721,6 +840,13 @@ hardware.
   gate, the browse list off a decrypted manifest, a wrong pattern, the limiter's
   full ladder and the lockout screen (`docs/pattern-lock.md`, "On the panel,
   2026-11-26"). Not yet on an S3.
+- **Ingest, T-2095, 2026-11-27**: the sealer's arithmetic is **host-tested**
+  (19 tests, OpenSSL and an independent CRC-32, every refusal proved to fire,
+  the ciphertext proved identical across chunk sizes from 1 to 4096 bytes), and
+  the whole chain **ran end to end on an X3** -- plaintext pushed over BLE,
+  sealed on the board, pulled back off the card and decrypted byte-identical
+  with the wallet key and the content IV (see "Ingest" above). **Not yet on an
+  S3**, and the Wi-Fi upload endpoint still bypasses it (T-2103).
 - The encrypted tree **rendered host-side** through the device's own reader code
   (`wallet_preview --key`): the decrypted QR is **byte-identical** to the cleartext
   tree's render and still decodes to the exact payload through `zxing-cpp`.

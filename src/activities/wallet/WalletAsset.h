@@ -96,9 +96,16 @@ struct AssetHeader {
 inline constexpr uint8_t kFlagEncrypted = 0x01;
 
 // flags bit 1: the CTR IV is derived from this payload's own sha256 prefix
-// rather than from the assetId. Set by every generator since 2026-11-23, and
-// read here rather than assumed, so an encrypted card written before that still
-// decrypts (../../../docs/wallet-crypto.md, "The IV follows the bytes").
+// rather than from the assetId. Read here rather than assumed, so an encrypted
+// card written before 2026-11-23 still decrypts
+// (../../../docs/wallet-crypto.md, "The IV follows the bytes").
+//
+// **Set by the phone (android `WalletCrypto.kt`, `FLAG_CONTENT_IV`) and, since
+// T-2095, by this device when it seals an arriving asset. NOT by
+// `tools/walletgen.py --key`**, which still writes the legacy assetId form --
+// correct and readable, but the old rule. Said here with the names because this
+// comment used to claim "every generator", which was never true of the laptop
+// one and would send somebody looking for a bug that is not there.
 //
 // **Why it had to change.** An assetId is a hash of the recipe -- panel, item,
 // page, type, index, version -- and carries **no content**, which is what makes
