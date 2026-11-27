@@ -31,6 +31,24 @@ bool ctrDecryptInPlace(const uint8_t key[kWalletKeyLen], const uint8_t iv[kAsset
 bool gcmDecryptInPlace(const uint8_t key[kWalletKeyLen], const uint8_t* nonce, size_t nonceLen, const uint8_t* tag,
                        size_t tagLen, uint8_t* data, size_t len);
 
+// AES-256-GCM seal of a buffer in place, with the tag written out separately.
+// The manifest's write half: `data` goes in as plaintext and comes out as
+// ciphertext of the same length, `tag` gets the 16 bytes that authenticate it.
+//
+// **One shot, deliberately, and not because mbedtls cannot stream.** It can --
+// `mbedtls_gcm_update()` buffers in whole blocks and the pinned ESP-IDF
+// (5.5.2.260206) documents `output_size >= input_length + 15` as always
+// sufficient. A streamed seal would accept a manifest of any size, and this same
+// device refuses to *read* one above kMaxEncryptedManifestBytes. The plaintext
+// is therefore buffered and bounded first (WalletCrypto.h,
+// kMaxManifestPlaintextBytes), which is what makes a one-shot call the right
+// shape rather than a limitation.
+//
+// The nonce is the caller's: it goes in the cleartext envelope, so the caller is
+// the one that has to write the same bytes into both places.
+bool gcmEncryptInPlace(const uint8_t key[kWalletKeyLen], const uint8_t* nonce, size_t nonceLen, uint8_t* data,
+                       size_t len, uint8_t* tag, size_t tagLen);
+
 // AES-256-GCM encrypt, for wrapping the wallet key. `out` is
 // nonce || ciphertext || tag, kWrappedKeyLen bytes.
 bool gcmWrapKey(const uint8_t kek[kWalletKeyLen], const uint8_t key[kWalletKeyLen], uint8_t* out, size_t outLen);
@@ -39,8 +57,7 @@ bool gcmUnwrapKey(const uint8_t kek[kWalletKeyLen], const uint8_t* wrapped, size
 
 // KEK = PBKDF2-HMAC-SHA256(pattern bytes || deviceSecret, salt, iterations).
 bool deriveKek(const char* pattern, size_t patternLen, const uint8_t* deviceSecret, size_t secretLen,
-               const uint8_t* salt,
-               size_t saltLen, uint32_t iterations, uint8_t out[kWalletKeyLen]);
+               const uint8_t* salt, size_t saltLen, uint32_t iterations, uint8_t out[kWalletKeyLen]);
 
 // Hardware RNG. Used for the device secret, the salt and every wrap nonce.
 void randomBytes(uint8_t* out, size_t len);

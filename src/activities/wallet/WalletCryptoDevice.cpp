@@ -62,6 +62,28 @@ bool gcmDecryptInPlace(const uint8_t key[kWalletKeyLen], const uint8_t* nonce, c
   return ok;
 }
 
+bool gcmEncryptInPlace(const uint8_t key[kWalletKeyLen], const uint8_t* nonce, const size_t nonceLen, uint8_t* data,
+                       const size_t len, uint8_t* tag, const size_t tagLen) {
+  if (key == nullptr || nonce == nullptr || data == nullptr || tag == nullptr) return false;
+  if (len == 0 || tagLen != kGcmTagLen) return false;
+
+  mbedtls_gcm_context gcm;
+  mbedtls_gcm_init(&gcm);
+  bool ok = mbedtls_gcm_setkey(&gcm, MBEDTLS_CIPHER_ID_AES, key, static_cast<unsigned int>(kWalletKeyLen * 8)) == 0;
+  if (ok) {
+    // No associated data, because the reader verifies with none: the envelope
+    // around this ciphertext is outside the tag by format, not by oversight
+    // (WalletCrypto.h, parseManifestEnvelope). In place is allowed -- gcm.c
+    // refuses a partial overlap, not an identical pointer -- and is what keeps
+    // one 32 KB buffer instead of two.
+    ok = mbedtls_gcm_crypt_and_tag(&gcm, MBEDTLS_GCM_ENCRYPT, len, nonce, nonceLen, nullptr, 0, data, data, tagLen,
+                                   tag) == 0;
+  }
+  mbedtls_gcm_free(&gcm);
+  if (!ok) LOG_ERR(kLogTag, "GCM seal failed over %u bytes", static_cast<unsigned>(len));
+  return ok;
+}
+
 bool gcmWrapKey(const uint8_t kek[kWalletKeyLen], const uint8_t key[kWalletKeyLen], uint8_t* out, const size_t outLen) {
   if (kek == nullptr || key == nullptr || out == nullptr || outLen < kWrappedKeyLen) return false;
 

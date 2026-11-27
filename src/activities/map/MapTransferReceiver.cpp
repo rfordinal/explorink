@@ -13,6 +13,7 @@
 
 #if defined(ENABLE_WALLET) && ENABLE_WALLET
 #include "../wallet/WalletCryptoDevice.h"
+#include "../wallet/WalletManifestInstall.h"
 #include "../wallet/WalletStore.h"
 #endif
 
@@ -138,6 +139,45 @@ uint32_t walletCrc32(uint32_t crc, const uint8_t* data, size_t len) { return esp
 bool walletSink(void* ctx, const uint8_t* data, size_t len) {
   HalFile* file = static_cast<HalFile*>(ctx);
   return file != nullptr && file->write(data, len) == len;
+}
+
+// --- The manifest sealer's three primitives ---------------------------------
+
+// A fresh nonce per write, off the hardware RNG. Fresh is the requirement, not
+// unpredictable-looking: the manifest is written again on every sync, and one
+// key with one nonce over two different plaintexts breaks GCM outright.
+void walletRandom(void*, uint8_t* out, size_t len) { wallet::randomBytes(out, len); }
+
+// The key is read here, at the end of the transfer, for the same reason
+// walletCipher() reads it per chunk: a wallet locked while the manifest was
+// arriving must end the transfer, not seal the list under 32 zero bytes.
+bool walletSealManifest(void*, const uint8_t* nonce, uint8_t* data, size_t len, uint8_t* tag) {
+  const uint8_t* key = wallet::Session::instance().key();
+  if (key == nullptr) return false;
+  return wallet::gcmEncryptInPlace(key, nonce, wallet::kGcmNonceLen, data, len, tag, wallet::kGcmTagLen);
+}
+
+// "Is this a wallet manifest, and which version does it say it is?" -- asked
+// with the parser the browse screen uses, so a body that passes here is a body
+// that opens later. Anything stricter would be a second opinion about what a
+// manifest is, and the two opinions would drift.
+//
+// Heap, not stack: ManifestParser carries StreamingJsonParser's 512-byte token
+// buffer and this runs on the NimBLE host task's 4 KB stack.
+bool walletInspectManifest(void*, const char* json, size_t len, uint32_t& walletVersion) {
+  auto parser = makeUniqueNoThrow<wallet::ManifestParser>();
+  if (!parser) {
+    LOG_ERR(kLogTag, "OOM: manifest parser");
+    return false;
+  }
+  // List mode with nowhere to store: the whole document is walked, the header
+  // fields come out filled, not one entry is copied.
+  parser->beginList(nullptr, 0);
+  parser->feed(json, len);
+  if (parser->hasError()) return false;
+  if (parser->formatVersion() != wallet::kSupportedFormatVersion) return false;
+  walletVersion = parser->walletVersion();
+  return true;
 }
 #endif
 
@@ -365,6 +405,55 @@ void MapTransferReceiver::handleBegin(const uint8_t* body, size_t len) {
   // the card exactly as it was. The previous transfer's machine is dropped
   // whatever this one turns out to be, so a tile push can never inherit one.
   walletIngest_.reset();
+  // Freed here and not at the end of the previous transfer's abandon path: it
+  // owns up to 32 KB, and abandon() can be running on the activity task while
+  // the host task is still inside feed() (see abandon()).
+  manifestIngest_.reset();
+  if (wallet::pathIsWalletManifest(finalPath_)) {
+    // The list of documents. Buffered whole and sealed once, which is why every
+    // refusal it can answer is answered here, before a byte is taken: the begin
+    // frame carries the length, so an oversized manifest costs nothing on the
+    // wire (WalletManifestIngest.h, "Why this one is buffered").
+    const uint8_t* key = wallet::Session::instance().key();
+    if (key == nullptr) {
+      refuse("wallet locked");
+      return;
+    }
+    if (total > wallet::kMaxManifestPlaintextBytes) {
+      // Said with both numbers, because the person reading it has to decide
+      // what to drop from the wallet.
+      LOG_ERR(kLogTag, "manifest is %lu bytes, this device can seal at most %u", static_cast<unsigned long>(total),
+              static_cast<unsigned>(wallet::kMaxManifestPlaintextBytes));
+      refuse("manifest too big");
+      return;
+    }
+    auto ingest = makeUniqueNoThrow<wallet::ManifestIngest>();
+    auto buffer = makeUniqueNoThrow<uint8_t[]>(wallet::sealedManifestLen(total));
+    if (!ingest || !buffer) {
+      // Under the cap and still no memory: BLE holds the big blocks, so this is
+      // a message rather than a crash (WalletCrypto.h, the cap's comment).
+      LOG_ERR(kLogTag, "OOM: %u bytes for the manifest", static_cast<unsigned>(wallet::sealedManifestLen(total)));
+      refuse("oom");
+      return;
+    }
+    wallet::ManifestIngest::Callbacks cb;
+    cb.crc32 = walletCrc32;
+    cb.inspect = walletInspectManifest;
+    cb.random = walletRandom;
+    cb.seal = walletSealManifest;
+    const wallet::ManifestIngestStatus started =
+        ingest->begin(total, crc, std::move(buffer), wallet::sealedManifestLen(total), cb);
+    if (started != wallet::ManifestIngestStatus::Ok) {
+      refuse(wallet::manifestIngestReason(started));
+      return;
+    }
+    manifestIngest_ = std::move(ingest);
+    // Everything below is shared with every other transfer. The two places this
+    // one differs -- no `.part` file is opened, and the rename at the end is
+    // replaced by the install -- are both written as a test of this pointer,
+    // rather than as a second copy of the begin and completion tails that would
+    // drift away from them.
+  }
   if (wallet::pathIsWalletAsset(finalPath_)) {
     // No key means a locked wallet, and a locked wallet gets a refusal rather
     // than a half-written document: storing the plaintext "for now" is the one
@@ -407,7 +496,15 @@ void MapTransferReceiver::handleBegin(const uint8_t* body, size_t len) {
 
   // A leftover .part from an earlier killed transfer is not resumed -- the
   // whole file is coming again, from offset 0 (O_TRUNC does the rest).
-  if (!Storage.openFileForWrite("MAPXFER", partPath_, file_)) {
+  //
+  // **A manifest opens nothing here.** Its bytes are buffered in RAM and the
+  // card is touched once, at the end, by the install -- so there is no `.part`
+  // for it to truncate and no handle for it to hold open across the transfer.
+  bool needsPartFile = true;
+#if defined(ENABLE_WALLET) && ENABLE_WALLET
+  needsPartFile = !manifestIngest_;
+#endif
+  if (needsPartFile && !Storage.openFileForWrite("MAPXFER", partPath_, file_)) {
 #if defined(ENABLE_WALLET) && ENABLE_WALLET
     // The sealer was built above and has no transfer behind it now. Dropped
     // here rather than left for the next begin frame, so "a live sealer exists"
@@ -476,7 +573,19 @@ void MapTransferReceiver::handleChunk(const uint8_t* body, size_t len) {
   }
 
 #if defined(ENABLE_WALLET) && ENABLE_WALLET
-  if (walletIngest_) {
+  if (manifestIngest_) {
+    // Into RAM, nowhere near the card. The last chunk is the one that seals:
+    // feed() answers Complete only after the CRC matched, the body inspected as
+    // a manifest and the GCM call returned, so by the time the completion path
+    // below runs there is a finished file to install or nothing at all.
+    const wallet::ManifestIngestStatus fed = manifestIngest_->feed(payload, payloadLen);
+    if (!active_) return;
+    if (fed != wallet::ManifestIngestStatus::Ok && fed != wallet::ManifestIngestStatus::Complete) {
+      LOG_ERR(kLogTag, "manifest refused: %s", wallet::manifestIngestReason(fed));
+      abandon(wallet::manifestIngestReason(fed));
+      return;
+    }
+  } else if (walletIngest_) {
     // A wallet asset is encrypted into a scratch copy and written from there,
     // so this one path does copy -- the arriving bytes are NimBLE's buffer and
     // are not ours to overwrite. Everything the sealer needs (the header, the
@@ -534,12 +643,33 @@ void MapTransferReceiver::handleChunk(const uint8_t* body, size_t len) {
   // Closed before the read-back: the same HalFile cannot be open for write
   // and reopened for read (firmware CLAUDE.md, DESTRUCTOR_CLOSES_FILE), and
   // the rename below needs the handle gone too.
-  file_.close();
+  //
+  // **Guarded, because a manifest transfer never opened one.** HalFile::close()
+  // asserts on a handle that was never opened (HalStorage.cpp,
+  // HAL_FILE_WRAPPED_CALL) -- isOpen() is the one accessor that tolerates it,
+  // which is why abandon() has used this exact shape all along.
+  if (file_.isOpen()) file_.close();
   if (!active_) return;
 
   uint32_t actualCrc = 0;
 #if defined(ENABLE_WALLET) && ENABLE_WALLET
-  if (walletIngest_) {
+  if (manifestIngest_) {
+    // Same weaker guarantee as an asset, and for the same reason: the card
+    // holds ciphertext, so the number the phone compares against is the CRC of
+    // the plaintext as it arrived.
+    actualCrc = manifestIngest_->plaintextCrc();
+    const wallet::ManifestInstallStatus installed =
+        wallet::installSealedManifest(manifestIngest_->sealed(), manifestIngest_->sealedLen());
+    LOG_INF(kLogTag, "manifest walletVersion %lu", static_cast<unsigned long>(manifestIngest_->walletVersion()));
+    // Freed before the verdict is sent: it holds the whole document list, and
+    // the install is the last thing that needs it.
+    manifestIngest_.reset();
+    if (!active_) return;
+    if (installed != wallet::ManifestInstallStatus::Ok) {
+      abandon(wallet::manifestInstallReason(installed));
+      return;
+    }
+  } else if (walletIngest_) {
     // **The reply means something weaker for a wallet asset, on purpose.** The
     // card holds ciphertext, so reading it back would answer a question nobody
     // asked -- the phone compares this number with the CRC of the plaintext it
@@ -574,15 +704,26 @@ void MapTransferReceiver::handleChunk(const uint8_t* body, size_t len) {
 
   // SdFat's rename fails onto an existing name, and re-pushing a tile that is
   // already there is the normal case for a corridor update.
-  if (Storage.exists(finalPath_) && !Storage.remove(finalPath_)) {
-    if (!active_) return;
-    abandon("replace failed");
-    return;
-  }
-  if (!Storage.rename(partPath_, finalPath_)) {
-    if (!active_) return;
-    abandon("rename failed");
-    return;
+  //
+  // **A manifest has already landed by now** -- under another name, through
+  // installSealedManifest() above, which does its own verified two-rename swap.
+  // There is no `.part` here to move and `finalPath_` (`manifest.json`) is a
+  // file this device deliberately does not keep.
+  bool needsRename = true;
+#if defined(ENABLE_WALLET) && ENABLE_WALLET
+  needsRename = !wallet::pathIsWalletManifest(finalPath_);
+#endif
+  if (needsRename) {
+    if (Storage.exists(finalPath_) && !Storage.remove(finalPath_)) {
+      if (!active_) return;
+      abandon("replace failed");
+      return;
+    }
+    if (!Storage.rename(partPath_, finalPath_)) {
+      if (!active_) return;
+      abandon("rename failed");
+      return;
+    }
   }
   // The rename succeeded, so a complete, CRC-checked file *is* on the card --
   // but if detach() ran, the counters below belong to a screen that is gone and
@@ -602,6 +743,9 @@ void MapTransferReceiver::handleChunk(const uint8_t* body, size_t len) {
   // and a SHA-256 state, and the next push is usually a tile that needs
   // neither. Its destructor is also the last thing that wipes the scratch.
   walletIngest_.reset();
+  // Already reset above, on the manifest branch -- this is the backstop for a
+  // path that returned early past it.
+  manifestIngest_.reset();
 #endif
   // Same lock resetCounters() zeroes these under (MapTransferReceiver.h,
   // above completed_) -- otherwise its critical section excludes nothing.
@@ -666,6 +810,10 @@ void MapTransferReceiver::abandon(const char* reason) {
   // write and a transfer that is already being abandoned. The memory goes back
   // at the next begin, which is host-task only.
   if (walletIngest_) walletIngest_->reset();
+  // Same rule, and it matters more here: this one holds the whole document
+  // list, so leaving it un-wiped would leave every title in a heap block until
+  // the next transfer.
+  if (manifestIngest_) manifestIngest_->reset();
 #endif
 
   if (reason == nullptr || endedElsewhere) return;

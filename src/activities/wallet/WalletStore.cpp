@@ -19,8 +19,15 @@ constexpr const char* kLogTag = "WALLET";
 // size. 256 bytes is the same bite HalStorage::readFileToStream() defaults to.
 constexpr size_t kFeedChunk = 256;
 
-// Reads an encrypted manifest, verifies its tag and feeds the plaintext to the
-// parser.
+// Reads the encrypted manifest at `path`, verifies its tag and feeds the
+// plaintext to the parser.
+//
+// The path is a parameter rather than the constant it used to be, because a
+// sealed manifest is now verified **before** it is swapped into place: the
+// device opens its own `.part` with this exact code (T-2096,
+// WalletManifestInstall.h). A second reader written for that job would be a
+// second opinion about what "readable" means, which is the one thing the
+// verification must not be.
 //
 // **The whole file has to be in RAM before one byte of it is parsed.** GCM only
 // authenticates once it has seen everything, and parsing unauthenticated JSON is
@@ -29,9 +36,9 @@ constexpr size_t kFeedChunk = 256;
 // one allocation used twice: the ciphertext goes in, the plaintext comes out in
 // place (mbedtls allows output == input, gcm.c's guard refuses only a partial
 // overlap).
-bool feedEncryptedManifest(ManifestParser& parser, Error& error) {
+bool feedEncryptedManifestAt(const char* path, ManifestParser& parser, Error& error) {
   HalFile file;
-  if (!Storage.openFileForRead(kLogTag, kManifestEncPath, file)) {
+  if (!Storage.openFileForRead(kLogTag, path, file)) {
     error = Error::NoManifest;
     return false;
   }
@@ -101,12 +108,48 @@ bool feedEncryptedManifest(ManifestParser& parser, Error& error) {
   return true;
 }
 
+// True while the list on screen came from `manifest.bak` rather than from
+// `manifest.enc`. File-scope state rather than an out-parameter threaded through
+// four call sites: exactly one thing sets it (the chooser below, on every read)
+// and exactly one thing asks (the browse screen's status line).
+bool g_usingBackup = false;
+
+// Which file the encrypted list is actually read from.
+//
+// **`manifest.bak` is the half-swap survivor, and that is now its whole job.**
+// It was written by the generator and the phone and read by nobody from the day
+// the viewer was built. A rename cannot be atomic on FAT, so an install is two
+// renames (WalletManifestInstall.cpp) and a power cut between them leaves a card
+// with no `manifest.enc` at all. Reading the backup is what turns that from "the
+// wallet is empty" into "here is the list you had", which is the whole promise
+// of the swap: either the old manifest or the new one, never a half.
+//
+// It is a fallback and never a preference: `manifest.enc` wins whenever it
+// exists, so a completed install retires the backup on the spot.
+const char* encryptedManifestPath() {
+  g_usingBackup = false;
+  if (Storage.exists(kManifestEncPath)) return kManifestEncPath;
+  if (Storage.exists(kManifestBakPath)) {
+    // Loud, because the rider is about to be shown a list that may be a sync
+    // behind and the panel says so in four words at most.
+    LOG_ERR(kLogTag, "manifest.enc is missing; reading manifest.bak -- an install was interrupted");
+    g_usingBackup = true;
+    return kManifestBakPath;
+  }
+  return nullptr;
+}
+
 // Runs a prepared parser over the manifest file. The parser is heap-allocated by
 // the caller (it carries StreamingJsonParser's 512-byte token buffer, which has
 // no business on the main task's stack).
 bool feedManifest(ManifestParser& parser, Error& error) {
   if (treeIsEncrypted()) {
-    if (!feedEncryptedManifest(parser, error)) return false;
+    const char* path = encryptedManifestPath();
+    if (path == nullptr) {
+      error = Error::NoManifest;
+      return false;
+    }
+    if (!feedEncryptedManifestAt(path, parser, error)) return false;
     // Fall through to the same version and error checks the cleartext path runs:
     // an encrypted manifest is still a manifest.
     if (parser.hasError()) {
@@ -209,7 +252,44 @@ const char* errorText(const Error error) {
   return "";
 }
 
-bool treeIsEncrypted() { return Storage.exists(kManifestEncPath); }
+bool treeIsEncrypted() {
+  // The backup counts. Without it a card whose install was cut between the two
+  // renames reads as a CLEARTEXT tree -- the device would look for
+  // `manifest.json`, find none and say the wallet is empty, while a perfectly
+  // readable list sits next to it (see encryptedManifestPath()).
+  return Storage.exists(kManifestEncPath) || Storage.exists(kManifestBakPath);
+}
+
+bool readingBackupManifest() { return g_usingBackup; }
+
+bool verifyEncryptedManifestFile(const char* path, Error& error) {
+  error = Error::None;
+  auto parser = makeUniqueNoThrow<ManifestParser>();
+  if (!parser) {
+    LOG_ERR(kLogTag, "OOM: manifest parser");
+    error = Error::ManifestUnreadable;
+    return false;
+  }
+  // List mode with nowhere to store: the parse runs in full, `formatVersion()`
+  // and `itemsSeen()` come out filled, and not one ItemEntry is copied. The
+  // question here is "can this file be opened", not "what is in it".
+  parser->beginList(nullptr, 0);
+  if (!feedEncryptedManifestAt(path, *parser, error)) return false;
+  if (parser->hasError() || parser->formatVersion() == 0) {
+    error = Error::ManifestUnreadable;
+    return false;
+  }
+  if (parser->formatVersion() != kSupportedFormatVersion) {
+    error = Error::ManifestVersion;
+    return false;
+  }
+  // **A manifest naming no documents is accepted.** It is what a rider who
+  // deleted their last document syncs, and refusing it would leave the device
+  // showing a list of things the phone no longer has -- a quiet lie, which is
+  // worse than an empty wallet that says "no documents". `formatVersion` is the
+  // check that answers "is this a manifest"; emptiness is a legitimate answer.
+  return true;
+}
 
 void countCardAssets(uint16_t& assets, uint16_t& codes) {
   assets = 0;
@@ -641,8 +721,8 @@ bool readWholeScreen(const char* assetId, const Gate gate, GfxRenderer& renderer
     // one screen, offset 0, one pass.
     uint8_t iv[kAssetIvLen];
     const uint8_t* key = Session::instance().key();
-    if (key == nullptr || !buildAssetIvForAsset(header.flags, assetId, header.sha256Prefix,
-                                                sizeof(header.sha256Prefix), header.version, iv)) {
+    if (key == nullptr || !buildAssetIvForAsset(header.flags, assetId, header.sha256Prefix, sizeof(header.sha256Prefix),
+                                                header.version, iv)) {
       error = Error::Locked;
       return false;
     }

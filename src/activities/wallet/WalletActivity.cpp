@@ -239,6 +239,13 @@ void WalletActivity::renderScreen(const HalDisplay::RefreshMode mode) {
     } else {
       snprintf(status, sizeof(status), "%s", wallet::errorText(error_));
     }
+  } else if (wallet::readingBackupManifest()) {
+    // The card has no `manifest.enc`, only the backup -- a sync that was cut
+    // between the two renames of its swap. The documents listed are real and
+    // open normally, but the list is one sync old, and a rider has to be told
+    // that rather than left to notice a missing document at a border
+    // (WalletManifestInstall.h). Clears itself on the next completed sync.
+    snprintf(status, sizeof(status), "%s", tr(STR_WALLET_OLD_LIST));
   } else if (seen_ > stored_) {
     // A truncated list must say so out loud. Silently hiding a document the
     // rider synced is the kind of quiet lie this codebase refuses elsewhere too

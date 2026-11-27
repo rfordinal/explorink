@@ -10,6 +10,7 @@
 
 #if defined(ENABLE_WALLET) && ENABLE_WALLET
 #include "../wallet/WalletAssetIngest.h"
+#include "../wallet/WalletManifestIngest.h"
 #endif
 
 // Only for the panel geometry a wallet asset is checked against, and only
@@ -50,7 +51,7 @@ class GfxRenderer;
 // are on the card -- the sender physically cannot outrun the SD card
 // (BlePositionServer.h, TransferHooks).
 //
-// ## A wallet asset is sealed on the way in
+// ## A wallet asset, and the wallet's list, are sealed on the way in
 //
 // A `.dat` under `/explorink/wallet` is not stored as it arrives. The phone
 // sends the readable bitmap and the **device** encrypts it with the key it made
@@ -63,6 +64,14 @@ class GfxRenderer;
 // Everything below about offsets, `.part`, the rename and the threading is
 // unchanged by that -- the asset is the same number of bytes sealed as it was
 // in the clear, so the arithmetic never learns the difference.
+//
+// `wallet/manifest.json` is the exception that does change it. It is buffered
+// in RAM, sealed once at the end, and installed by its own code under its own
+// name (`manifest.enc`, WalletManifestInstall.h) -- so for that one path the
+// `.part` file below is never opened and the rename at the end never runs.
+// Why it cannot be streamed like an asset is the whole of T-2096, and it is
+// written down in WalletManifestIngest.h: the read path cannot stream, so a
+// streamed seal would accept a list this same device can never open again.
 //
 // ## Write to .part, rename at the end
 //
@@ -300,6 +309,13 @@ class MapTransferReceiver {
   // that a tile push has no use for -- and this object lives for as long as the
   // map screen is open (MapActivity, TileSyncActivity both hold one).
   std::unique_ptr<wallet::AssetIngest> walletIngest_;
+  // The same, for the transfer that is the wallet's list of documents. A
+  // separate machine rather than a mode on the one above, because the two are
+  // opposites: an asset is encrypted chunk by chunk and never held, a manifest
+  // is held whole and sealed in one shot -- and the reason for that is the read
+  // path's 32 KB cap (WalletManifestIngest.h). It owns the plaintext buffer,
+  // which is why dropping this pointer is what frees it.
+  std::unique_ptr<wallet::ManifestIngest> manifestIngest_;
 #endif
 
   // The one thing both tasks touch. Written by publish(), read by status().
