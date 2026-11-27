@@ -61,10 +61,16 @@ inline bool relPathIsSafe(const char* path, size_t len) {
   // same directory entry the gate just said was not a wallet asset. Added
   // 2026-11-27 with the case-folding fix next to it; the escape check alone let
   // all of these through.
+  // **Bounded by `len`, not by the terminator.** Both callers today pass a
+  // NUL-terminated buffer, so walking to the NUL happened to be safe -- but the
+  // signature advertises a (pointer, length) contract, and a third caller
+  // handing it a prefix length or a raw BLE buffer would read past the end.
+  // Honour what the signature promises (review, 2026-11-27).
+  const char* const end = path + len;
   const char* cursor = path;
-  while (cursor != nullptr) {
-    const char* slash = strchr(cursor, '/');
-    const size_t partLen = slash != nullptr ? static_cast<size_t>(slash - cursor) : strlen(cursor);
+  while (cursor != nullptr && cursor < end) {
+    const char* slash = static_cast<const char*>(std::memchr(cursor, '/', static_cast<size_t>(end - cursor)));
+    const size_t partLen = slash != nullptr ? static_cast<size_t>(slash - cursor) : static_cast<size_t>(end - cursor);
     if (partLen == 2 && cursor[0] == '.' && cursor[1] == '.') return false;
     if (partLen == 1 && cursor[0] == '.') return false;
     // FAT trims trailing dots and spaces from a name, so `x.dat.` and `x.dat `

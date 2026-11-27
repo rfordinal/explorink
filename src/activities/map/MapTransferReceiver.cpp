@@ -473,24 +473,6 @@ void MapTransferReceiver::handleBegin(const uint8_t* body, size_t len) {
   }
 #endif
 
-  // `base/13/4482/2789.tib` needs /explorink/base/13/4482 to exist first.
-  // ensureDirectoryExists creates parents (SdFat's mkdir defaults to pFlag).
-  //
-  // Truncated in place and put back rather than copied into a second buffer:
-  // this runs on the NimBLE host task, whose stack is 4 KB and which already
-  // has a 512-byte VLA of NimBLE's own below this frame (NimBLEServer.cpp's
-  // BLE_GATT_ACCESS_OP_WRITE_CHR case) before SdFat's write path is entered
-  // on top.
-  if (char* lastSlash = strrchr(finalPath_, '/'); lastSlash != nullptr && lastSlash != finalPath_) {
-    *lastSlash = '\0';
-    const bool dirReady = Storage.ensureDirectoryExists(finalPath_);
-    *lastSlash = '/';
-    if (!dirReady) {
-      refuse("mkdir failed");
-      return;
-    }
-  }
-
 #if defined(ENABLE_WALLET) && ENABLE_WALLET
   // A wallet asset is sealed on the way in, and the decision is made here --
   // before a single byte is opened for write -- so every refusal below leaves
@@ -584,6 +566,32 @@ void MapTransferReceiver::handleBegin(const uint8_t* body, size_t len) {
     walletIngest_ = std::move(ingest);
   }
 #endif
+
+  // `base/13/4482/2789.tib` needs /explorink/base/13/4482 to exist first.
+  // ensureDirectoryExists creates parents (SdFat's mkdir defaults to pFlag).
+  //
+  // **Below every refusal, not above them.** It used to sit before the wallet
+  // block, so a locked board still created `/explorink/wallet` and a shard
+  // directory for any well-formed asset path before answering `ERR wallet
+  // locked` -- empty, well-shaped directories, from BLE range with no key, and
+  // a flat contradiction of the invariant the gate above is written to state.
+  // Nothing may touch the card until every refusal has had its say (review,
+  // 2026-11-27).
+  //
+  // Truncated in place and put back rather than copied into a second buffer:
+  // this runs on the NimBLE host task, whose stack is 4 KB and which already
+  // has a 512-byte VLA of NimBLE's own below this frame (NimBLEServer.cpp's
+  // BLE_GATT_ACCESS_OP_WRITE_CHR case) before SdFat's write path is entered
+  // on top.
+  if (char* lastSlash = strrchr(finalPath_, '/'); lastSlash != nullptr && lastSlash != finalPath_) {
+    *lastSlash = '\0';
+    const bool dirReady = Storage.ensureDirectoryExists(finalPath_);
+    *lastSlash = '/';
+    if (!dirReady) {
+      refuse("mkdir failed");
+      return;
+    }
+  }
 
   // A leftover .part from an earlier killed transfer is not resumed -- the
   // whole file is coming again, from offset 0 (O_TRUNC does the rest).
@@ -940,9 +948,21 @@ void MapTransferReceiver::abandon(const char* reason) {
   // host task may be giving the same buffer back right now (the install hands
   // it over mid-way). takeManifestBuffer() settles that under the lock: one of
   // the two tasks gets the memory and wipes it, the other gets nothing.
-  if (walletIngest_) walletIngest_->reset();
+  // The big buffer first and outside the lock: it is up to 32 KB and the
+  // handover is what keeps the two tasks off each other's memory.
   dropManifestBuffer();
+  // **Then the wipes themselves under the lock**, because the host task frees
+  // these objects in clearSealers() and a bare `if (ptr) ptr->reset()` here is
+  // a test on one task and a delete on the other. Bounded on purpose: with the
+  // manifest's buffer already gone its reset() touches nothing, and the asset
+  // sealer's is a ~650-byte scratch, which is microseconds with interrupts
+  // off. Found in review, 2026-11-27 -- the round before this one guarded the
+  // write to these pointers and left the read bare, which is the same "a lock
+  // one side does not take" it was fixing.
+  portENTER_CRITICAL(&g_mux);
+  if (walletIngest_) walletIngest_->reset();
   if (manifestIngest_) manifestIngest_->reset();
+  portEXIT_CRITICAL(&g_mux);
 #endif
 
   if (reason == nullptr || endedElsewhere) return;

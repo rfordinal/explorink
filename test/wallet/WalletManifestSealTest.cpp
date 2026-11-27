@@ -544,6 +544,12 @@ TEST(WalletManifestSeal, PathSafetyRejectsEverySpellingOfOneName) {
   EXPECT_FALSE(safe("wallet/ 01/0123456789abcdef.dat"));
   EXPECT_FALSE(safe("wallet/ manifest.json"));
 
+  // The length is the contract. A caller passing a prefix of a longer buffer
+  // must be answered about the prefix, not about whatever follows it.
+  EXPECT_TRUE(maptransfer::relPathIsSafe("wallet/manifest.json/../../etc", 20));
+  EXPECT_FALSE(maptransfer::relPathIsSafe("wallet/manifest.json ", 21));
+  EXPECT_FALSE(maptransfer::relPathIsSafe("ok/path/..xx", 10));
+
   // Charset: a backslash is an ordinary filename character to SdFat, so it
   // makes names that look like directories and are not; control bytes and
   // high-bit bytes are refused outright.
