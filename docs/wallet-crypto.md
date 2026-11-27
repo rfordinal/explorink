@@ -560,9 +560,38 @@ whole-file CRC read-back it removes costs about what the AES and the SHA-256 it
 adds cost. The Wi-Fi figure the plan asked for could not be taken -- the Wi-Fi
 upload path does not reach this code at all (see above).
 
-### The manifest sealer, measured on both chip families, 2026-11-27
+### The whole manifest suite, re-run at the branch tip, 2026-11-27
 
-T-2096, commit `8b20eceb`. Both boards provisioned with a known K over
+`32f57693`, after five review rounds. The measurement below was taken at
+`8b20eceb` -- the second commit of fifteen -- and everything after it changed
+the path the manifest takes, including how `wallet/manifest.json` is routed at
+all. A measurement is only valid against the state it was taken against, so the
+scenarios were run again on the tip rather than carried forward.
+
+**W27-W43 on an X3 (`env:default`, C3), W27, W30, W31, W37, W39, W40, W43 on an
+X4 Pro (`env:x4pro`, S3).** All pass. The two that only one chip can answer:
+the format's 32,726-byte manifest installs on the S3 and lands at exactly
+32,768 bytes; the C3 refuses it long before, which is why W31 names the S3.
+
+What the hostile pushes answered, at the tip, on both boards: `wallet`,
+`wallet/manifest.enc`, `wallet/manifest.bak`, `wallet/manifest.bak/<id>.dat`,
+`wallet/MANIFE~1.JSO` and `wallet/<shard>/x.dat` all answer
+`ERR not a wallet file`; ` wallet/<shard>/<id>.dat` answers `ERR bad path`;
+and the wallet directory afterwards holds only its asset shards. A locked board
+answers `ERR wallet locked` and writes nothing.
+
+**One number worth watching rather than filing.** The S3's NimBLE host task
+reported **424 bytes free** of its 4 KB stack after an asset push at the tip
+(`488` after a manifest). That is positive and it is thin. It is **not**
+comparable with the `1044` the C3 reported in the same run -- different chip,
+different build -- and no pre-change S3 figure was taken, so this is a baseline
+rather than a delta. T-2104's pass should take the before and after properly.
+
+### The manifest sealer, first measured 2026-11-27 at commit two of fifteen
+
+Kept because it is the only byte-level proof of the envelope and it has not
+been invalidated -- the format did not change after it. T-2096, commit
+`8b20eceb`. Both boards provisioned with a known K over
 `CMD:WALLETPROVISION`, a **plaintext** tree pushed over BLE, and the sealed
 manifest pulled back to the laptop and decrypted there -- the proof is a byte
 comparison, not a look at the panel.
