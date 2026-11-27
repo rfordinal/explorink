@@ -15,7 +15,9 @@
 //
 //   1. write    `manifest.enc.part`   -- nothing live is touched yet
 //   2. verify    that file, with the read path itself (Store, not a second
-//                opinion): envelope, GCM tag, JSON, formatVersion, one item
+//                opinion): envelope, GCM tag, JSON, formatVersion. **Not the
+//                item count** -- an empty list is what a rider who deleted
+//                their last document syncs
 //   3. rename   `manifest.enc` -> `manifest.bak`
 //   4. rename   `manifest.enc.part` -> `manifest.enc`
 //   5. delete    a stale cleartext `manifest.json`, if the card still has one
@@ -44,6 +46,7 @@ enum class ManifestInstallStatus : uint8_t {
   WriteFailed,  // the card refused the bytes, or took fewer than offered
   Unreadable,   // the written file did not open: card, or a sealer bug
   TooBig,       // it sealed and wrote, and this board had no memory to read it back
+  Locked,       // the wallet locked between the seal and the read-back
   SwapFailed,   // a rename the card refused -- the previous list is still live
 };
 
@@ -66,8 +69,13 @@ const char* manifestInstallReason(ManifestInstallStatus status);
 ManifestInstallStatus writeSealedManifestPart(const uint8_t* sealed, size_t len);
 
 // Proves the part file opens with the read path, then swaps it in and deletes a
-// stale cleartext manifest. Needs the session key, because it decrypts; the
-// caller already holds it, since a locked wallet never gets as far as sealing.
+// stale cleartext manifest. Needs the session key, because it decrypts.
+//
+// **The key can go away between the seal and this call.** `Session::clear()`
+// runs on the main task -- the rider presses power, or `CMD:WALLETLOCK` -- while
+// this runs on the BLE host task, and the window is a 32 KB write plus a 32 KB
+// read. That is reported as its own status rather than as "unreadable": the
+// file is perfect and the phone must not be told to re-send it for ever.
 //
 // Every failure here leaves a card the read path can still open.
 ManifestInstallStatus finishManifestInstall();

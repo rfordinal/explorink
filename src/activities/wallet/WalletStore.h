@@ -83,7 +83,10 @@ bool treeIsEncrypted();
 bool readingBackupManifest();
 
 // Opens a sealed manifest file and answers whether this device can actually
-// read it: envelope, GCM tag, JSON, formatVersion, and at least one item.
+// read it: envelope, GCM tag, JSON, formatVersion. **Deliberately not the item
+// count**: a manifest naming no documents is what a rider who deleted their
+// last one syncs, and refusing it would leave the device showing a list the
+// phone no longer has.
 //
 // **The proof an install needs before it swaps.** The file is at most 32 KB and
 // the key is in hand, so the cheap check that the card now holds a readable list

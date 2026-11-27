@@ -454,6 +454,17 @@ void MapTransferReceiver::handleBegin(const uint8_t* body, size_t len) {
     // rather than as a second copy of the begin and completion tails that would
     // drift away from them.
   }
+  if (wallet::pathIsUnderWalletDir(finalPath_) && !wallet::pathIsWalletAsset(finalPath_) &&
+      !wallet::pathIsWalletManifest(finalPath_)) {
+    // Everything under the wallet directory is either sealed or refused, never
+    // stored as it arrived. `manifest.enc`, `manifest.bak` and FAT's own 8.3
+    // alias of `manifest.json` all land here (WalletAssetIngest.h,
+    // pathIsUnderWalletDir). Refused before the `.part` is opened, so the card
+    // is untouched.
+    LOG_ERR(kLogTag, "refusing a wallet path this device does not write: %s", finalPath_);
+    refuse("not a wallet file");
+    return;
+  }
   if (wallet::pathIsWalletAsset(finalPath_)) {
     // No key means a locked wallet, and a locked wallet gets a refusal rather
     // than a half-written document: storing the plaintext "for now" is the one
@@ -663,13 +674,20 @@ void MapTransferReceiver::handleChunk(const uint8_t* body, size_t len) {
             static_cast<unsigned>(manifestIngest_->sealedLen()));
     wallet::ManifestInstallStatus installed =
         wallet::writeSealedManifestPart(manifestIngest_->sealed(), manifestIngest_->sealedLen());
-    // **Dropped before the verify, not after.** The verification reads the file
-    // back off the card into a buffer of its own, and holding both at once
-    // doubles the peak -- which on a C3 with BLE up is the difference between
-    // an install and an `ERR manifest unreadable`. Measured on an X3,
+    // **The buffer is dropped before the verify, and the object is not.** The
+    // verification reads the file back off the card into a buffer of its own,
+    // and holding both at once doubles the peak -- which on a C3 with BLE up is
+    // the difference between an install and a refusal. Measured on an X3,
     // 2026-11-27: an 8,234-byte manifest sealed and wrote, then failed its own
     // verification with `OOM: 8234 bytes`.
-    manifestIngest_.reset();
+    //
+    // Destroying the object here instead is a use-after-free, and it was the
+    // first version of this line (review, 2026-11-27). `active_` is still true
+    // for everything below, so detach() on the activity task may be inside
+    // abandon() -- which tests this pointer, finds it non-null, and calls
+    // reset() on it. The object therefore lives until active_ is cleared, with
+    // the rest of the sealers, and only its memory goes back now.
+    manifestIngest_->releaseBuffer();
     if (installed == wallet::ManifestInstallStatus::Ok) installed = wallet::finishManifestInstall();
     if (!active_) return;
     if (installed != wallet::ManifestInstallStatus::Ok) {
@@ -750,8 +768,9 @@ void MapTransferReceiver::handleChunk(const uint8_t* body, size_t len) {
   // and a SHA-256 state, and the next push is usually a tile that needs
   // neither. Its destructor is also the last thing that wipes the scratch.
   walletIngest_.reset();
-  // Already reset above, on the manifest branch -- this is the backstop for a
-  // path that returned early past it.
+  // Freed here and not on the manifest branch above, for the reason written
+  // there: until `active_` is false, the activity task can still be inside
+  // abandon() holding this pointer. Its buffer is already gone by now.
   manifestIngest_.reset();
 #endif
   // Same lock resetCounters() zeroes these under (MapTransferReceiver.h,

@@ -63,6 +63,7 @@ enum class ManifestIngestStatus : uint8_t {
   Complete,     // sealed, and the sealed bytes are ready to be written
   TooBig,       // over the cap the read path enforces -- refused at begin
   NoBuffer,     // the caller's buffer is missing or too small for the seal
+  NotWired,     // a callback the sealer cannot work without was not supplied
   BadLength,    // a declared length that cannot be a manifest
   NotJson,      // the body is not a wallet manifest this firmware can read
   CrcMismatch,  // the bytes received are not the bytes the sender declared
@@ -83,6 +84,10 @@ inline const char* manifestIngestReason(ManifestIngestStatus status) {
       return "manifest too big";
     case ManifestIngestStatus::NoBuffer:
       return "oom";
+    case ManifestIngestStatus::NotWired:
+      // Not "oom": a phone told to retry an out-of-memory condition will, and
+      // no amount of retrying fixes a caller that forgot a callback.
+      return "sealer not wired";
     case ManifestIngestStatus::BadLength:
       return "manifest length";
     case ManifestIngestStatus::NotJson:
@@ -152,8 +157,19 @@ class ManifestIngest {
     active_ = false;
     sealedLen_ = 0;
     walletVersion_ = 0;
+    // A previous run's state, before any way out: `openingChecked_` left true
+    // would skip the `{` refusal for this transfer, and a buffer left behind
+    // would keep the previous manifest's titles in RAM past the point the
+    // caller believes it dropped them. Unreachable today (the receiver
+    // allocates a fresh object per transfer) and one line to keep it so.
+    openingChecked_ = false;
+    if (buffer_) {
+      secureWipe(buffer_.get(), bufferLen_);
+      buffer_.reset();
+    }
+    bufferLen_ = 0;
     if (cb.crc32 == nullptr || cb.inspect == nullptr || cb.random == nullptr || cb.seal == nullptr) {
-      return ManifestIngestStatus::NoBuffer;
+      return ManifestIngestStatus::NotWired;
     }
     if (totalLen == 0) return ManifestIngestStatus::BadLength;
     if (totalLen > kMaxManifestPlaintextBytes) return ManifestIngestStatus::TooBig;
@@ -228,6 +244,26 @@ class ManifestIngest {
     received_ = 0;
     openingChecked_ = false;
     if (buffer_) secureWipe(buffer_.get(), bufferLen_);
+  }
+
+  // Wipes the buffer and gives the memory back, **without destroying this
+  // object**. The install needs the 32 KB back before it reads the same file
+  // off the card, and the object has to outlive that: a transfer is only over
+  // once its caller clears `active_`, and until then the activity task may
+  // enter abandon() and call reset() on this pointer. Freeing the object there
+  // instead -- which is what the first version of this did -- is a
+  // use-after-free that writes up to 32 KB of zeros over the heap, found in
+  // review 2026-11-27.
+  void releaseBuffer() {
+    active_ = false;
+    sealedLen_ = 0;
+    received_ = 0;
+    openingChecked_ = false;
+    if (buffer_) {
+      secureWipe(buffer_.get(), bufferLen_);
+      buffer_.reset();
+    }
+    bufferLen_ = 0;
   }
 
   // A transfer killed mid-stream -- Back pressed, link dropped -- never reaches

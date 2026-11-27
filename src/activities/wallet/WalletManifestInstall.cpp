@@ -47,6 +47,8 @@ const char* manifestInstallReason(const ManifestInstallStatus status) {
       return "write failed";
     case ManifestInstallStatus::Unreadable:
       return "manifest unreadable";
+    case ManifestInstallStatus::Locked:
+      return "wallet locked";
     case ManifestInstallStatus::TooBig:
       // **Not "unreadable".** The file is fine; this board could not hold it
       // while reading it back. A phone told "unreadable" re-sends the same
@@ -76,10 +78,21 @@ ManifestInstallStatus finishManifestInstall() {
   // the card proves that.
   Error error = Error::None;
   if (!verifyEncryptedManifestFile(kManifestPartPath, error)) {
-    LOG_ERR(kLogTag, "the sealed manifest did not open (%s) -- keeping the old list",
-            error == Error::ManifestTooBig ? "no memory to read it back" : "unreadable");
+    // Three different facts, three different answers for the phone. "Too big"
+    // and "locked" are both true statements about this board rather than about
+    // the file, and a phone told "unreadable" re-sends the same bytes for ever.
+    ManifestInstallStatus status = ManifestInstallStatus::Unreadable;
+    const char* why = "unreadable";
+    if (error == Error::ManifestTooBig) {
+      status = ManifestInstallStatus::TooBig;
+      why = "no memory to read it back";
+    } else if (error == Error::Locked) {
+      status = ManifestInstallStatus::Locked;
+      why = "the wallet locked while it was being written";
+    }
+    LOG_ERR(kLogTag, "the sealed manifest did not open (%s) -- keeping the old list", why);
     Storage.remove(kManifestPartPath);
-    return error == Error::ManifestTooBig ? ManifestInstallStatus::TooBig : ManifestInstallStatus::Unreadable;
+    return status;
   }
 
   // From here the card is being changed. Every failure below leaves a state the

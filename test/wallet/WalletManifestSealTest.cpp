@@ -419,4 +419,123 @@ TEST(WalletManifestSeal, ManifestPathGateFoldsCase) {
   EXPECT_TRUE(wallet::pathIsWalletAsset("/explorink/wallet/ab/0123456789abcdef.dat"));
 }
 
+// **Everything under the wallet directory is sealed or refused, never stored as
+// it arrived.** The two name gates cannot be the whole defence, because FAT
+// gives one file more than one name: SdFat writes an 8.3 alias for any name
+// that is not 8.3 and its open() matches a query spelled with that alias
+// against the same directory entry, so `MANIFE~1.JSO` IS `manifest.json` on the
+// card and is not `manifest.json` to a name gate.
+TEST(WalletManifestSeal, EverythingElseUnderTheWalletDirIsRefused) {
+  // What the receiver computes: in the wallet directory, and neither gate
+  // claims it.
+  const auto refused = [](const char* path) {
+    return wallet::pathIsUnderWalletDir(path) && !wallet::pathIsWalletAsset(path) &&
+           !wallet::pathIsWalletManifest(path);
+  };
+
+  // FAT's own alias for manifest.json. Writing here deletes and replaces the
+  // real list, with no key and nothing but BLE range.
+  EXPECT_TRUE(refused("/explorink/wallet/MANIFE~1.JSO"));
+  // The device's own outputs. `manifest.bak` is the half-swap survivor, so junk
+  // written over it destroys the only list a half-installed card has; a
+  // `manifest.bak` on a CLEARTEXT card also flips treeIsEncrypted() and sends
+  // the rider to an unlock screen for a wallet that has no wrap.
+  EXPECT_TRUE(refused("/explorink/wallet/manifest.bak"));
+  EXPECT_TRUE(refused("/explorink/wallet/manifest.enc"));
+  EXPECT_TRUE(refused("/explorink/wallet/manifest.enc.part"));
+  EXPECT_TRUE(refused("/explorink/wallet/MANIFEST.BAK"));
+  // A sidecar: the format writes these for cleartext trees only and this
+  // firmware never reads one, so a device that seals its own tree has no use
+  // for them either.
+  EXPECT_TRUE(refused("/explorink/wallet/ab/0123456789abcdef.rle"));
+  EXPECT_TRUE(refused("/explorink/wallet/anything"));
+
+  // And the two legitimate shapes are not refused.
+  EXPECT_FALSE(refused("/explorink/wallet/manifest.json"));
+  EXPECT_FALSE(refused("/explorink/wallet/MANIFEST.JSON"));
+  EXPECT_FALSE(refused("/explorink/wallet/ab/0123456789abcdef.dat"));
+  // Nor is anything outside the directory -- a tile must still take the plain
+  // path.
+  EXPECT_FALSE(refused("/explorink/base/13/4482/2789.tib"));
+  EXPECT_FALSE(refused("/explorink/walletish/manifest.bak"));
+  EXPECT_FALSE(wallet::pathIsUnderWalletDir("/explorink/wallet"));
+  EXPECT_FALSE(wallet::pathIsUnderWalletDir(nullptr));
+}
+
+// A callback the sealer cannot work without is a programming error, and a phone
+// told "oom" retries a condition retrying cannot fix.
+TEST(WalletManifestSeal, MissingCallbacksAreNotReportedAsOom) {
+  wallet::ManifestIngest ingest;
+  wallet::ManifestIngest::Callbacks cb;  // all null
+  EXPECT_EQ(ingest.begin(100, 0, std::unique_ptr<uint8_t[]>(new uint8_t[512]), 512, cb),
+            wallet::ManifestIngestStatus::NotWired);
+  EXPECT_STREQ(wallet::manifestIngestReason(wallet::ManifestIngestStatus::NotWired), "sealer not wired");
+  EXPECT_STRNE(wallet::manifestIngestReason(wallet::ManifestIngestStatus::NotWired), "oom");
+}
+
+// The install gives the card its memory back before it reads the file off the
+// card, and the object has to survive that -- the transfer is not over until
+// its caller says so, and until then another task may still call reset() on it.
+TEST(WalletManifestSeal, ReleaseBufferKeepsTheObjectUsable) {
+  const std::string json = kManifest;
+  NonceSource nonces;
+  wallet::ManifestIngest ingest;
+  wallet::ManifestIngest::Callbacks cb;
+  cb.crc32 = crc32Bitwise;
+  cb.inspect = hostInspect;
+  cb.random = countingRandom;
+  cb.randomCtx = &nonces;
+  cb.seal = hostSeal;
+  cb.sealCtx = const_cast<uint8_t*>(kKey);
+  const size_t want = wallet::sealedManifestLen(json.size());
+  ASSERT_EQ(ingest.begin(static_cast<uint32_t>(json.size()), crcOf(json), std::unique_ptr<uint8_t[]>(new uint8_t[want]),
+                         want, cb),
+            wallet::ManifestIngestStatus::Ok);
+  ASSERT_EQ(ingest.feed(reinterpret_cast<const uint8_t*>(json.data()), json.size()),
+            wallet::ManifestIngestStatus::Complete);
+  ASSERT_NE(ingest.sealed(), nullptr);
+
+  ingest.releaseBuffer();
+  EXPECT_EQ(ingest.sealed(), nullptr);
+  EXPECT_EQ(ingest.sealedLen(), 0u);
+  EXPECT_FALSE(ingest.active());
+  // The calls another task can still make on it, after the memory is gone.
+  ingest.reset();
+  EXPECT_EQ(ingest.feed(reinterpret_cast<const uint8_t*>("{"), 1), wallet::ManifestIngestStatus::NotActive);
+}
+
+// A reused instance must not inherit the previous transfer's state: the `{`
+// refusal would be skipped, and the previous manifest's titles would still be
+// in RAM.
+TEST(WalletManifestSeal, BeginDropsThePreviousRunsBufferAndFlags) {
+  NonceSource nonces;
+  wallet::ManifestIngest ingest;
+  wallet::ManifestIngest::Callbacks cb;
+  cb.crc32 = crc32Bitwise;
+  cb.inspect = hostInspect;
+  cb.random = countingRandom;
+  cb.randomCtx = &nonces;
+  cb.seal = hostSeal;
+  cb.sealCtx = const_cast<uint8_t*>(kKey);
+
+  const std::string json = kManifest;
+  const size_t want = wallet::sealedManifestLen(json.size());
+  ASSERT_EQ(ingest.begin(static_cast<uint32_t>(json.size()), crcOf(json), std::unique_ptr<uint8_t[]>(new uint8_t[want]),
+                         want, cb),
+            wallet::ManifestIngestStatus::Ok);
+  // One chunk in -- `openingChecked_` is now set and the buffer holds titles --
+  // and then the transfer dies without a terminal feed().
+  ASSERT_EQ(ingest.feed(reinterpret_cast<const uint8_t*>(json.data()), 40), wallet::ManifestIngestStatus::Ok);
+
+  // The next transfer is not JSON. It has to be refused on its first chunk,
+  // which only happens if begin() cleared the flag.
+  const std::string notJson = "MTIL not a list at all";
+  const size_t want2 = wallet::sealedManifestLen(notJson.size());
+  ASSERT_EQ(ingest.begin(static_cast<uint32_t>(notJson.size()), crcOf(notJson),
+                         std::unique_ptr<uint8_t[]>(new uint8_t[want2]), want2, cb),
+            wallet::ManifestIngestStatus::Ok);
+  EXPECT_EQ(ingest.feed(reinterpret_cast<const uint8_t*>(notJson.data()), notJson.size()),
+            wallet::ManifestIngestStatus::NotJson);
+}
+
 }  // namespace

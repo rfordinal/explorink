@@ -148,6 +148,12 @@ const char* encryptedManifestPath(bool* usingBackup) {
 // the caller (it carries StreamingJsonParser's 512-byte token buffer, which has
 // no business on the main task's stack).
 bool feedManifest(ManifestParser& parser, Error& error) {
+  // **Cleared by every read, not only by the one that can set it.** It used to
+  // be written only inside the encrypted branch below, so a card that stopped
+  // being encrypted -- or any later read of a cleartext tree -- kept the last
+  // answer and the browse screen said "Previous list, last sync unfinished"
+  // about a perfectly good wallet. Found in review, 2026-11-27.
+  g_usingBackup = false;
   if (treeIsEncrypted()) {
     const char* path = encryptedManifestPath(&g_usingBackup);
     if (path == nullptr) {
