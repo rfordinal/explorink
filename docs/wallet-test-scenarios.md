@@ -82,6 +82,32 @@ Build a cleartext tree with `tools/walletgen.py` (no `--key`) and push it with
 | W21 | Push an asset that already carries the encrypted flag | Refused | It was sealed under a key this board does not have |
 | W22 | Push a map tile | Unchanged behaviour, read-back CRC included | **Regression.** The tile path must not notice the wallet exists |
 
+## CM. The manifest: the device seals the list (T-2096)
+
+The list is pushed as **plaintext** `wallet/manifest.json`; the device seals it
+and installs it as `manifest.enc`. Nothing is ever written at the name it
+arrived under.
+
+| # | Scenario | Expected | Why it is here |
+|---|---|---|---|
+| W27 | Push a plaintext manifest to an unlocked board | `OK`, and the card holds `manifest.enc` and no `manifest.json` | The rung. An encrypted tree carries no cleartext list |
+| W28 | Pull `manifest.enc` off the card and decrypt it with K | Byte-identical to the JSON that was sent; container v2, `walletVersion` in the clear matching the JSON | The only proof the envelope is the format's and not this device's own idea of it |
+| W29 | Push the same manifest twice, compare the two files | Different bytes | A fresh nonce per write. One key and one nonce over two plaintexts breaks GCM outright |
+| W30 | Push a manifest of 32,727 bytes | `ERR manifest too big`, refused at `begin`, no bytes sent | One byte over the cap the read path enforces. A sealer that accepted it would write a list this same board can never open |
+| W31 | Push a manifest of exactly 32,726 bytes **on an S3** | Installs, and the file is exactly 32,768 bytes | The other end of the same cap. **C3 cannot reach it** -- an X3 with BLE up installs 20,480 and answers `ERR oom` at 22,528, which is a refusal and not a loss |
+| W32 | Delete `manifest.enc` over the web server, leaving only `manifest.bak`, then browse | The documents are listed, and the panel says "Previous list, last sync unfinished" | The half-swap survivor. A FAT rename is not atomic, so this is the state a power cut between the two renames leaves |
+| W33 | Sync once more after W32 | The line goes away, `manifest.enc` is back | The card repairs itself on the next completed install |
+| W34 | Lock the wallet, push a manifest | `ERR wallet locked`, nothing on the card | Same rule as an asset: sealed, or not stored |
+| W35 | Push a body that is not JSON | `ERR not a manifest` on the **first chunk** | The cheapest refusal there is, and it must not wait for the whole body |
+| W36 | Push a manifest whose `formatVersion` this firmware does not know | `ERR not a manifest`, previous list still live | The inspection uses the read path's own parser, so a body that seals is a body that opens |
+| W37 | Push `wallet/manifest.enc` or `wallet/manifest.bak` directly | `ERR not a wallet file` | **Regression, 2026-11-27.** The device's own outputs are not writable from the wire; the backup is the only list a half-installed card has |
+| W38 | Push `wallet/MANIFE~1.JSO` | `ERR not a wallet file` | **Regression.** FAT's 8.3 alias is the same directory entry as `manifest.json` and a different string to a name gate |
+| W39 | Push ` wallet/<shard>/<id>.dat` (leading space) | `ERR bad path`, and the sealed asset of that name is untouched | **Regression.** SdFat strips leading spaces, so this is one more spelling of one file. It replaced a sealed document with plaintext on a build without the check |
+| W40 | Push `wallet/manifest.bak/<id>.dat`, then list the wallet directory | `ERR not a wallet file` and **no new directory** | **Regression.** The gate must run before the directory creation, and must check the whole path shape -- a directory named `manifest.bak` can never be deleted by this firmware |
+| W41 | Push the bare path `wallet` | `ERR not a wallet file` | **Regression.** A regular file there and the wallet can never exist on that card |
+| W42 | Push `wallet/<shard>/x.dat` (not 16 hex), or a shard that disagrees with the id | `ERR not a wallet file` | The accepted shape is the only one the read path can open |
+| W43 | Push `wallet/<SHARD>/<ID>.DAT` in upper case, then list the shard directory | Exactly one file, named in lower case, sealed | **The request is parsed and the path is rebuilt.** The sender's spelling is a lookup key; the card path comes from sixteen validated hex characters and firmware constants, so no spelling can produce a second entry or a different file |
+
 ## D. Reading (T-2094 and earlier)
 
 | # | Scenario | Expected | Why it is here |

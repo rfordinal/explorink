@@ -268,6 +268,58 @@ inline bool parseManifestEnvelope(const uint8_t* bytes, size_t fileLen, Manifest
   return true;
 }
 
+// Builds the 26-byte v2 envelope a sealed manifest starts with. The mirror of
+// parseManifestEnvelope() above, and the reason it is here rather than next to
+// the mbedtls call: the two halves of one layout belong in one file, where a
+// field moved on one side is visibly not moved on the other.
+//
+// **The device is now a second writer of this format**, after the generator
+// (`tools/walletgen.py`, `encrypt_manifest`) and the phone. Nothing about the
+// layout changes for that -- parent repo docs/wallet-format.md section 11 is the
+// contract and it was not reopened (T-2096).
+//
+// `flags` is written 0: no bit is defined for this envelope, and a reader is
+// told to ignore unknown ones. `walletVersion` sits **outside the tag** on
+// purpose, so a locked card can still be asked which version it holds; 0 means
+// "this card does not say", which costs the phone a resend and never a wrong
+// sync.
+inline bool buildManifestEnvelope(const uint8_t nonce[kGcmNonceLen], uint32_t plaintextLen, uint32_t walletVersion,
+                                  uint8_t* out, size_t outLen) {
+  if (nonce == nullptr || out == nullptr || outLen < kManifestEnvelopeLen) return false;
+  // A zero-length manifest is refused rather than sealed: parseManifestEnvelope()
+  // refuses to open one, so writing it would be writing a file this device
+  // cannot read -- the exact failure T-2096 exists to design against.
+  if (plaintextLen == 0) return false;
+  std::memcpy(out, kManifestMagic, sizeof(kManifestMagic));
+  out[4] = kManifestEncVersion;
+  out[5] = 0;
+  std::memcpy(out + 6, nonce, kGcmNonceLen);
+  writeLe32(out + 18, plaintextLen);
+  writeLe32(out + 22, walletVersion);
+  return true;
+}
+
+// The sealed size of a manifest of `plaintextLen` bytes: envelope, ciphertext
+// (GCM is a stream cipher, so ciphertext length == plaintext length), tag.
+//
+// Exists so the **one** place that decides whether a manifest may be accepted
+// at all computes the same number the read path will later measure off the
+// card, instead of a comment claiming they agree.
+inline constexpr size_t sealedManifestLen(const size_t plaintextLen) {
+  return kManifestEnvelopeLen + plaintextLen + kGcmTagLen;
+}
+
+// The largest plaintext this device may seal, which is derived from the cap the
+// read path enforces rather than chosen next to it.
+//
+// **This is the whole size trap of T-2096.** mbedtls can stream a GCM seal, so a
+// sealer written from the wire would happily write a manifest of any size -- and
+// the same device then refuses to read anything above kMaxEncryptedManifestBytes.
+// That is a wallet written successfully and never openable again on the board
+// that wrote it. So the plaintext is buffered, bounded by this, and refused
+// before a byte is taken.
+inline constexpr size_t kMaxManifestPlaintextBytes = kMaxEncryptedManifestBytes - kManifestEnvelopeLen - kGcmTagLen;
+
 // ---------------------------------------------------------------------------
 // The unlock pattern
 // ---------------------------------------------------------------------------

@@ -23,7 +23,16 @@ inline constexpr const char* kManifestPath = "/explorink/wallet/manifest.json";
 // The encrypted tree's manifest, and its one backup. A tree is either fully
 // encrypted or fully cleartext, never mixed, and which one it is, is stated by
 // which of these two files exists (parent repo docs/wallet-format.md, section 3).
+//
+// **The backup has a reader since T-2096**, and it is the reason the swap can
+// promise "the old list or the new one, never a half": a FAT rename is not
+// atomic, so an install is two of them, and `manifest.bak` is what a power cut
+// between them leaves behind (WalletStore.cpp, encryptedManifestPath()).
 inline constexpr const char* kManifestBakPath = "/explorink/wallet/manifest.bak";
+// Where a sealed manifest is built before it is swapped in. Never read by the
+// browse path: an interrupted write leaves a `.part` that is truncated or
+// unsealed, and the next install truncates it again.
+inline constexpr const char* kManifestPartPath = "/explorink/wallet/manifest.enc.part";
 // Bumped when the on-card layout changes shape. A manifest from the future is
 // refused with a message, never half-read.
 inline constexpr uint32_t kSupportedFormatVersion = 1;
@@ -61,11 +70,30 @@ const char* errorText(Error error);
 // constant (WalletAsset.h, PanelGeometry).
 PanelGeometry livePanel(const GfxRenderer& renderer);
 
-// True when the card carries an encrypted tree, i.e. `manifest.enc` exists. Asked
-// before anything else, because an encrypted tree needs the key first and a
-// cleartext one must keep working exactly as it did (a card in the field may be
-// either).
+// True when the card carries an encrypted tree -- `manifest.enc` or, when an
+// install was cut in half, `manifest.bak`. Asked before anything else, because
+// an encrypted tree needs the key first and a cleartext one must keep working
+// exactly as it did (a card in the field may be either).
 bool treeIsEncrypted();
+
+// True when the list last read came from `manifest.bak` instead of
+// `manifest.enc` -- an install that was cut between its two renames. The browse
+// screen says so on the panel: a rider shown a list that is one sync old has to
+// be told, and the next completed sync clears it by itself.
+bool readingBackupManifest();
+
+// Opens a sealed manifest file and answers whether this device can actually
+// read it: envelope, GCM tag, JSON, formatVersion. **Deliberately not the item
+// count**: a manifest naming no documents is what a rider who deleted their
+// last one syncs, and refusing it would leave the device showing a list the
+// phone no longer has.
+//
+// **The proof an install needs before it swaps.** The file is at most 32 KB and
+// the key is in hand, so the cheap check that the card now holds a readable list
+// is available -- and nothing else gives it. Read-only, like everything else in
+// this file: the writing and the renaming live in WalletManifestInstall
+// (T-2096).
+bool verifyEncryptedManifestFile(const char* path, Error& error);
 
 // Walks /explorink/wallet's shard directories and counts the assets whose 32-byte
 // header parses, plus how many of those are machine codes. No key needed and no

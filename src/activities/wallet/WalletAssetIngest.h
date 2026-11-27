@@ -446,14 +446,118 @@ inline bool asciiEqualFold(const char* a, const char* b, size_t len) {
 // same way for the directory prefix and the extension; `relPathIsSafe()`
 // (MapTransferReceiver) rejects the other spellings of one name -- a `.`
 // component, and a component FAT would strip a trailing dot or space from.
+// Lower-cases one hex character. The id a path names and the id the read path
+// builds a filename from have to be the same string, and `buildAssetPath()`
+// emits whatever it is handed -- so the fold happens here, once.
+inline char hexFold(char c) { return (c >= 'A' && c <= 'F') ? static_cast<char>(c - 'A' + 'a') : c; }
+
+// --- The wallet's half of "what is this request for?" -----------------------
+//
+// **These parse a RELATIVE path into what it asks for. They do not build a
+// destination, and nothing downstream may use the sender's bytes to address
+// the card.** The caller takes the answer and rebuilds the path itself from
+// `buildAssetPath()` and from constants (MapTransferReceiver::handleBegin).
+//
+// That inversion is the point. Four review rounds each found one more string
+// that a gate read as one file and SdFat opened as another -- a folded case, a
+// `~1` short name, a leading space, a directory component nobody looked at.
+// Each was patched as a better comparison, and a comparison between our
+// normalisation and the filesystem's is a fixed point we cannot reach by
+// inspection: the rules live in a pinned dependency, they have a second
+// implementation for exFAT, and the string a gate answers about is not
+// necessarily the string that later gets opened.
+//
+// So the sender's spelling stops being an address and becomes a **lookup key**.
+// Whatever it writes, a wallet asset lands at
+// `/explorink/wallet/<id[0:2]>/<id>.dat` built out of sixteen validated hex
+// characters, and the manifest lands at a constant. An alias of a path we
+// never hand to the filesystem is not reachable. 2026-11-27.
+//
+// What this does **not** do: a path that does not parse as a wallet request is
+// still written where the sender spelled it, so a spelling that aliases *into*
+// the wallet directory without naming it is still held off by
+// `relPathIsSafe()` alone. Ending that needs every transfer kind to be parsed
+// and rebuilt the same way -- T-2105.
+
+// `wallet/<2 hex>/<16 hex>.dat`, case-insensitively, with the shard matching
+// the id. Fills `outId` with the lower-case id on success.
+inline bool parseWalletAssetRelPath(const char* rel, char* outId, size_t outLen) {
+  if (rel == nullptr || outId == nullptr || outLen < kAssetIdBufBytes) return false;
+  const char* kPrefix = "wallet/";
+  const size_t prefixLen = std::strlen(kPrefix);
+  const size_t want = prefixLen + 2 + 1 + kAssetIdLen + 4;
+  if (std::strlen(rel) != want) return false;
+  if (!asciiEqualFold(rel, kPrefix, prefixLen)) return false;
+  const char* at = rel + prefixLen;
+  if (!isHexDigit(at[0]) || !isHexDigit(at[1])) return false;
+  const char* shard = at;
+  at += 2;
+  if (*at++ != '/') return false;
+  for (size_t i = 0; i < kAssetIdLen; ++i) {
+    if (!isHexDigit(at[i])) return false;
+    outId[i] = hexFold(at[i]);
+  }
+  outId[kAssetIdLen] = '\0';
+  // The shard is the first two characters of the id, so a request whose
+  // directory disagrees with its own name is not one this device ever wrote.
+  if (hexFold(shard[0]) != outId[0] || hexFold(shard[1]) != outId[1]) return false;
+  return asciiEqualFold(at + kAssetIdLen, ".dat", 4);
+}
+
+// `wallet/manifest.json`, case-insensitively.
+inline bool parseWalletManifestRelPath(const char* rel) {
+  if (rel == nullptr) return false;
+  const char* kName = "wallet/manifest.json";
+  const size_t len = std::strlen(kName);
+  if (std::strlen(rel) != len) return false;
+  return asciiEqualFold(rel, kName, len);
+}
+
+// Anything at all under `wallet/`, or the directory itself. What this claims
+// and the two parsers above refuse is what gets refused outright.
+inline bool relPathTouchesWalletDir(const char* rel) {
+  if (rel == nullptr) return false;
+  const char* kDir = "wallet";
+  const size_t dirLen = std::strlen(kDir);
+  const size_t len = std::strlen(rel);
+  if (len < dirLen) return false;
+  if (!asciiEqualFold(rel, kDir, dirLen)) return false;
+  if (len == dirLen) return true;
+  return rel[dirLen] == '/';
+}
+
 inline bool pathIsWalletAsset(const char* fullPath) {
   if (fullPath == nullptr) return false;
   const size_t dirLen = std::strlen(kWalletDir);
-  const size_t len = std::strlen(fullPath);
-  if (len < dirLen + 1 + 4) return false;
+  // **The whole shape, not a prefix and a suffix.** Checking only
+  // `<walletdir>/` and `.dat` left everything between them to the sender, so
+  // `wallet/manifest.bak/x.dat` was a wallet asset as far as this gate was
+  // concerned -- it passed the whitelist, and the directory creation that runs
+  // next made `manifest.bak` a **directory**. `Storage.exists()` is true for
+  // one and `Storage.remove()` cannot delete one, so every later sync answered
+  // `ERR swap failed` for ever with nothing in the firmware able to undo it.
+  // The gate authorised the leaf while the mkdir acted on the parents. Found in
+  // review, 2026-11-27.
+  //
+  // The shape below is the only one `buildAssetPathIn()` writes and the only
+  // one the read path can open, so nothing legitimate is refused by being
+  // exact: `<walletdir>/<2 hex>/<16 hex>.dat`.
+  const size_t want = dirLen + 1 + 2 + 1 + kAssetIdLen + 4;
+  if (std::strlen(fullPath) != want) return false;
   if (!asciiEqualFold(fullPath, kWalletDir, dirLen)) return false;
-  if (fullPath[dirLen] != '/') return false;
-  return asciiEqualFold(fullPath + len - 4, ".dat", 4);
+  const char* at = fullPath + dirLen;
+  if (*at++ != '/') return false;
+  if (!isHexDigit(at[0]) || !isHexDigit(at[1])) return false;
+  // The shard directory is the first two characters of the id, so a name that
+  // disagrees with its own shard is not a path this device ever wrote.
+  const char* shard = at;
+  at += 2;
+  if (*at++ != '/') return false;
+  for (size_t i = 0; i < kAssetIdLen; ++i) {
+    if (!isHexDigit(at[i])) return false;
+  }
+  if (asciiUpper(at[0]) != asciiUpper(shard[0]) || asciiUpper(at[1]) != asciiUpper(shard[1])) return false;
+  return asciiEqualFold(at + kAssetIdLen, ".dat", 4);
 }
 
 }  // namespace wallet

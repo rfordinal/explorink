@@ -177,7 +177,9 @@ pushed to it was refused -- `manifest panel x4 800x480/48000, device
 panels. That is the manifest's panel gate doing its job: one asset set per
 wallet, so a set cut for another screen is refused whole
 (`WalletAsset.h`, `panelMatches()`). A `PanelProfile("t5s3", 960, 540)` row in
-the generator was the whole fix, and the same chain then ran on that board too:
+the generator was the whole fix -- **and it is stranded on the parent repo's
+`wallet-cardroot` branch**, which `wallet` does not have (checked 2026-11-27).
+The same chain then ran on that board too:
 BLE push, PIN screen, list, page at 960x540. The manifest had already decrypted
 there before the fix, so the GCM half was verified on both boards either way.
 
@@ -264,11 +266,164 @@ the header:
 sender cannot ask for a document to be stored in the clear by clearing a bit, and
 cannot turn a map tile into a wallet asset by setting one.
 
-**No manifest is involved**, because the manifest is its own transfer and its own
-task (T-2096). That is why ingest does not call `checkAssetForPanel()`: a page
-image's stride normally comes from the manifest, so here it is derived from the
-file's own `rawLen / height` instead. The gate refuses nothing it cannot actually
-prove wrong.
+**No manifest is involved in an asset's gates**, because the manifest is its own
+transfer. That is why ingest does not call `checkAssetForPanel()`: a page image's
+stride normally comes from the manifest, so here it is derived from the file's own
+`rawLen / height` instead. The gate refuses nothing it cannot actually prove wrong.
+
+The manifest's own refusals (T-2096), decided the same way -- at `begin` wherever
+the begin frame carries enough to decide, and nothing is written to the card until
+every one of them has passed:
+
+| refusal | why |
+|---|---|
+| `ERR wallet locked` | no session key. The list is sealed or it is not stored |
+| `ERR manifest too big` | over `kMaxManifestPlaintextBytes`, i.e. it would seal above the cap the read path enforces. **At `begin`**, off the declared length, so it costs no bytes on the wire -- and this string means only that. The board running out of heap is `ERR oom`, wherever it happens |
+| `ERR oom` | no heap for the manifest -- at `begin` for the arriving copy, or at the end for the buffer the verification reads it back into. On a C3 with BLE up the second one is the common case long before the format's cap is reached |
+| `ERR not a manifest` | the first non-blank byte is not `{`, or `ManifestParser` could not read it as a manifest of a `formatVersion` this firmware knows |
+| `ERR crc mismatch` | the bytes received are not the bytes the sender declared |
+| `ERR manifest unreadable` | the sealed file did not open off the card. The previous list stays live and the `.part` is deleted |
+| `ERR wallet locked` (at the end) | the wallet locked between the seal and the read-back -- `Session::clear()` runs on the main task against a window of a 32 KB write plus a 32 KB read. The file was perfect; saying "unreadable" would have the phone re-send it for ever |
+| `ERR write failed` | the card refused the sealed bytes, or took fewer than were offered. The `.part` is deleted and the previous list stays live |
+| `ERR swap failed` | the card refused a rename. Either the previous list or the new one is live, never a half |
+| `ERR not a wallet file` | a path under the wallet directory that this device does not write. See the section below |
+
+`wallet/manifest.json` is matched case-insensitively, exactly as the asset gate
+is and for the same reason: SdFat compares names folded, so an exact-case gate
+would let `MANIFEST.JSON` through as an ordinary file and leave a cleartext index
+of every document title on the card.
+
+### Under the wallet directory: sealed, or refused. Never stored as it arrived
+
+**Two name gates are not a defence on their own, because FAT gives one file more
+than one name.** SdFat builds an 8.3 alias for every name that is not already
+8.3 -- `lfnParse()` sets `FNAME_FLAG_LOST_CHARS` and writes `~1` at `seqPos`
+(`FatLib/FatFileLFN.cpp`) -- and `open()` matches a query spelled with that alias
+against the same directory entry, through the plain-SFN `memcmp` branch. So
+`wallet/MANIFE~1.JSO` **is** `wallet/manifest.json` on the card, and is not
+`manifest.json` to any gate that compares names.
+
+Found in review, 2026-11-27, and it was not theoretical: that path passes
+`relPathIsSafe()` (a `~` is printable ASCII), misses both wallet gates, takes the
+ordinary tile path, and at completion `Storage.exists()` resolves to the real
+list, `remove()` deletes it and `rename()` puts the sender's bytes under a name
+nothing will look up again. No key, no pairing, BLE range.
+
+`manifest.enc` and `manifest.bak` needed no alias at all. And since the backup
+became the half-swap survivor, junk written over it destroys the only list a
+half-installed card has -- while on a **cleartext** card a pushed `manifest.bak`
+flips `treeIsEncrypted()` and sends the rider to an unlock screen for a wallet
+that has no wrap.
+
+So the receiver refuses, at `begin`, **anything under `/explorink/wallet` that is
+neither a `.dat` asset nor `manifest.json`** (`pathIsUnderWalletDir()`,
+`WalletAssetIngest.h`). A name nobody can seal is a name nobody can leave in the
+clear either. Nothing legitimate is lost: an encrypted tree has no `.rle`
+sidecars by definition, and this firmware never reads one anyway.
+
+**A leading space was the third spelling, and it beat all of this.** SdFat's
+`FatFile::parsePathName()` opens with `while (*path == ' ') path++;` for every
+component, so ` wallet/ab/<id>.dat` is the same directory entry as
+`wallet/ab/<id>.dat` -- and a different string to every gate here, all of which
+compare names. It passed the path check (a space is printable), missed the
+whitelist, took the ordinary file path, and its completion deleted the sealed
+document and renamed the sender's bytes over it, with `kFlagEncrypted` clear.
+Found in a third review round, 2026-11-27.
+
+The fix is in the path check, not in the gates: **one file has to have one
+spelling before a name comparison means anything.** `relPathIsSafe()` now
+rejects a component that begins with a space as well as one that ends in a
+space or a dot, and it moved to `src/activities/map/MapTransferPath.h` so it
+can be host-tested -- it had no test at all, which is why two of the three
+spellings got past it.
+
+**The shape is checked whole, not as a prefix and a suffix.** `wallet/<x>/x.dat`
+with any `<x>` used to be a wallet asset, so `wallet/manifest.bak/x.dat` passed
+the whitelist and the directory creation made `manifest.bak` a directory again
+-- the gate authorised the leaf, the mkdir acted on the parents. The accepted
+shape is `<walletdir>/<2 hex>/<16 hex>.dat` with the shard matching the id,
+which is the only shape `buildAssetPathIn()` writes, plus `manifest.json`, plus
+nothing. The wallet directory node itself is refused too: a push of the bare
+path `wallet` would make a regular file where the directory has to be, and the
+wallet could then never exist on that card.
+
+### The sender's spelling is a lookup key, not an address
+
+**This is the answer to the four rounds above, and it is a different shape from
+all of them.** Each of those was an attempt to make a gate's idea of what a
+path means equal SdFat's idea of it. That is a fixed point you cannot reach by
+inspection: the rules live in a pinned dependency (`FatLib/FatFileLFN.cpp`),
+there is a second implementation for exFAT, and the string a gate answers about
+is not necessarily the string that later gets opened.
+
+So the wallet stopped comparing and started parsing. A begin frame's relative
+path is read as a **request**, not as a destination:
+
+- `wallet/<2 hex>/<16 hex>.dat` parses to an asset id, and the card path is
+  **rebuilt** by `buildAssetPath()` from those sixteen validated, folded hex
+  characters. The shard directory is derived from the id, so a wallet asset has
+  nowhere in it to name a directory.
+- `wallet/manifest.json` parses to "the manifest", which is never written at
+  the name it arrived under anyway -- it is sealed in RAM and installed at
+  three absolute constants.
+- Anything else under `wallet/` is refused, before the directory creation that
+  cannot be undone.
+
+What that buys: whatever a sender spells, a wallet file lands at a path built
+out of firmware constants and hex digits. **An alias of a path nothing hands to
+the filesystem is not reachable.** A folded case, a `~1` short name, a leading
+space, a directory component -- none of them can change which file is opened,
+because none of them survives being parsed into an id and rebuilt.
+
+**Confirmed on both boards, 2026-11-27.** `wallet/D1/D1CCCB5B0744F2A2.DAT`
+answered `OK` and the log named the file it actually opened:
+`/explorink/wallet/d1/d1cccb5b0744f2a2.dat`. The shard directory afterwards
+held exactly one entry, lower case, with `flags = 3` (encrypted, content IV)
+and a ciphertext payload -- one file, built by the device, whatever the request
+spelled.
+
+**The half that is still a comparison.** A path that does not parse as a wallet
+request is still written where the sender spelled it, so a spelling that
+aliases *into* the wallet directory without naming it is held off by
+`relPathIsSafe()` alone -- which is exactly the kind of completeness argument
+this section exists to stop relying on. Ending it means parsing and rebuilding
+every transfer kind, which is T-2105. Until then the wallet's guarantee rests
+on two things rather than one, and that is stated here rather than implied.
+
+**The gate runs before the directory is created, and that ordering is the
+fix, not a detail.** `handleBegin` calls `ensureDirectoryExists()` on the
+parent of every accepted path, and `SDCardManager` creates every component. A
+gate placed after it left a hole as bad as the one it closed: a push to
+`wallet/manifest.bak/x` made a **directory** called `manifest.bak` and only
+then refused the file. `Storage.exists()` is true for a directory and
+`Storage.remove()` cannot delete one, so every later sync would answer
+`ERR swap failed` for ever with nothing in the firmware able to undo it -- and
+on a cleartext card that directory also flips `treeIsEncrypted()`. Found in a
+second review round, 2026-11-27, and confirmed closed on both boards:
+`wallet/manifest.bak/x` and `wallet/manifest.enc/deep/x` are refused and the
+wallet directory afterwards holds only its asset shards.
+
+**Confirmed on both boards, 2026-11-27.** ` wallet/<shard>/<id>.dat` answers
+`ERR bad path`; `wallet`, `wallet/manifest.bak/<id>.dat` and `wallet/<shard>/x.dat`
+all answer `ERR not a wallet file`; the wallet directory afterwards holds only
+its asset shards, and a normal asset and manifest still install and open.
+
+**What the attack actually costs, seen on a card.** A run against a build
+*without* these gates (the published v0.2.3, flashed by accident -- see
+`../../docs/PROGRESS.md`) left `d1cccb5b0744f2a2.dat` with its `flags` byte at
+0 and its payload reading `ATTACKER PLAINTEXT`. That is the end state the
+whitelist exists to prevent: a document the viewer will draw as genuine because
+nothing says it is encrypted. It is not evidence about the leading space
+specifically -- that build has no wallet gate at all to walk around. The
+leading space is proven by SdFat's own source, by the host test, and by the
+fixed build refusing it.
+
+**Two things this does not close.** An 8.3 alias of an *asset* name still ends
+in `.dat`, so it is still sealed -- over the entry of the real asset it
+aliases: one document overwritten by somebody in radio range, which is the
+unauthenticated channel itself and is T-2098's job, not a gate's. And the gate
+is on the **BLE receiver only**: `POST /upload` and WebDAV `PUT` still write any
+path on the card, which is T-2103.
 
 ### The Wi-Fi upload endpoint bypasses all of this
 
@@ -405,6 +560,75 @@ whole-file CRC read-back it removes costs about what the AES and the SHA-256 it
 adds cost. The Wi-Fi figure the plan asked for could not be taken -- the Wi-Fi
 upload path does not reach this code at all (see above).
 
+### The whole manifest suite, re-run at the branch tip, 2026-11-27
+
+`32f57693`, after five review rounds. The measurement below was taken at
+`8b20eceb` -- the second commit of fifteen -- and everything after it changed
+the path the manifest takes, including how `wallet/manifest.json` is routed at
+all. A measurement is only valid against the state it was taken against, so the
+scenarios were run again on the tip rather than carried forward.
+
+**W27-W43 on an X3 (`env:default`, C3), W27, W30, W31, W37, W39, W40, W43 on an
+X4 Pro (`env:x4pro`, S3).** All pass. The two that only one chip can answer:
+the format's 32,726-byte manifest installs on the S3 and lands at exactly
+32,768 bytes; the C3 refuses it long before, which is why W31 names the S3.
+
+What the hostile pushes answered, at the tip, on both boards: `wallet`,
+`wallet/manifest.enc`, `wallet/manifest.bak`, `wallet/manifest.bak/<id>.dat`,
+`wallet/MANIFE~1.JSO` and `wallet/<shard>/x.dat` all answer
+`ERR not a wallet file`; ` wallet/<shard>/<id>.dat` answers `ERR bad path`;
+and the wallet directory afterwards holds only its asset shards. A locked board
+answers `ERR wallet locked` and writes nothing.
+
+**One number worth watching rather than filing.** The S3's NimBLE host task
+reported **424 bytes free** of its 4 KB stack after an asset push at the tip
+(`488` after a manifest). That is positive and it is thin. It is **not**
+comparable with the `1044` the C3 reported in the same run -- different chip,
+different build -- and no pre-change S3 figure was taken, so this is a baseline
+rather than a delta. T-2104's pass should take the before and after properly.
+
+### The manifest sealer, first measured 2026-11-27 at commit two of fifteen
+
+Kept because it is the only byte-level proof of the envelope and it has not
+been invalidated -- the format did not change after it. T-2096, commit
+`8b20eceb`. Both boards provisioned with a known K over
+`CMD:WALLETPROVISION`, a **plaintext** tree pushed over BLE, and the sealed
+manifest pulled back to the laptop and decrypted there -- the proof is a byte
+comparison, not a look at the panel.
+
+**X3 (`env:default`, C3) and X4 Pro (`env:x4pro`, S3), end to end:** every asset
+and the list sealed on arrival, and after a reboot and an unlock the board
+browsed the document and drew its page. The locked board answered
+`walletVersion=1` off the envelope's clear field before any key existed in RAM.
+
+**The byte comparison, X3.** `manifest.enc` off the card decrypts under the known
+K to the pushed JSON **byte for byte**: container v2, flags 0, `plaintextLen`
+2,649 equal to the ciphertext length, `walletVersion` 1 in the clear and 1 in the
+JSON, tag verified. 2,649 plaintext became 2,691 on the card, which is the
+envelope plus the tag and nothing else. Two installs of identical content
+produced **different files**, so the fresh nonce is real on hardware and not
+just in the host test.
+
+**The cap, from both ends, on the S3.** 32,727 bytes was refused at the begin
+frame -- `ERR manifest too big`, three seconds, no bytes on the wire -- and
+32,726 sealed, verified and installed, landing as exactly 32,768 bytes, which is
+`kMaxEncryptedManifestBytes` to the byte. The derived bound is the read path's
+own.
+
+**And the C3 cannot reach it.** With BLE up, an X3 installs **20,480** bytes of
+manifest and refuses **22,528**: either the ingest buffer or the read-back
+buffer fails to allocate, or the AES DMA driver does. Every one of those is a
+refusal with a message and the previous list stays live -- but the number to
+quote for a C3 is about 20 KB, not 32. The free heap on that board with the map
+screen and a transfer up is ~27 KB with a largest block of ~23 KB, so the design
+cap was never going to fit there.
+
+**The half-swap survivor, proved by making the state.** `manifest.enc` was
+deleted over the web server, leaving the card exactly as a power cut between the
+two renames would: the board read `manifest.bak`, listed the document, and the
+panel said **"Previous list, last sync unfinished"**. One sync put it back and
+the line went away.
+
 ## Driving the whole chain from a host
 
 **This recipe was rewritten for the pattern gate on 2026-11-26 and has not been
@@ -418,7 +642,12 @@ it added for the run and taken away afterwards -- a release build must never car
 these commands.
 
 ```bash
-# 1. a tree, its key and its pattern. --panel picks the board: x4, x3 or t5s3.
+# 1. a tree, its key and its pattern. **Check which walletgen you are running**
+#    (parent repo, 2026-11-27): `--pattern` is on the `wallet` branch and not
+#    on master, and the `t5s3` panel row is on `wallet-cardroot` and not on
+#    `wallet`. The two have diverged -- 14 commits one way, 54 the other -- so
+#    no single checkout has both. A run that needs a pattern AND a 960x540
+#    tree has to merge them first; an X4 Pro needs neither.
 #    567ba98c is right, right, down, left, left, left, down from cell 5 --
 #    eight cells, the wallet's floor. walletgen refuses a path the grid cannot
 #    walk, so a typo is caught before the card is written.
@@ -489,11 +718,16 @@ manifest that named the asset would not have authenticated.
 ## Manifest: the tag verifies before anything is parsed
 
 ```
-manifest.enc = "EWM1" (4) | u8 version=1 | u8 flags | u8 nonce[12]
-               | u32 plaintextLen | ciphertext | u8 tag[16]
+manifest.enc = "EWM1" (4) | u8 version=2 | u8 flags | u8 nonce[12]
+               | u32 plaintextLen | u32 walletVersion | ciphertext | u8 tag[16]
 ```
 
-`parseManifestEnvelope()` reads the envelope, `feedEncryptedManifest()`
+v1 envelopes carry no `walletVersion` and are 22 bytes instead of 26. Both are
+read; a card written before the field existed must not become unreadable.
+`walletVersion` sits **outside the tag** on purpose, so a locked device can say
+which version the card holds without a key.
+
+`parseManifestEnvelope()` reads the envelope, `feedEncryptedManifestAt()`
 (`WalletStore.cpp`) verifies the tag over the whole ciphertext, and only then feeds
 the plaintext to the same `StreamingJsonParser` the cleartext path uses, in the same
 256-byte bites. **There is no streaming path for an encrypted manifest and there
@@ -527,12 +761,73 @@ lands on the same message.
 The plaintext is wiped (`secureWipe()`) before the buffer is freed. It held every
 title in the wallet.
 
-**`manifest.bak` is not read.** The format keeps a backup of the previous good
-`manifest.enc` and this firmware ignores it: a fallback that silently loads an older
-manifest would show a document set that does not match the assets on the card. What
-a recovery path should do is **open** -- it needs a decision about whether the rider
-is told, and there is no evidence yet about which failure actually happens in the
-field.
+### `manifest.bak` is the half-swap survivor, and nothing else
+
+Open since the viewer was built, decided by T-2096: the backup is read, **only**
+when `manifest.enc` is missing, and the rider is told.
+
+The reason it earns a reader now is that the device writes this file itself. A
+FAT rename cannot replace an existing name, so installing a new list is two
+renames -- `manifest.enc` to `manifest.bak`, then `manifest.enc.part` into place
+-- and a power cut between them leaves a card with no `manifest.enc` at all.
+Without a fallback that card reads as a **cleartext** tree (the encrypted one is
+named by the presence of `manifest.enc`), finds no `manifest.json`, and says the
+wallet is empty. With it, the board opens the list it had.
+
+So:
+
+- `treeIsEncrypted()` is true for either file.
+- `encryptedManifestPath()` prefers `manifest.enc` and falls back to the backup,
+  logging loudly.
+- The browse screen replaces its document count with **"Previous list, last sync
+  unfinished"** (`STR_WALLET_OLD_LIST`), because a rider shown a list that is one
+  sync old has to be told rather than left to discover a missing document at a
+  border.
+- The next completed install clears it by itself.
+
+The old objection -- that an older manifest may not match the assets on the card
+-- still holds, and the message is the answer to it: every asset is verified by
+its own hash anyway, so the worst case is a document the list names and the card
+does not have, which the viewer already reports.
+
+### Writing it: one shot, and the size trap that decides that
+
+The device is the third writer of this envelope, after `tools/walletgen.py` and
+the phone (T-2096). The phone sends plaintext JSON to `wallet/manifest.json`,
+the device seals it and installs it as `manifest.enc`; the cleartext file is
+never kept.
+
+**The seal is not streamed, and mbedtls is not the reason.** `mbedtls_gcm_update()`
+streams perfectly well -- the pinned ESP-IDF (5.5.2.260206) documents the
+whole-block output buffering and states `output_size >= input_length + 15` is
+always sufficient. The reason is the paragraph above this one: **the read path
+cannot stream**, so it caps the file at 32 KB. A streamed seal would accept a
+manifest above that cap, write it successfully, confirm it to the phone, and
+leave a wallet that this same board can never open again. That is the worst
+failure the device-key ladder can produce.
+
+So the plaintext is buffered, bounded by `kMaxManifestPlaintextBytes` --
+`kMaxEncryptedManifestBytes` minus the envelope and the tag, **derived from the
+read path's own constant rather than written next to it** -- and a manifest over
+it is refused at the `begin` frame, which already carries the length. The
+refusal costs nothing on the wire and the phone gets `ERR manifest too big`.
+
+The order of everything else is in `WalletManifestIngest.h` and
+`WalletManifestInstall.h`. The two decisions worth repeating here:
+
+- **The device never authors the JSON.** It seals a blob it was handed. The one
+  number it reads out, `walletVersion`, it reads with `ManifestParser` -- the
+  same class the browse screen uses -- so a body that seals is a body that
+  opens. Authoring would hand the device the manifest format and a second
+  buffer.
+- **The sealed file is opened before the swap.** It is at most 32 KB and the key
+  is in hand, so the cheap proof that the card holds a readable list is
+  available, and nothing else gives it. An unreadable one is deleted and the
+  previous list stays live.
+
+An empty manifest (`"items": []`) is accepted: it is what a rider who deleted
+their last document syncs, and refusing it would leave the device showing a list
+the phone no longer has.
 
 ## The key's lifetime
 

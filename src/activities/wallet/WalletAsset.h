@@ -219,6 +219,17 @@ inline uint32_t readLe32(const uint8_t* p) {
          (static_cast<uint32_t>(p[3]) << 24);
 }
 
+// The write half of readLe32, for the one place this tree builds a header
+// rather than parsing one: the manifest envelope a device seals (WalletCrypto.h,
+// buildManifestEnvelope). Written out rather than memcpy'd from a uint32_t so the
+// byte order is the format's and not the chip's.
+inline void writeLe32(uint8_t* p, const uint32_t value) {
+  p[0] = static_cast<uint8_t>(value & 0xFF);
+  p[1] = static_cast<uint8_t>((value >> 8) & 0xFF);
+  p[2] = static_cast<uint8_t>((value >> 16) & 0xFF);
+  p[3] = static_cast<uint8_t>((value >> 24) & 0xFF);
+}
+
 // Structural parse only: magic and length. Whether the payload fits *this*
 // panel is a separate question the reader asks against the live framebuffer
 // size, because the panel is not the same on every device in the line

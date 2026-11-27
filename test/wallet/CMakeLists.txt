@@ -4,6 +4,11 @@ add_executable(WalletTest
   # arithmetic it covers is a different subject from the read path, and
   # WalletTest.cpp is already long.
   WalletIngestTest.cpp
+  # The device sealing the wallet's LIST as it arrives (T-2096). Separate from
+  # the asset sealer above because the two are opposites -- one streams and
+  # never holds the file, the other holds it whole because the read path cannot
+  # stream (WalletManifestIngest.h).
+  WalletManifestSealTest.cpp
   ${REPO_ROOT}/src/activities/wallet/WalletManifestParser.cpp
   ${REPO_ROOT}/lib/JsonParser/StreamingJsonParser.cpp
   # The hint-label width check measures with the firmware's own font table

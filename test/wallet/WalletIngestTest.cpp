@@ -530,9 +530,21 @@ TEST(WalletIngest, OnlyWalletDatFilesAreSealed) {
   EXPECT_FALSE(wallet::pathIsWalletAsset("/explorink/wallet/manifest.enc"));
   EXPECT_FALSE(wallet::pathIsWalletAsset("/explorink/wallet/ab/abcdef0123456789.rle"));
   // A directory that merely starts with the same letters is not the wallet.
-  EXPECT_FALSE(wallet::pathIsWalletAsset("/explorink/walletish/ab/x.dat"));
+  EXPECT_FALSE(wallet::pathIsWalletAsset("/explorink/walletish/ab/abcdef0123456789.dat"));
   EXPECT_FALSE(wallet::pathIsWalletAsset("/explorink/wallet"));
   EXPECT_FALSE(wallet::pathIsWalletAsset(nullptr));
+
+  // **The shape is checked whole, not as a prefix and a suffix** (review,
+  // 2026-11-27). A directory component the sender chose is how
+  // `wallet/manifest.bak/x.dat` got itself treated as an asset, and the
+  // directory creation that follows made `manifest.bak` undeletable.
+  EXPECT_FALSE(wallet::pathIsWalletAsset("/explorink/wallet/manifest.bak/x.dat"));
+  EXPECT_FALSE(wallet::pathIsWalletAsset("/explorink/wallet/ab/cd/abcdef0123456789.dat"));
+  EXPECT_FALSE(wallet::pathIsWalletAsset("/explorink/wallet/abcdef0123456789.dat"));
+  // The shard is the first two characters of the id, so a name that disagrees
+  // with its own directory was never written by this device.
+  EXPECT_FALSE(wallet::pathIsWalletAsset("/explorink/wallet/zz/abcdef0123456789.dat"));
+  EXPECT_FALSE(wallet::pathIsWalletAsset("/explorink/wallet/ab/gbcdef0123456789.dat"));
 }
 
 TEST(WalletIngest, TheGateFoldsCaseBecauseTheFilesystemDoes) {
@@ -543,10 +555,10 @@ TEST(WalletIngest, TheGateFoldsCaseBecauseTheFilesystemDoes) {
   // document because the encrypted flag was clear. Found in review 2026-11-27.
   EXPECT_TRUE(wallet::pathIsWalletAsset("/explorink/wallet/ab/abcdef0123456789.DAT"));
   EXPECT_TRUE(wallet::pathIsWalletAsset("/explorink/wallet/AB/ABCDEF0123456789.Dat"));
-  EXPECT_TRUE(wallet::pathIsWalletAsset("/EXPLORINK/WALLET/ab/x.dat"));
+  EXPECT_TRUE(wallet::pathIsWalletAsset("/EXPLORINK/WALLET/ab/abcdef0123456789.dat"));
   // Folding must not widen it past the wallet.
-  EXPECT_FALSE(wallet::pathIsWalletAsset("/explorink/WALLETISH/ab/x.dat"));
-  EXPECT_FALSE(wallet::pathIsWalletAsset("/explorink/wallet/ab/x.datx"));
+  EXPECT_FALSE(wallet::pathIsWalletAsset("/explorink/WALLETISH/ab/abcdef0123456789.dat"));
+  EXPECT_FALSE(wallet::pathIsWalletAsset("/explorink/wallet/ab/abcdef0123456789.datx"));
 }
 
 // --- the version is part of the keystream ----------------------------------
