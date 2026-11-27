@@ -6,10 +6,12 @@
 #include <Memory.h>
 #include <esp_rom_crc.h>
 
+#include <cassert>
 #include <cstdio>
 #include <cstring>
 
 #include "MapByteFormat.h"
+#include "MapTransferPath.h"
 
 #if defined(ENABLE_WALLET) && ENABLE_WALLET
 #include "../wallet/WalletCryptoDevice.h"
@@ -194,18 +196,54 @@ bool walletInspectManifest(void*, const char* json, size_t len, uint32_t& wallet
 // memory and the other gets nothing, so the buffer is wiped once and freed
 // once. The wipe is up to 32 KB, so it happens after the critical section, on
 // memory that by then nobody else can reach.
-void MapTransferReceiver::takeManifestBuffer() {
+// Clears both sealer pointers under the lock the activity task reads them
+// through, and lets the objects die outside it.
+//
+// **A lock one side does not take is not a lock.** `takeManifestBuffer()` holds
+// `g_mux` while it tests `manifestIngest_`, but every write to that pointer --
+// all of them on the host task, at the top of a begin frame -- used to happen
+// with no lock at all, so the activity task could be inside the critical
+// section testing a pointer this task was in the middle of destroying. Found in
+// review, 2026-11-27.
+//
+// The destructors run after the critical section: the manifest's buffer is
+// taken first, so what dies inside the lock is a pointer swap and nothing more.
+void MapTransferReceiver::clearSealers() {
+  dropManifestBuffer();
+  std::unique_ptr<wallet::AssetIngest> deadAsset;
+  std::unique_ptr<wallet::ManifestIngest> deadManifest;
+  portENTER_CRITICAL(&g_mux);
+  deadAsset = std::move(walletIngest_);
+  deadManifest = std::move(manifestIngest_);
+  portEXIT_CRITICAL(&g_mux);
+}
+
+std::unique_ptr<uint8_t[]> MapTransferReceiver::takeManifestBuffer(size_t& length) {
   std::unique_ptr<uint8_t[]> buffer;
-  size_t length = 0;
+  length = 0;
   portENTER_CRITICAL(&g_mux);
   if (manifestIngest_) buffer = manifestIngest_->takeBuffer(length);
   portEXIT_CRITICAL(&g_mux);
+  return buffer;
+}
+
+void MapTransferReceiver::dropManifestBuffer() {
+  size_t length = 0;
+  std::unique_ptr<uint8_t[]> buffer = takeManifestBuffer(length);
   if (buffer) wallet::secureWipe(buffer.get(), length);
 }
 #endif
 
 MapTransferReceiver::MapTransferReceiver(const char* rootDir, const GfxRenderer* renderer)
-    : rootDir_(rootDir), renderer_(renderer) {}
+    : rootDir_(rootDir), renderer_(renderer) {
+  // **The gates inspect `finalPath_`, so it must hold every path they could be
+  // asked about.** A longer root would truncate it inside `snprintf` and the
+  // string a gate reads would not be the string the card opens -- the one
+  // failure mode this whole family of checks cannot survive. Checked at
+  // construction rather than asserted statically because the root is a
+  // constructor argument (review, 2026-11-27).
+  assert(std::strlen(rootDir_) + 1 + kMaxRelPathBytes + 5 /* ".part" */ < sizeof(finalPath_));
+}
 
 MapTransferReceiver::~MapTransferReceiver() {
   // No status to send and nobody to send it to by now -- just don't leave a
@@ -304,10 +342,20 @@ void MapTransferReceiver::onFrame(const uint8_t* data, size_t len) {
   // person to add an early `return` inside the switch will not come back up
   // here to add the clear.
   //
-  // The gap between the attached_ read above and this store is not a hole on
-  // this hardware: the ESP32-C3 is single core and the host task outranks the
-  // activity task (see detach()), so the activity task cannot run between two
-  // adjacent instructions of this task. It never gets to observe the gap.
+  // **The gap between the attached_ read above and this store is a real hole on
+  // the S3 boards**, and this comment used to deny it. The old argument was
+  // "the ESP32-C3 is single core and the host task outranks the activity task,
+  // so the activity task cannot run between two adjacent instructions of this
+  // task". That holds on the C3 and not on `env:x4pro` or `env:t5s3pro`:
+  // `CONFIG_FREERTOS_UNICORE` is unset there and NimBLE is pinned to core 0
+  // against the Arduino task on core 1, so detach() can read `inFrame_` as
+  // false while this frame is between the two lines and proceed to abandon()
+  // underneath it.
+  //
+  // The order is also the losing one -- to exclude properly the frame would
+  // publish `inFrame_` first and re-check `attached_` after. Both belong to the
+  // transfer receiver's threading rather than to the wallet, so they are
+  // written down as T-2104 and not changed here (review, 2026-11-27).
   FrameGuard guard(inFrame_);
 
   const uint8_t opcode = data[0];
@@ -406,7 +454,7 @@ void MapTransferReceiver::handleBegin(const uint8_t* body, size_t len) {
   // **Before the mkdir below, and that is the whole point.** Everything under
   // the wallet directory is either sealed or refused, never stored as it
   // arrived -- `manifest.enc`, `manifest.bak` and FAT's own 8.3 alias of
-  // `manifest.json` all land here (WalletAssetIngest.h, pathIsUnderWalletDir).
+  // `manifest.json` all land here (WalletAssetIngest.h, pathTouchesWalletDir).
   //
   // The first version of this gate sat after the directory creation, which
   // left a hole as bad as the one it closed: `ensureDirectoryExists()` creates
@@ -417,7 +465,7 @@ void MapTransferReceiver::handleBegin(const uint8_t* body, size_t len) {
   // would answer `ERR swap failed` for ever, with nothing in the firmware able
   // to undo it. Found in review, 2026-11-27. Nothing may touch the card before
   // this gate.
-  if (wallet::pathIsUnderWalletDir(finalPath_) && !wallet::pathIsWalletAsset(finalPath_) &&
+  if (wallet::pathTouchesWalletDir(finalPath_) && !wallet::pathIsWalletAsset(finalPath_) &&
       !wallet::pathIsWalletManifest(finalPath_)) {
     LOG_ERR(kLogTag, "refusing a wallet path this device does not write: %s", finalPath_);
     refuse("not a wallet file");
@@ -448,11 +496,10 @@ void MapTransferReceiver::handleBegin(const uint8_t* body, size_t len) {
   // before a single byte is opened for write -- so every refusal below leaves
   // the card exactly as it was. The previous transfer's machine is dropped
   // whatever this one turns out to be, so a tile push can never inherit one.
-  walletIngest_.reset();
-  // Freed here and not at the end of the previous transfer's abandon path: it
-  // owns up to 32 KB, and abandon() can be running on the activity task while
-  // the host task is still inside feed() (see abandon()).
-  manifestIngest_.reset();
+  // Both of the previous transfer's sealers go here, under the lock the
+  // activity task reads them through -- this is the one place they are freed,
+  // and it is host-task only (see clearSealers()).
+  clearSealers();
   if (wallet::pathIsWalletManifest(finalPath_)) {
     // The list of documents. Buffered whole and sealed once, which is why every
     // refusal it can answer is answered here, before a byte is taken: the begin
@@ -552,8 +599,9 @@ void MapTransferReceiver::handleBegin(const uint8_t* body, size_t len) {
 #if defined(ENABLE_WALLET) && ENABLE_WALLET
     // The sealer was built above and has no transfer behind it now. Dropped
     // here rather than left for the next begin frame, so "a live sealer exists"
-    // and "a transfer is in flight" never disagree.
-    walletIngest_.reset();
+    // and "a transfer is in flight" never disagree -- through clearSealers(),
+    // because this is still a write to a pointer the other task reads.
+    clearSealers();
 #endif
     refuse("open failed");
     return;
@@ -665,10 +713,16 @@ void MapTransferReceiver::handleChunk(const uint8_t* body, size_t len) {
   // failed_) into a silent bail, which is the correct answer: the screen this
   // transfer belonged to is gone.
   //
-  // A plain read of a plain bool is enough. Single core, so no cache
-  // coherence to worry about, and each check sits directly after a call into
-  // another translation unit (HalStorage, no LTO in platformio.ini), so the
-  // compiler must reload the member rather than reuse a cached copy.
+  // A plain read of a plain bool, which is **not** as safe as this comment used
+  // to claim. "Single core" is true of the C3 and false of both S3
+  // environments: `sdkconfig.x4pro` leaves `CONFIG_FREERTOS_UNICORE` unset and
+  // pins NimBLE to core 0 against the Arduino task on core 1, so the two tasks
+  // genuinely run at once there. What the check still rests on is that each one
+  // sits directly after a call into another translation unit (HalStorage, no
+  // LTO in platformio.ini), so the compiler must reload the member -- a bet on
+  // codegen rather than a guarantee, and one build flag from not holding.
+  // `active_` should be std::atomic<bool>; that is T-2104, not this rung
+  // (review, 2026-11-27).
   if (!active_) return;
   received_ += payloadLen;
 
@@ -702,24 +756,33 @@ void MapTransferReceiver::handleChunk(const uint8_t* body, size_t len) {
     // holds ciphertext, so the number the phone compares against is the CRC of
     // the plaintext as it arrived.
     actualCrc = manifestIngest_->plaintextCrc();
+    const size_t sealedLen = manifestIngest_->sealedLen();
     LOG_INF(kLogTag, "manifest walletVersion %lu, %u bytes sealed",
-            static_cast<unsigned long>(manifestIngest_->walletVersion()),
-            static_cast<unsigned>(manifestIngest_->sealedLen()));
-    wallet::ManifestInstallStatus installed =
-        wallet::writeSealedManifestPart(manifestIngest_->sealed(), manifestIngest_->sealedLen());
-    // **The buffer goes back before the verify, and the object does not.** The
-    // verification reads the file back off the card into a buffer of its own,
-    // and holding both at once doubles the peak -- which on a C3 with BLE up is
-    // the difference between an install and a refusal. Measured on an X3,
-    // 2026-11-27: an 8,234-byte manifest sealed and wrote, then failed its own
-    // verification with `OOM: 8234 bytes`.
-    //
-    // Destroying the object here was the first version of this line and is a
-    // use-after-free: `active_` is still true for everything below, so the
-    // activity task can be inside abandon() holding this pointer. The object
-    // now lives until the next begin, which is host-task only, and the buffer
-    // is handed over rather than freed -- both reviewed 2026-11-27.
-    takeManifestBuffer();
+            static_cast<unsigned long>(manifestIngest_->walletVersion()), static_cast<unsigned>(sealedLen));
+
+    // **The buffer is taken before a byte of it is written, not after.**
+    // `writeSealedManifestPart()` blocks on the card for up to 32 writes, and
+    // handing it a raw pointer that still belonged to the sealer meant the
+    // activity task could reach abandon(), win the handover, wipe and free
+    // that memory, and leave this task reading a freed block and writing it to
+    // the card. Taking ownership into this task's own stack first is what
+    // makes the pointer safe for the whole loop -- nothing else can reach it.
+    // Found in review, 2026-11-27; the two rounds before it fixed the double
+    // wipe and missed the pointer already in flight.
+    size_t bufferLen = 0;
+    std::unique_ptr<uint8_t[]> sealed = takeManifestBuffer(bufferLen);
+    if (!sealed) {
+      // The activity task got there first, so this transfer is already being
+      // torn down and the bytes are gone. Nothing to install and nothing to
+      // say: abandon() owns the verdict.
+      return;
+    }
+    wallet::ManifestInstallStatus installed = wallet::writeSealedManifestPart(sealed.get(), sealedLen);
+    // The 32 KB goes back here, before the verification allocates a buffer of
+    // its own to read the same file off the card -- which is the allocation an
+    // X3 with BLE up could not make while this one was still alive.
+    wallet::secureWipe(sealed.get(), bufferLen);
+    sealed.reset();
     if (installed == wallet::ManifestInstallStatus::Ok) installed = wallet::finishManifestInstall();
     if (!active_) return;
     if (installed != wallet::ManifestInstallStatus::Ok) {
@@ -763,7 +826,8 @@ void MapTransferReceiver::handleChunk(const uint8_t* body, size_t len) {
   // already there is the normal case for a corridor update.
   //
   // **A manifest has already landed by now** -- under another name, through
-  // installSealedManifest() above, which does its own verified two-rename swap.
+  // writeSealedManifestPart() and finishManifestInstall() above, which do their
+  // own verified two-rename swap.
   // There is no `.part` here to move and `finalPath_` (`manifest.json`) is a
   // file this device deliberately does not keep.
   bool needsRename = true;
@@ -877,7 +941,7 @@ void MapTransferReceiver::abandon(const char* reason) {
   // it over mid-way). takeManifestBuffer() settles that under the lock: one of
   // the two tasks gets the memory and wipes it, the other gets nothing.
   if (walletIngest_) walletIngest_->reset();
-  takeManifestBuffer();
+  dropManifestBuffer();
   if (manifestIngest_) manifestIngest_->reset();
 #endif
 
@@ -906,54 +970,11 @@ void MapTransferReceiver::refuse(const char* reason) {
   LOG_ERR(kLogTag, "refused: %s", reason);
 }
 
-bool MapTransferReceiver::relPathIsSafe(const char* path, size_t len) {
-  if (len == 0 || len > kMaxRelPathBytes) return false;
-  // Relative to /explorink, always. An absolute path would land wherever the
-  // sender fancied.
-  if (path[0] == '/' || path[len - 1] == '/') return false;
-
-  size_t componentLen = 0;
-  for (size_t i = 0; i < len; ++i) {
-    const char c = path[i];
-    // Printable ASCII only, and no backslash: SdFat takes '\\' as an ordinary
-    // filename character, so allowing it just makes paths that look like
-    // directories but are not.
-    if (c < 0x20 || c > 0x7e || c == '\\') return false;
-    if (c != '/') {
-      ++componentLen;
-      continue;
-    }
-    // An empty component is "//" -- harmless but a sign the sender built the
-    // path wrong, and cheaper to reject than to normalise.
-    if (componentLen == 0) return false;
-    componentLen = 0;
-  }
-
-  // `..` anywhere is the one that matters: it is how a relative path escapes
-  // the root. Checked as a whole component so a file legitimately called
-  // `a..b.tib` is still allowed.
-  //
-  // **`.` and FAT's trailing-character trimming are rejected for a different
-  // reason**: not escape, but *aliasing*. One file must have one spelling here,
-  // because a second spelling is a second answer from every gate that reads the
-  // path -- `wallet::pathIsWalletAsset()` decides whether a document gets
-  // sealed, and FAT resolves `wallet/./ab/x.dat` and `wallet/ab/x.dat.` to the
-  // same directory entry the gate just said was not a wallet asset. Added
-  // 2026-11-27 with the case-folding fix next to it; the escape check alone let
-  // all of these through.
-  const char* cursor = path;
-  while (cursor != nullptr) {
-    const char* slash = strchr(cursor, '/');
-    const size_t partLen = slash != nullptr ? static_cast<size_t>(slash - cursor) : strlen(cursor);
-    if (partLen == 2 && cursor[0] == '.' && cursor[1] == '.') return false;
-    if (partLen == 1 && cursor[0] == '.') return false;
-    // FAT trims trailing dots and spaces from a name, so `x.dat.` and `x.dat `
-    // open `x.dat`. An honest sender never writes either.
-    if (partLen > 0 && (cursor[partLen - 1] == '.' || cursor[partLen - 1] == ' ')) return false;
-    cursor = slash != nullptr ? slash + 1 : nullptr;
-  }
-
-  return true;
+bool MapTransferReceiver::relPathIsSafe(const char* path, const size_t len) {
+  // The rules themselves are in MapTransferPath.h, where a host test can reach
+  // them -- this stays as the class's own entry point so every call site is
+  // unchanged.
+  return maptransfer::relPathIsSafe(path, len);
 }
 
 bool MapTransferReceiver::computePartCrc32(uint32_t& outCrc) const {

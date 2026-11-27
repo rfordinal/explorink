@@ -30,7 +30,7 @@
 // This one holds all of it, and the difference is not GCM versus CTR -- mbedtls
 // streams GCM perfectly well (`mbedtls_gcm_update()`, pinned ESP-IDF
 // 5.5.2.260206). It is that **the read path cannot stream.** GCM authenticates
-// only once it has seen everything, so `feedEncryptedManifest()` loads the
+// only once it has seen everything, so `feedEncryptedManifestAt()` loads the
 // whole file into RAM and refuses anything above kMaxEncryptedManifestBytes.
 //
 // A streamed seal would therefore accept a manifest this same device can never
@@ -163,6 +163,7 @@ class ManifestIngest {
     // caller believes it dropped them. Unreachable today (the receiver
     // allocates a fresh object per transfer) and one line to keep it so.
     openingChecked_ = false;
+    scanAt_ = 0;
     if (buffer_) {
       secureWipe(buffer_.get(), bufferLen_);
       buffer_.reset();
@@ -207,8 +208,12 @@ class ManifestIngest {
     // first chunk instead of after it has sent 30 KB that the inspection at the
     // end would reject anyway.
     if (!openingChecked_) {
-      for (uint32_t at = 0; at < received_; ++at) {
-        const char c = static_cast<char>(plaintext()[at]);
+      // `scanAt_` rather than restarting at 0: a body that is blank for a long
+      // way would otherwise be rescanned from the front on every chunk, which
+      // at a 20-byte MTU is quadratic in the blank prefix. Each byte is looked
+      // at once (review, 2026-11-27).
+      for (; scanAt_ < received_; ++scanAt_) {
+        const char c = static_cast<char>(plaintext()[scanAt_]);
         if (c == ' ' || c == '\t' || c == '\r' || c == '\n') continue;
         openingChecked_ = true;
         if (c != '{') return endWith(ManifestIngestStatus::NotJson);
@@ -240,6 +245,7 @@ class ManifestIngest {
     active_ = false;
     sealedLen_ = 0;
     received_ = 0;
+    scanAt_ = 0;
     openingChecked_ = false;
     if (buffer_) secureWipe(buffer_.get(), bufferLen_);
   }
@@ -269,6 +275,7 @@ class ManifestIngest {
     active_ = false;
     sealedLen_ = 0;
     received_ = 0;
+    scanAt_ = 0;
     openingChecked_ = false;
     return std::move(buffer_);
   }
@@ -318,6 +325,7 @@ class ManifestIngest {
     if (status == ManifestIngestStatus::Complete) {
       active_ = false;
       openingChecked_ = false;
+      scanAt_ = 0;
       return status;
     }
     reset();
@@ -333,6 +341,8 @@ class ManifestIngest {
   uint32_t received_ = 0;
   uint32_t crc_ = 0;
   uint32_t walletVersion_ = 0;
+  // How far the opening-brace scan has looked. Reset with everything else.
+  uint32_t scanAt_ = 0;
   bool openingChecked_ = false;
   bool active_ = false;
 };

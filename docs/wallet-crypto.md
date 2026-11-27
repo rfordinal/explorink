@@ -273,12 +273,13 @@ every one of them has passed:
 | refusal | why |
 |---|---|
 | `ERR wallet locked` | no session key. The list is sealed or it is not stored |
-| `ERR manifest too big` | over `kMaxManifestPlaintextBytes`, i.e. it would seal above the cap the read path enforces. **At `begin`**, off the declared length, so it costs no bytes on the wire |
-| `ERR oom` | under the cap and still no heap: BLE holds the big blocks |
+| `ERR manifest too big` | over `kMaxManifestPlaintextBytes`, i.e. it would seal above the cap the read path enforces. **At `begin`**, off the declared length, so it costs no bytes on the wire -- and this string means only that. The board running out of heap is `ERR oom`, wherever it happens |
+| `ERR oom` | no heap for the manifest -- at `begin` for the arriving copy, or at the end for the buffer the verification reads it back into. On a C3 with BLE up the second one is the common case long before the format's cap is reached |
 | `ERR not a manifest` | the first non-blank byte is not `{`, or `ManifestParser` could not read it as a manifest of a `formatVersion` this firmware knows |
 | `ERR crc mismatch` | the bytes received are not the bytes the sender declared |
 | `ERR manifest unreadable` | the sealed file did not open off the card. The previous list stays live and the `.part` is deleted |
 | `ERR wallet locked` (at the end) | the wallet locked between the seal and the read-back -- `Session::clear()` runs on the main task against a window of a 32 KB write plus a 32 KB read. The file was perfect; saying "unreadable" would have the phone re-send it for ever |
+| `ERR write failed` | the card refused the sealed bytes, or took fewer than were offered. The `.part` is deleted and the previous list stays live |
 | `ERR swap failed` | the card refused a rename. Either the previous list or the new one is live, never a half |
 | `ERR not a wallet file` | a path under the wallet directory that this device does not write. See the section below |
 
@@ -608,7 +609,7 @@ read; a card written before the field existed must not become unreadable.
 `walletVersion` sits **outside the tag** on purpose, so a locked device can say
 which version the card holds without a key.
 
-`parseManifestEnvelope()` reads the envelope, `feedEncryptedManifest()`
+`parseManifestEnvelope()` reads the envelope, `feedEncryptedManifestAt()`
 (`WalletStore.cpp`) verifies the tag over the whole ciphertext, and only then feeds
 the plaintext to the same `StreamingJsonParser` the cleartext path uses, in the same
 256-byte bites. **There is no streaming path for an encrypted manifest and there

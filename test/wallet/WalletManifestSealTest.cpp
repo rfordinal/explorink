@@ -24,6 +24,7 @@
 #include <string>
 #include <vector>
 
+#include "../../src/activities/map/MapTransferPath.h"
 #include "WalletCryptoHost.h"
 #include "WalletManifestIngest.h"
 #include "WalletManifestParser.h"
@@ -243,7 +244,20 @@ TEST(WalletManifestSeal, EachWriteGetsItsOwnNonce) {
 // byte over, which would be a wallet written successfully and never openable
 // again.
 TEST(WalletManifestSeal, TheLargestAcceptedManifestFitsTheReadPathsCap) {
+  // **The identity below is algebra, not evidence**: kMaxManifestPlaintextBytes
+  // is *defined* as the cap minus the envelope and the tag, so this holds for
+  // any values at all. A review proved it by changing the cap to 17 KB and
+  // watching this stay green (2026-11-27). The literal is what actually pins
+  // it, and it is here because the number is a contract with the format and
+  // with the phone, not an implementation detail.
+  EXPECT_EQ(wallet::kMaxEncryptedManifestBytes, 32768u);
+  EXPECT_EQ(wallet::kMaxManifestPlaintextBytes, 32726u);
   EXPECT_EQ(wallet::sealedManifestLen(wallet::kMaxManifestPlaintextBytes), wallet::kMaxEncryptedManifestBytes);
+  // The other end of the cap -- the read path's `fileSize > kMax...` in
+  // WalletStore.cpp -- is **not reachable from this target** (the file is not
+  // in test/wallet/CMakeLists.txt, because it needs Storage). A `>` turned into
+  // a `>=` there would not be caught here. Said out loud rather than implied by
+  // this test's name.
 
   const std::string atCap = manifestOfSize(wallet::kMaxManifestPlaintextBytes);
   ASSERT_EQ(atCap.size(), wallet::kMaxManifestPlaintextBytes);
@@ -308,11 +322,28 @@ TEST(WalletManifestSeal, CrcMismatchSealsNothing) {
 // A body that is not a manifest is refused on its first chunk, not after 30 KB
 // of it has been sent.
 TEST(WalletManifestSeal, NonJsonIsRefusedOnTheFirstChunk) {
-  const std::string notJson = "MTIL\x01\x02 this is a tile, not a list";
-  const SealRun run = sealManifest(notJson, 8, crcOf(notJson));
-  ASSERT_EQ(run.began, wallet::ManifestIngestStatus::Ok);
-  EXPECT_EQ(run.last, wallet::ManifestIngestStatus::NotJson);
-  EXPECT_TRUE(run.sealed.empty());
+  // **The refusal has to land on the first chunk**, not merely somewhere. Feed
+  // the whole body and the inspection at the end answers NotJson too, so the
+  // test would pass with the early check deleted -- which it did, until a
+  // review proved it by mutation (2026-11-27). Feeding four bytes of a much
+  // longer declared body is what makes the early check the only thing that can
+  // produce this verdict.
+  const std::string notJson = "MTIL\x01\x02 this is a tile, not a list, and longer than one chunk of it";
+  NonceSource nonces;
+  wallet::ManifestIngest ingest;
+  wallet::ManifestIngest::Callbacks cb;
+  cb.crc32 = crc32Bitwise;
+  cb.inspect = hostInspect;
+  cb.random = countingRandom;
+  cb.randomCtx = &nonces;
+  cb.seal = hostSeal;
+  cb.sealCtx = const_cast<uint8_t*>(kKey);
+  const size_t want = wallet::sealedManifestLen(notJson.size());
+  ASSERT_EQ(ingest.begin(static_cast<uint32_t>(notJson.size()), crcOf(notJson),
+                         std::unique_ptr<uint8_t[]>(new uint8_t[want]), want, cb),
+            wallet::ManifestIngestStatus::Ok);
+  EXPECT_EQ(ingest.feed(reinterpret_cast<const uint8_t*>(notJson.data()), 4), wallet::ManifestIngestStatus::NotJson);
+  EXPECT_EQ(ingest.sealed(), nullptr);
 }
 
 // Leading whitespace is not a verdict either way: the decision waits for the
@@ -411,12 +442,12 @@ TEST(WalletManifestSeal, ManifestPathGateFoldsCase) {
   EXPECT_FALSE(wallet::pathIsWalletManifest("/explorink/wallet/manifest.json.part"));
   EXPECT_FALSE(wallet::pathIsWalletManifest("/explorink/wallet/ab/manifest.json"));
   EXPECT_FALSE(wallet::pathIsWalletManifest("/explorink/base/manifest.json"));
-  EXPECT_FALSE(wallet::pathIsWalletManifest("/explorink/wallet/ab/0123456789abcdef.dat"));
+  EXPECT_FALSE(wallet::pathIsWalletManifest("/explorink/wallet/01/0123456789abcdef.dat"));
   EXPECT_FALSE(wallet::pathIsWalletManifest(nullptr));
 
   // And the two gates must never both claim one path.
   EXPECT_FALSE(wallet::pathIsWalletAsset("/explorink/wallet/manifest.json"));
-  EXPECT_TRUE(wallet::pathIsWalletAsset("/explorink/wallet/ab/0123456789abcdef.dat"));
+  EXPECT_TRUE(wallet::pathIsWalletAsset("/explorink/wallet/01/0123456789abcdef.dat"));
 }
 
 // **Everything under the wallet directory is sealed or refused, never stored as
@@ -429,7 +460,7 @@ TEST(WalletManifestSeal, EverythingElseUnderTheWalletDirIsRefused) {
   // What the receiver computes: in the wallet directory, and neither gate
   // claims it.
   const auto refused = [](const char* path) {
-    return wallet::pathIsUnderWalletDir(path) && !wallet::pathIsWalletAsset(path) &&
+    return wallet::pathTouchesWalletDir(path) && !wallet::pathIsWalletAsset(path) &&
            !wallet::pathIsWalletManifest(path);
   };
 
@@ -447,19 +478,78 @@ TEST(WalletManifestSeal, EverythingElseUnderTheWalletDirIsRefused) {
   // A sidecar: the format writes these for cleartext trees only and this
   // firmware never reads one, so a device that seals its own tree has no use
   // for them either.
-  EXPECT_TRUE(refused("/explorink/wallet/ab/0123456789abcdef.rle"));
+  EXPECT_TRUE(refused("/explorink/wallet/01/0123456789abcdef.rle"));
   EXPECT_TRUE(refused("/explorink/wallet/anything"));
+  // **A directory component is not the sender's to choose.** These passed the
+  // old asset gate -- prefix plus `.dat`, nothing checked in between -- and the
+  // directory creation that runs next turned `manifest.bak` into a directory
+  // the firmware can never delete.
+  EXPECT_TRUE(refused("/explorink/wallet/manifest.bak/0123456789abcdef.dat"));
+  EXPECT_TRUE(refused("/explorink/wallet/manifest.enc/0123456789abcdef.dat"));
+  EXPECT_TRUE(refused("/explorink/wallet/manifest.enc.part/0123456789abcdef.dat"));
+  EXPECT_TRUE(refused("/explorink/wallet/01/cd/0123456789abcdef.dat"));
+  // A name that disagrees with its own shard was never written by this device.
+  EXPECT_TRUE(refused("/explorink/wallet/zz/0123456789abcdef.dat"));
+  EXPECT_TRUE(refused("/explorink/wallet/ff/0123456789abcdef.dat"));
+  EXPECT_TRUE(refused("/explorink/wallet/01/x.dat"));
+  EXPECT_TRUE(refused("/explorink/wallet/01/0123456789abcdefff.dat"));
 
   // And the two legitimate shapes are not refused.
   EXPECT_FALSE(refused("/explorink/wallet/manifest.json"));
   EXPECT_FALSE(refused("/explorink/wallet/MANIFEST.JSON"));
-  EXPECT_FALSE(refused("/explorink/wallet/ab/0123456789abcdef.dat"));
+  EXPECT_FALSE(refused("/explorink/wallet/01/0123456789abcdef.dat"));
   // Nor is anything outside the directory -- a tile must still take the plain
   // path.
   EXPECT_FALSE(refused("/explorink/base/13/4482/2789.tib"));
   EXPECT_FALSE(refused("/explorink/walletish/manifest.bak"));
-  EXPECT_FALSE(wallet::pathIsUnderWalletDir("/explorink/wallet"));
-  EXPECT_FALSE(wallet::pathIsUnderWalletDir(nullptr));
+  // The directory node itself: a push of the bare path `wallet` would make a
+  // regular file where the directory has to be, and the wallet could then never
+  // exist on that card.
+  EXPECT_TRUE(refused("/explorink/wallet"));
+  EXPECT_FALSE(wallet::pathTouchesWalletDir(nullptr));
+  EXPECT_FALSE(wallet::pathTouchesWalletDir("/explorink/wall"));
+}
+
+// **One file, one spelling.** Every wallet gate compares a path as a string,
+// so all of them rest on this: if two different strings can open one directory
+// entry, a gate can be walked around. Three spellings have already been found
+// the hard way -- `.DAT` against a case-folding filesystem, FAT's `~1` short
+// name, and a leading space SdFat strips -- and the first two were closed in
+// the gates while this function, which is where the question actually lives,
+// had no test at all.
+TEST(WalletManifestSeal, PathSafetyRejectsEverySpellingOfOneName) {
+  const auto safe = [](const char* p) { return maptransfer::relPathIsSafe(p, std::strlen(p)); };
+
+  // What an honest sender writes.
+  EXPECT_TRUE(safe("wallet/01/0123456789abcdef.dat"));
+  EXPECT_TRUE(safe("wallet/manifest.json"));
+  EXPECT_TRUE(safe("base/13/4482/2789.tib"));
+  EXPECT_TRUE(safe("a..b.tib"));  // `..` inside a name is not the `..` component
+
+  // Escape.
+  EXPECT_FALSE(safe("../secrets"));
+  EXPECT_FALSE(safe("wallet/../wallet/manifest.json"));
+  EXPECT_FALSE(safe("/explorink/wallet/manifest.json"));  // absolute
+  EXPECT_FALSE(safe("wallet/"));
+  EXPECT_FALSE(safe("wallet//manifest.json"));
+  EXPECT_FALSE(safe(""));
+
+  // Aliasing: FAT trims trailing dots and spaces, and SdFat's parsePathName
+  // skips leading spaces, so each of these opens the entry on its right.
+  EXPECT_FALSE(safe("wallet/./manifest.json"));
+  EXPECT_FALSE(safe("wallet/manifest.json."));
+  EXPECT_FALSE(safe("wallet/manifest.json "));
+  EXPECT_FALSE(safe(" wallet/manifest.json"));
+  EXPECT_FALSE(safe("  wallet/01/0123456789abcdef.dat"));
+  EXPECT_FALSE(safe("wallet/ 01/0123456789abcdef.dat"));
+  EXPECT_FALSE(safe("wallet/ manifest.json"));
+
+  // Charset: a backslash is an ordinary filename character to SdFat, so it
+  // makes names that look like directories and are not; control bytes and
+  // high-bit bytes are refused outright.
+  EXPECT_FALSE(safe("wallet\\ab\\x.dat"));
+  EXPECT_FALSE(safe("wallet/ab/\x01.dat"));
+  EXPECT_FALSE(safe("wallet/ab/\x80.dat"));
 }
 
 // A callback the sealer cannot work without is a programming error, and a phone

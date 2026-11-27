@@ -7,6 +7,7 @@
 
 #include "HalStorage.h"
 #include "MapTilePath.h"
+#include "MapTransferPath.h"
 
 #if defined(ENABLE_WALLET) && ENABLE_WALLET
 #include "../wallet/WalletAssetIngest.h"
@@ -211,7 +212,7 @@ class MapTransferReceiver {
 
   // Longest relative path accepted in a begin frame, e.g.
   // "base/13/4482/2789.tib". Nul terminator not included.
-  static constexpr size_t kMaxRelPathBytes = 80;
+  static constexpr size_t kMaxRelPathBytes = maptransfer::kMaxRelPathBytes;
 
   // How long a transfer may sit with no frames before the next begin is
   // allowed to reclaim it. Long enough that a slow card or a busy phone is
@@ -316,11 +317,19 @@ class MapTransferReceiver {
   // path's 32 KB cap (WalletManifestIngest.h). It owns the plaintext buffer,
   // which is why dropping this pointer is what frees it.
   std::unique_ptr<wallet::ManifestIngest> manifestIngest_;
-  // Takes the manifest's plaintext buffer from the sealer under g_mux and wipes
-  // it outside the lock. Both tasks call it -- the host task part-way through
-  // the install, the activity task from abandon() -- and exactly one of them
-  // can get the memory.
-  void takeManifestBuffer();
+  // Takes the manifest's plaintext buffer out of the sealer under g_mux, so
+  // exactly one of the two tasks can ever own it. The host task takes it before
+  // it writes a byte of it -- a raw pointer handed to a blocking write is a
+  // pointer the other task can free underneath -- and the activity task takes
+  // it from abandon() to wipe it. The wipe is up to 32 KB and happens outside
+  // the lock, on memory nobody else can reach by then.
+  std::unique_ptr<uint8_t[]> takeManifestBuffer(size_t& length);
+  // takeManifestBuffer() plus the wipe, for the caller that only wants it gone.
+  void dropManifestBuffer();
+  // Drops both sealers. The only place either is freed, host task only, with
+  // the pointer writes under the same lock the activity task reads them
+  // through.
+  void clearSealers();
 #endif
 
   // The one thing both tasks touch. Written by publish(), read by status().

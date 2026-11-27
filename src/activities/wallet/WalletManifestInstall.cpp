@@ -13,8 +13,10 @@ namespace {
 constexpr const char* kLogTag = "WALLETMAN";
 
 // The card is written in bites rather than in one call. SdFat takes a 32 KB
-// write happily enough, but a short write has to be distinguishable from a
-// failed one, and a loop that checks every bite says which byte it stopped at.
+// write happily enough; what the loop buys is the **offset** in the log when a
+// write fails, which a single call cannot give. It does not distinguish a short
+// write from a failed one -- both end the same way, as `ERR write failed` -- and
+// an earlier version of this comment claimed it did (review, 2026-11-27).
 constexpr size_t kWriteChunk = 1024;
 
 bool writePart(const uint8_t* sealed, const size_t len) {
@@ -50,13 +52,17 @@ const char* manifestInstallReason(const ManifestInstallStatus status) {
       return "manifest unreadable";
     case ManifestInstallStatus::Locked:
       return "wallet locked";
-    case ManifestInstallStatus::TooBig:
-      // **Not "unreadable".** The file is fine; this board could not hold it
-      // while reading it back. A phone told "unreadable" re-sends the same
-      // bytes for ever; one told "too big" has something to act on. Measured
-      // on an X3 with BLE up, 2026-11-27: 20,480 bytes installed and 22,528 did
-      // not, nowhere near the 32 KB the format allows.
-      return "manifest too big";
+    case ManifestInstallStatus::NoMemory:
+      // **Not "unreadable", and not "manifest too big" either.** The file is
+      // fine; this board had no heap to read it back. "Unreadable" would have
+      // the phone re-send the same bytes for ever, and `manifest too big` is
+      // already the begin-frame refusal for a manifest over the format's cap --
+      // two different facts needing two different actions, which they did share
+      // until a review caught it (2026-11-27). This is the same heap failure
+      // the ingest allocation reports, so it says the same word. Measured on an
+      // X3 with BLE up: 20,480 bytes installed and 22,528 did not, nowhere near
+      // the 32 KB the format allows.
+      return "oom";
     case ManifestInstallStatus::SwapFailed:
       return "swap failed";
   }
@@ -85,7 +91,7 @@ ManifestInstallStatus finishManifestInstall() {
     ManifestInstallStatus status = ManifestInstallStatus::Unreadable;
     const char* why = "unreadable";
     if (error == Error::ManifestTooBig) {
-      status = ManifestInstallStatus::TooBig;
+      status = ManifestInstallStatus::NoMemory;
       why = "no memory to read it back";
     } else if (error == Error::Locked || !Session::instance().hasKey()) {
       // The second half of that test is not belt and braces. `Error::Locked`
@@ -127,6 +133,11 @@ ManifestInstallStatus finishManifestInstall() {
     // not exist and the backup does. The read path reads the backup, so the
     // wallet still opens with the previous list, and the next sync repairs it.
     LOG_ERR(kLogTag, "cannot rename the sealed manifest into place -- the card is on the backup list");
+    // Removed here too, so this is not the one failure branch that leaves a
+    // `.part` on the card indefinitely. The next install would truncate it
+    // anyway; a card that quietly carries a half-finished file is still worse
+    // than one that does not (review, 2026-11-27).
+    Storage.remove(kManifestPartPath);
     return ManifestInstallStatus::SwapFailed;
   }
 

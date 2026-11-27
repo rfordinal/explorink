@@ -220,7 +220,12 @@ void WalletActivity::renderScreen(const HalDisplay::RefreshMode mode) {
     // what is here" and "your documents are gone" are different messages, and only
     // one of them is true here (brief 32). Headers are cleartext, so the count
     // works with no key and no manifest.
-    if (error_ == wallet::Error::ManifestUnreadable || error_ == wallet::Error::NoManifest) {
+    if (wallet::readingBackupManifest()) {
+      // An empty list read off the backup used to fall into the branches below
+      // and say nothing about where it came from -- the one state in which "no
+      // documents" is most likely to be wrong (review, 2026-11-27).
+      snprintf(status, sizeof(status), "%s", tr(STR_WALLET_OLD_LIST));
+    } else if (error_ == wallet::Error::ManifestUnreadable || error_ == wallet::Error::NoManifest) {
       uint16_t onCard = 0;
       uint16_t codesOnCard = 0;
       wallet::countCardAssets(onCard, codesOnCard);

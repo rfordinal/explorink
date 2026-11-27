@@ -466,22 +466,54 @@ inline bool asciiEqualFold(const char* a, const char* b, size_t len) {
 // the two things the format puts there. A name nobody can seal is a name
 // nobody can leave in the clear either. Found in review, 2026-11-27, next to
 // the case-fold hole below.
-inline bool pathIsUnderWalletDir(const char* fullPath) {
+inline bool pathTouchesWalletDir(const char* fullPath) {
   if (fullPath == nullptr) return false;
   const size_t dirLen = std::strlen(kWalletDir);
-  if (std::strlen(fullPath) <= dirLen) return false;
+  const size_t len = std::strlen(fullPath);
+  if (len < dirLen) return false;
   if (!asciiEqualFold(fullPath, kWalletDir, dirLen)) return false;
+  // **The directory node itself counts.** An earlier version answered false for
+  // exactly `/explorink/wallet`, so a push of the bare path `wallet` missed the
+  // gate, took the ordinary file path, and on a card with no wallet yet created
+  // a regular *file* with that name -- after which no shard directory can ever
+  // be made and the wallet cannot exist on that card at all. Nothing in the
+  // firmware removes it. Found in review, 2026-11-27.
+  if (len == dirLen) return true;
   return fullPath[dirLen] == '/';
 }
 
 inline bool pathIsWalletAsset(const char* fullPath) {
   if (fullPath == nullptr) return false;
   const size_t dirLen = std::strlen(kWalletDir);
-  const size_t len = std::strlen(fullPath);
-  if (len < dirLen + 1 + 4) return false;
+  // **The whole shape, not a prefix and a suffix.** Checking only
+  // `<walletdir>/` and `.dat` left everything between them to the sender, so
+  // `wallet/manifest.bak/x.dat` was a wallet asset as far as this gate was
+  // concerned -- it passed the whitelist, and the directory creation that runs
+  // next made `manifest.bak` a **directory**. `Storage.exists()` is true for
+  // one and `Storage.remove()` cannot delete one, so every later sync answered
+  // `ERR swap failed` for ever with nothing in the firmware able to undo it.
+  // The gate authorised the leaf while the mkdir acted on the parents. Found in
+  // review, 2026-11-27.
+  //
+  // The shape below is the only one `buildAssetPathIn()` writes and the only
+  // one the read path can open, so nothing legitimate is refused by being
+  // exact: `<walletdir>/<2 hex>/<16 hex>.dat`.
+  const size_t want = dirLen + 1 + 2 + 1 + kAssetIdLen + 4;
+  if (std::strlen(fullPath) != want) return false;
   if (!asciiEqualFold(fullPath, kWalletDir, dirLen)) return false;
-  if (fullPath[dirLen] != '/') return false;
-  return asciiEqualFold(fullPath + len - 4, ".dat", 4);
+  const char* at = fullPath + dirLen;
+  if (*at++ != '/') return false;
+  if (!isHexDigit(at[0]) || !isHexDigit(at[1])) return false;
+  // The shard directory is the first two characters of the id, so a name that
+  // disagrees with its own shard is not a path this device ever wrote.
+  const char* shard = at;
+  at += 2;
+  if (*at++ != '/') return false;
+  for (size_t i = 0; i < kAssetIdLen; ++i) {
+    if (!isHexDigit(at[i])) return false;
+  }
+  if (asciiUpper(at[0]) != asciiUpper(shard[0]) || asciiUpper(at[1]) != asciiUpper(shard[1])) return false;
+  return asciiEqualFold(at + kAssetIdLen, ".dat", 4);
 }
 
 }  // namespace wallet

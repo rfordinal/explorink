@@ -18,7 +18,11 @@
 //                opinion): envelope, GCM tag, JSON, formatVersion. **Not the
 //                item count** -- an empty list is what a rider who deleted
 //                their last document syncs
-//   3. rename   `manifest.enc` -> `manifest.bak`
+//   3. delete   an existing `manifest.bak`, because a FAT rename will not
+//                replace a name -- **this is the step that can leave one copy
+//                where there were two**, and if the rename at 4 then fails the
+//                backup is gone without a replacement having landed
+//   3b. rename  `manifest.enc` -> `manifest.bak`
 //   4. rename   `manifest.enc.part` -> `manifest.enc`
 //   5. delete    a stale cleartext `manifest.json`, if the card still has one
 //
@@ -45,7 +49,7 @@ enum class ManifestInstallStatus : uint8_t {
   Ok = 0,
   WriteFailed,  // the card refused the bytes, or took fewer than offered
   Unreadable,   // the written file did not open: card, or a sealer bug
-  TooBig,       // it sealed and wrote, and this board had no memory to read it back
+  NoMemory,     // it sealed and wrote, and this board had no heap to read it back
   Locked,       // the wallet locked between the seal and the read-back
   SwapFailed,   // a rename the card refused -- the previous list is still live
 };

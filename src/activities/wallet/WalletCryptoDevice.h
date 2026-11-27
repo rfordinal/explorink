@@ -35,9 +35,10 @@ bool ctrDecryptInPlace(const uint8_t key[kWalletKeyLen], const uint8_t iv[kAsset
 // Measured on an X3, 2026-11-27: a 22,528-byte manifest read back with BLE up
 // logged `E esp-aes: Failed to allocate memory` and failed as a tag mismatch.
 // The separation is exact rather than a guess -- the ESP-IDF port returns
-// MBEDTLS_ERR_GCM_AUTH_FAILED only for a real tag difference and propagates -1
-// from the DMA allocation
-// (`components/mbedtls/port/aes/esp_aes_gcm.c`, esp_aes_gcm_auth_decrypt).
+// MBEDTLS_ERR_GCM_AUTH_FAILED only for a real tag difference
+// (`components/mbedtls/port/aes/esp_aes_gcm.c`, esp_aes_gcm_auth_decrypt) and
+// propagates everything else unchanged -- the allocation failure itself is the
+// `return -1` in `components/mbedtls/port/aes/dma/esp_aes_dma_core.c`.
 enum class GcmResult : uint8_t {
   Ok = 0,
   AuthFailed,  // the tag did not match: wrong key, or somebody changed the file
