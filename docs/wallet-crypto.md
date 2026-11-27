@@ -278,12 +278,47 @@ every one of them has passed:
 | `ERR not a manifest` | the first non-blank byte is not `{`, or `ManifestParser` could not read it as a manifest of a `formatVersion` this firmware knows |
 | `ERR crc mismatch` | the bytes received are not the bytes the sender declared |
 | `ERR manifest unreadable` | the sealed file did not open off the card. The previous list stays live and the `.part` is deleted |
+| `ERR wallet locked` (at the end) | the wallet locked between the seal and the read-back -- `Session::clear()` runs on the main task against a window of a 32 KB write plus a 32 KB read. The file was perfect; saying "unreadable" would have the phone re-send it for ever |
 | `ERR swap failed` | the card refused a rename. Either the previous list or the new one is live, never a half |
+| `ERR not a wallet file` | a path under the wallet directory that this device does not write. See the section below |
 
 `wallet/manifest.json` is matched case-insensitively, exactly as the asset gate
 is and for the same reason: SdFat compares names folded, so an exact-case gate
 would let `MANIFEST.JSON` through as an ordinary file and leave a cleartext index
 of every document title on the card.
+
+### Under the wallet directory: sealed, or refused. Never stored as it arrived
+
+**Two name gates are not a defence on their own, because FAT gives one file more
+than one name.** SdFat builds an 8.3 alias for every name that is not already
+8.3 -- `lfnParse()` sets `FNAME_FLAG_LOST_CHARS` and writes `~1` at `seqPos`
+(`FatLib/FatFileLFN.cpp`) -- and `open()` matches a query spelled with that alias
+against the same directory entry, through the plain-SFN `memcmp` branch. So
+`wallet/MANIFE~1.JSO` **is** `wallet/manifest.json` on the card, and is not
+`manifest.json` to any gate that compares names.
+
+Found in review, 2026-11-27, and it was not theoretical: that path passes
+`relPathIsSafe()` (a `~` is printable ASCII), misses both wallet gates, takes the
+ordinary tile path, and at completion `Storage.exists()` resolves to the real
+list, `remove()` deletes it and `rename()` puts the sender's bytes under a name
+nothing will look up again. No key, no pairing, BLE range.
+
+`manifest.enc` and `manifest.bak` needed no alias at all. And since the backup
+became the half-swap survivor, junk written over it destroys the only list a
+half-installed card has -- while on a **cleartext** card a pushed `manifest.bak`
+flips `treeIsEncrypted()` and sends the rider to an unlock screen for a wallet
+that has no wrap.
+
+So the receiver refuses, at `begin`, **anything under `/explorink/wallet` that is
+neither a `.dat` asset nor `manifest.json`** (`pathIsUnderWalletDir()`,
+`WalletAssetIngest.h`). A name nobody can seal is a name nobody can leave in the
+clear either. Nothing legitimate is lost: an encrypted tree has no `.rle`
+sidecars by definition, and this firmware never reads one anyway.
+
+**What this does not close**: an 8.3 alias of an *asset* name still ends in
+`.dat`, so it is still sealed -- over the entry of the real asset it aliases.
+That is one document overwritten by somebody in radio range, which is the
+unauthenticated channel itself and is T-2098's job, not a gate's.
 
 ### The Wi-Fi upload endpoint bypasses all of this
 
