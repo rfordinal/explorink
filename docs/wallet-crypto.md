@@ -316,6 +316,32 @@ neither a `.dat` asset nor `manifest.json`** (`pathIsUnderWalletDir()`,
 clear either. Nothing legitimate is lost: an encrypted tree has no `.rle`
 sidecars by definition, and this firmware never reads one anyway.
 
+**A leading space was the third spelling, and it beat all of this.** SdFat's
+`FatFile::parsePathName()` opens with `while (*path == ' ') path++;` for every
+component, so ` wallet/ab/<id>.dat` is the same directory entry as
+`wallet/ab/<id>.dat` -- and a different string to every gate here, all of which
+compare names. It passed the path check (a space is printable), missed the
+whitelist, took the ordinary file path, and its completion deleted the sealed
+document and renamed the sender's bytes over it, with `kFlagEncrypted` clear.
+Found in a third review round, 2026-11-27.
+
+The fix is in the path check, not in the gates: **one file has to have one
+spelling before a name comparison means anything.** `relPathIsSafe()` now
+rejects a component that begins with a space as well as one that ends in a
+space or a dot, and it moved to `src/activities/map/MapTransferPath.h` so it
+can be host-tested -- it had no test at all, which is why two of the three
+spellings got past it.
+
+**The shape is checked whole, not as a prefix and a suffix.** `wallet/<x>/x.dat`
+with any `<x>` used to be a wallet asset, so `wallet/manifest.bak/x.dat` passed
+the whitelist and the directory creation made `manifest.bak` a directory again
+-- the gate authorised the leaf, the mkdir acted on the parents. The accepted
+shape is `<walletdir>/<2 hex>/<16 hex>.dat` with the shard matching the id,
+which is the only shape `buildAssetPathIn()` writes, plus `manifest.json`, plus
+nothing. The wallet directory node itself is refused too: a push of the bare
+path `wallet` would make a regular file where the directory has to be, and the
+wallet could then never exist on that card.
+
 **The gate runs before the directory is created, and that ordering is the
 fix, not a detail.** `handleBegin` calls `ensureDirectoryExists()` on the
 parent of every accepted path, and `SDCardManager` creates every component. A
@@ -328,6 +354,21 @@ on a cleartext card that directory also flips `treeIsEncrypted()`. Found in a
 second review round, 2026-11-27, and confirmed closed on both boards:
 `wallet/manifest.bak/x` and `wallet/manifest.enc/deep/x` are refused and the
 wallet directory afterwards holds only its asset shards.
+
+**Confirmed on both boards, 2026-11-27.** ` wallet/<shard>/<id>.dat` answers
+`ERR bad path`; `wallet`, `wallet/manifest.bak/<id>.dat` and `wallet/<shard>/x.dat`
+all answer `ERR not a wallet file`; the wallet directory afterwards holds only
+its asset shards, and a normal asset and manifest still install and open.
+
+**What the attack actually costs, seen on a card.** A run against a build
+*without* these gates (the published v0.2.3, flashed by accident -- see
+`../../docs/PROGRESS.md`) left `d1cccb5b0744f2a2.dat` with its `flags` byte at
+0 and its payload reading `ATTACKER PLAINTEXT`. That is the end state the
+whitelist exists to prevent: a document the viewer will draw as genuine because
+nothing says it is encrypted. It is not evidence about the leading space
+specifically -- that build has no wallet gate at all to walk around. The
+leading space is proven by SdFat's own source, by the host test, and by the
+fixed build refusing it.
 
 **Two things this does not close.** An 8.3 alias of an *asset* name still ends
 in `.dat`, so it is still sealed -- over the entry of the real asset it
