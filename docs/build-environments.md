@@ -189,6 +189,48 @@ image SHA256 that follows from them (67 bytes at offsets 177-208, 1576669,
 1578089 and the trailing 32) -- the block was excluded there before, via
 `-UENABLE_SERIAL_LOG`, and is excluded now, via the absent flag.
 
+## A build for one chip can delete another chip's prebuilt directory
+
+`framework-arduinoespressif32-libs/<chip>/` is shared mutable state -- the
+section below already says it is rewritten by whichever build ran last. What is
+not obvious is that a build can remove a chip directory it does not use **and
+not put it back**, which turns the shared state from "stale" into "a whole
+environment cannot start".
+
+Measured on T15, 2026-11-27, after building `x4pro` and `t5s3pro` (both S3) in
+one tree:
+
+```
+$ ls ~/.platformio/packages/framework-arduinoespressif32-libs/
+esp32  esp32h2  esp32p4  esp32s3  package.json  tools.json  versions.txt
+```
+
+No `esp32c3`. `pio run -e default` then exits before compiling anything:
+
+```
+Error: Missing Arduino sdkconfig template at
+'~/.platformio/packages/framework-arduinoespressif32-libs/esp32c3/sdkconfig'
+```
+
+That line comes from the platform's own
+`~/.platformio/platforms/espressif32/builder/frameworks/espidf.py`
+(`write_sdkconfig_file`), which `env.Exit(1)`s when the template is absent.
+
+**It does not self-heal.** Re-running the identical command is the right answer
+to the `idf_component.yml` race below and is the *wrong* answer here -- the
+second run fails in three seconds the same way. The reinstall that would restore
+it is triggered by a version mismatch, not by a missing directory.
+
+This laptop's copy of the same package still carries every chip (`esp32c3`,
+`esp32c5`, `esp32c6`, `esp32s2`, ... ), so the pruning is not something every
+build does. Until the trigger is known, treat it as: **a C3 environment is not
+guaranteed to be buildable on a machine that has just built an S3 one**, and
+check before assuming a build host is available for `env:default`.
+
+Workaround used on the day: build the C3 environment on the other machine. The
+repair -- forcing the package to be refetched -- was not attempted, so whether
+that restores every chip directory is **open**.
+
 ## Adding one flag to one env from `platformio.local.ini` needs a new env
 
 The obvious shape is infinite recursion and PlatformIO says so:
