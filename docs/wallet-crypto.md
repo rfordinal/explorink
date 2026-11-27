@@ -220,6 +220,22 @@ CMD:WALLETUNLOCK 567ba98c
 # CMD:WALLETSTATUS now reports pattern_start=5, which is what the gate opens on.
 ```
 
+**Since T-2094 there is a path with no laptop in it at all, and it is the
+product's path. Proved on both chip families, 2026-11-26** -- a T5 S3 Pro and an
+X3, each with its NVS wiped first, set up with buttons only. The S3 stored an
+18,000-iteration wrap on start cell 6 and unwrapped it after a reboot in
+1,026 ms; the C3 did the same on start cell 9 in 909 ms, which is the figure
+this doc already carried for a laptop-made wrap. **The save itself is the number
+to watch**: 2,543 ms of main loop on the S3 and **3,221 ms on the C3**, against
+a 5 s task watchdog, and the difference is the panel rather than the KDF. The
+tables are in `pattern-lock.md`, "Enrollment on the panel". On a board with no wrap and no encrypted wallet on the card,
+Home > Wallet offers setup: pick a start cell, walk 8 to 12 points, walk them
+again, and the device makes K, the salt and the wrap itself. Nothing above is
+needed for it and nothing above can produce a key the device will accept
+afterwards. The recipe below stays because a tree built by `walletgen.py` is
+encrypted under a key a self-provisioned board does not have, so it is the only
+way to get documents onto a board until T-2095 and T-2096 land.
+
 **The last step has a version with no command in it at all**, and it is the one
 worth running: reboot the board, open Home > Wallet, and walk the pattern on the
 buttons. For `567ba98c` the cursor starts on cell 5 and the presses are
@@ -304,6 +320,13 @@ RAM:  K, while unlocked, in wallet::Session
 `KEK = PBKDF2-HMAC-SHA256(password = pattern bytes || deviceSecret, salt, iters)`,
 and the wrap is AES-256-GCM over K under that KEK (`WalletKeyStore.cpp`).
 
+- **K itself is made on the device** since T-2094, by `wallet::randomBytes()`
+  during enrollment, and it never leaves either -- there is no command and no
+  characteristic that can read it out, by construction. The phone will send
+  plaintext documents and the device will encrypt them on the way to the card
+  (T-2095, T-2096). `tools/walletgen.py` and `CMD:WALLETPROVISION` still make a
+  key on a laptop; that is the bench path, and it exists only until those two
+  land (../../docs/wallet-provisioning.md, "Decided 2026-11-26").
 - **`deviceSecret` is 32 random bytes made on this device** the first time anything
   provisions it, and it never leaves. That is why the laptop cannot compute the KEK
   and never sees the wrap: a leaked `provision.json` is a leaked key, but it is not
@@ -334,6 +357,15 @@ The walked pattern is wiped by the gate after every attempt
 (`PatternLockActivity::submit()`), the normalised copy is wiped by
 `KeyStore::tryUnlock()`, and the KDF password buffer -- which holds the pattern
 next to the device secret -- is wiped before `deriveKek()` returns.
+
+**During enrollment there are two of them**, because the pattern is asked for
+twice. The first walk lives in the gate screen between the two phases and is
+wiped on the match, on the mismatch, on BACK and in `onExit()`; the second is
+wiped as soon as the comparison is done, whichever way it went
+(`PatternLockActivity::submitEnroll()`). K and the salt are locals in
+`WalletUnlockActivity::provisionWith()` and are wiped after the wrap is stored,
+with K handed to the session first so the rider is not asked to unlock the
+wallet they have just set up.
 
 ## What the pattern is for
 
@@ -516,14 +548,31 @@ proving the unlock path twice in one session needs to tell those apart.
 
 ## Provisioning: a test path, and it says so
 
-The wallet key and the pattern are supposed to arrive from the phone over BLE (P4/P6).
-That app does not exist, so the laptop writes `provision.json` and
+**The product path is now enrollment on the device** (T-2094): the rider walks a
+pattern on the panel and the device makes K itself. The command below is the
+bench path and stays only until the phone can send plaintext documents
+(T-2095, T-2096), because a tree built by `walletgen.py` is encrypted under a key
+a self-provisioned board does not have.
+
+The wallet key and the pattern were supposed to arrive from the phone over BLE (P4/P6).
+That app does not exist, and under the 2026-11-26 decision it never will carry a
+key at all, so the laptop writes `provision.json` and
 `CMD:WALLETPROVISION` (above) pushes it in.
 
 **The key crosses a USB cable in the clear and lands in any serial log of that
 session.** The command logs two loud lines saying so every time it runs, and it is
-what makes the whole crypto path verifiable without a phone. It goes when BLE
-provisioning lands.
+what makes the whole crypto path verifiable without a phone. It goes when the
+device can receive plaintext documents and seal them itself.
+
+**The wrap is the last thing `provision()` writes**, and that order is load
+bearing rather than tidy: `isProvisioned()` reads the wrap alone, so a failed
+write or a power cut anywhere earlier leaves a device that still reports
+unprovisioned and can be set up again. The failure counter used to sit after the
+wrap, which meant a failure there returned false with a usable wrap already
+stored -- harmless until enrollment could retry, and then terminal: the rider is
+sent back to choose a new pattern, the next `provision()` refuses without
+`force`, and the wallet is locked under the one pattern the screen said had
+failed. Found in review, 2026-11-26.
 
 It **refuses an already provisioned device** unless the fifth argument is `force`:
 overwriting a wrap makes every asset already on the card unreadable for ever, and

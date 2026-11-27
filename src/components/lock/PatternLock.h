@@ -154,6 +154,10 @@ class Entry {
   }
 
   uint8_t cursor() const { return path_[count_ - 1]; }
+  // The i-th point of the walk, start included. Only enrollment uses it, to
+  // draw the path it is asking the rider to remember -- the gate must never
+  // call this (PatternLockActivity.h, "What is on screen").
+  uint8_t pointAt(const size_t i) const { return i < count_ ? path_[i] : path_[0]; }
   uint8_t cursorRow() const { return static_cast<uint8_t>(cursor() / kCols); }
   uint8_t cursorCol() const { return static_cast<uint8_t>(cursor() % kCols); }
   size_t points() const { return count_; }
@@ -197,6 +201,29 @@ inline uint8_t cellFromChar(const char c) {
 inline uint8_t startCellOf(const char* path) {
   if (path == nullptr || path[0] == '\0') return kCells;
   return cellFromChar(path[0]);
+}
+
+// True when two encoded paths are the same walk. For enrollment, which asks for
+// the pattern twice and may store only what both walks agree on.
+//
+// The loop never exits early and always reads `kPathBufBytes` of both buffers.
+// Not because a timing attack on this comparison is plausible -- both strings are
+// in this device's RAM and whoever can time it can read them -- but because the
+// two buffers are fixed-size and secret, and a `strcmp` over a secret is the
+// habit that eventually gets written somewhere it does matter. Costs twelve
+// iterations.
+//
+// **Both buffers must be `kPathBufBytes` and zero-initialised**, which is what
+// every caller declares and what `Entry::encode()` expects too -- it writes the
+// path and one terminator and leaves the tail alone. A buffer with stack garbage
+// past its terminator would compare unequal to an identical walk.
+inline bool samePattern(const char* a, const char* b) {
+  if (a == nullptr || b == nullptr) return false;
+  uint8_t diff = 0;
+  for (size_t i = 0; i < kPathBufBytes; ++i) {
+    diff = static_cast<uint8_t>(diff | (static_cast<uint8_t>(a[i]) ^ static_cast<uint8_t>(b[i])));
+  }
+  return diff == 0;
 }
 
 // True when `path` is a pattern this screen could actually have produced **from

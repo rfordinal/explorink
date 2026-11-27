@@ -83,6 +83,14 @@ def parse_yaml_file(filepath: str) -> Dict[str, str]:
             if not line.strip():
                 continue
 
+            # A whole-line comment. The format is KEY: "value" and nothing else,
+            # so a '#' line used to be a build failure -- which is what a comment
+            # above a new group of strings gets you (2026-11-26). Values are never
+            # affected: this skips only lines whose first non-blank character is
+            # '#', never a '#' inside a quoted value.
+            if line.lstrip().startswith("#"):
+                continue
+
             match = re.match(r'^([A-Za-z_][A-Za-z0-9_]*)\s*:\s*"(.*)"$', line)
             if not match:
                 raise ValueError(

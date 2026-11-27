@@ -32,6 +32,7 @@
 #if defined(ENABLE_WALLET) && ENABLE_WALLET
 #include "wallet/WalletActivity.h"
 #include "wallet/WalletCryptoDevice.h"
+#include "wallet/WalletKeyStore.h"
 #include "wallet/WalletUnlockActivity.h"
 #endif
 
@@ -274,6 +275,14 @@ void ActivityManager::goToWallet(const int itemIndex, const int codeIndex) {
   // itself by calling back in here once the session has K, so the branch below
   // picks the list the second time round (WalletUnlockActivity.h).
   if (wallet::treeIsEncrypted() && !wallet::Session::instance().hasKey()) {
+    replaceActivity(std::make_unique<WalletUnlockActivity>(renderer, mappedInput, itemIndex, codeIndex));
+    return;
+  }
+  // A device with no wallet key and no wallet on the card: the setup offer, which
+  // is the same screen (T-2094). The card test is what keeps this narrow -- a
+  // cleartext tree still browses, because such a card exists in the field and
+  // reading it needs no key at all (docs/wallet-crypto.md).
+  if (!wallet::KeyStore::isProvisioned() && !Storage.exists(wallet::kManifestPath)) {
     replaceActivity(std::make_unique<WalletUnlockActivity>(renderer, mappedInput, itemIndex, codeIndex));
     return;
   }

@@ -93,8 +93,7 @@ TEST(PatternLock, ACellMayBeSteppedOnTwice) {
 
 TEST(PatternLock, TheLastPointIsTheCallersMaximum) {
   Entry e(0);
-  for (size_t i = 0; i + 1 < patternlock::kMaxPoints; ++i)
-    ASSERT_TRUE(e.step(i % 2 == 0 ? Step::Right : Step::Left));
+  for (size_t i = 0; i + 1 < patternlock::kMaxPoints; ++i) ASSERT_TRUE(e.step(i % 2 == 0 ? Step::Right : Step::Left));
   EXPECT_EQ(e.points(), patternlock::kMaxPoints);
   EXPECT_TRUE(e.full());
   EXPECT_FALSE(e.step(Step::Down));
@@ -246,9 +245,7 @@ TEST(PatternLock, EveryPathTheScreenCanProduceIsWellFormed) {
 //
 // Two ranges, because two callers quote two tables: 4 to 8 is the screen lock's
 // and the gate's own default, 8 to 12 is the wallet's.
-TEST(PatternLock, TheSpaceIsTwoThousandEightHundredFromACorner) {
-  EXPECT_EQ(countPaths(0, 4, 8), 2810u);
-}
+TEST(PatternLock, TheSpaceIsTwoThousandEightHundredFromACorner) { EXPECT_EQ(countPaths(0, 4, 8), 2810u); }
 
 TEST(PatternLock, TheSpaceIsFourThousandFiveHundredFortyFiveFromAnEdge) {
   // The third figure docs/pattern-lock.md quotes. It had no test behind it until
@@ -297,4 +294,130 @@ TEST(PatternLock, DistinctPathsEncodeDistinctly) {
     frontier = next;
   }
   EXPECT_EQ(seen.size(), produced);
+}
+
+// ---------------------------------------------------------------------------
+// Enrollment: the comparison, and the floor the two walks have to clear
+// ---------------------------------------------------------------------------
+
+// The buffers both sides of an enrollment compare are the ones the screen
+// declares: fixed size, zero-initialised, written by encode().
+TEST(PatternLock, TwoIdenticalWalksCompareEqual) {
+  Entry a(5, 8, 12);
+  Entry b(5, 8, 12);
+  for (const Step s : {Step::Right, Step::Down, Step::Left, Step::Left, Step::Up, Step::Up, Step::Right}) {
+    ASSERT_TRUE(a.step(s));
+    ASSERT_TRUE(b.step(s));
+  }
+  char first[patternlock::kPathBufBytes] = {0};
+  char second[patternlock::kPathBufBytes] = {0};
+  a.encode(first);
+  b.encode(second);
+  EXPECT_EQ(a.points(), 8u);
+  EXPECT_TRUE(patternlock::samePattern(first, second));
+}
+
+TEST(PatternLock, AWalkThatDiffersByOneStepIsNotTheSame) {
+  Entry a(5, 8, 12);
+  Entry b(5, 8, 12);
+  for (const Step s : {Step::Right, Step::Down, Step::Left, Step::Left, Step::Up, Step::Up}) {
+    ASSERT_TRUE(a.step(s));
+    ASSERT_TRUE(b.step(s));
+  }
+  ASSERT_TRUE(a.step(Step::Right));
+  ASSERT_TRUE(b.step(Step::Down));
+  char first[patternlock::kPathBufBytes] = {0};
+  char second[patternlock::kPathBufBytes] = {0};
+  a.encode(first);
+  b.encode(second);
+  EXPECT_FALSE(patternlock::samePattern(first, second));
+}
+
+// A prefix is the mistake a rider actually makes: the second walk is the first
+// one with the last point missing. Without the tail of the buffer in the
+// comparison this is where an early-exit strcmp would still say "equal" if the
+// terminator had been forgotten.
+TEST(PatternLock, APrefixOfTheFirstWalkIsNotTheSame) {
+  Entry a(5, 8, 12);
+  for (const Step s : {Step::Right, Step::Down, Step::Left, Step::Left, Step::Up, Step::Up, Step::Right, Step::Down}) {
+    ASSERT_TRUE(a.step(s));
+  }
+  Entry b = a;
+  ASSERT_TRUE(b.undo());
+  char first[patternlock::kPathBufBytes] = {0};
+  char second[patternlock::kPathBufBytes] = {0};
+  a.encode(first);
+  b.encode(second);
+  EXPECT_EQ(a.points(), 9u);
+  EXPECT_EQ(b.points(), 8u);
+  EXPECT_FALSE(patternlock::samePattern(first, second));
+}
+
+TEST(PatternLock, SamePatternRefusesANullBuffer) {
+  char path[patternlock::kPathBufBytes] = {0};
+  EXPECT_FALSE(patternlock::samePattern(path, nullptr));
+  EXPECT_FALSE(patternlock::samePattern(nullptr, path));
+}
+
+// The floor an enrollment has to clear before it may store anything. It is the
+// wallet's 8, not this file's 4, and it is the same number the gate will later
+// demand -- a pattern stored below it is one the gate would never let a rider
+// finish (isWellFormed, and the Config::minPoints comment).
+TEST(PatternLock, AnEnrollmentWalkIsNotStorableBelowTheWalletsFloor) {
+  Entry e(5, 8, 12);
+  for (size_t i = 1; i < 8; ++i) {
+    EXPECT_FALSE(e.longEnough()) << "stored at " << e.points() << " points";
+    ASSERT_TRUE(e.step(i % 2 == 0 ? Step::Right : Step::Left));
+  }
+  EXPECT_EQ(e.points(), 8u);
+  EXPECT_TRUE(e.longEnough());
+
+  // And what it stores at the floor is what the device will later accept.
+  char path[patternlock::kPathBufBytes] = {0};
+  e.encode(path);
+  EXPECT_TRUE(patternlock::isWellFormed(path, patternlock::startCellOf(path), 8, 12));
+}
+
+// Any start cell a rider can pick in enrollment produces patterns the gate can
+// walk afterwards -- the picker's whole output range, not just the default.
+TEST(PatternLock, EveryStartCellAnEnrollmentCanPickIsUsable) {
+  for (uint8_t start = 0; start < patternlock::kCells; ++start) {
+    Entry e(start, 8, 12);
+    while (!e.longEnough()) {
+      // Always a legal step from anywhere: right if there is room, else left.
+      if (!e.step(Step::Right)) ASSERT_TRUE(e.step(Step::Left));
+    }
+    char path[patternlock::kPathBufBytes] = {0};
+    e.encode(path);
+    EXPECT_EQ(patternlock::startCellOf(path), start);
+    EXPECT_TRUE(patternlock::isWellFormed(path, start, 8, 12)) << "start cell " << static_cast<int>(start);
+  }
+}
+
+// The one input shape that separates samePattern() from a strcmp: two buffers
+// holding the same walk with different garbage past the terminator. Every other
+// comparison test in this file passes against `strcmp(a, b) == 0`, so without
+// this one the fixed-length, whole-buffer property the header spends thirteen
+// lines justifying has no coverage at all (review, 2026-11-26).
+//
+// It also pins the header's own warning: the enrollment's buffers must be
+// zero-initialised, and a caller that forgets gets an unequal compare rather
+// than a silent pass.
+TEST(PatternLock, SamePatternReadsPastTheTerminatorWhereStrcmpStops) {
+  Entry e(5, 8, 12);
+  for (const Step s : {Step::Right, Step::Down, Step::Left, Step::Left, Step::Up, Step::Up, Step::Right}) {
+    ASSERT_TRUE(e.step(s));
+  }
+
+  char clean[patternlock::kPathBufBytes] = {0};
+  char dirty[patternlock::kPathBufBytes];
+  for (char& c : dirty) c = 'X';
+  e.encode(clean);
+  e.encode(dirty);
+
+  // The same walk, the same characters up to and including the terminator.
+  EXPECT_STREQ(clean, dirty);
+  // And not the same buffer, which is what this comparison answers.
+  EXPECT_FALSE(patternlock::samePattern(clean, dirty));
+  EXPECT_TRUE(patternlock::samePattern(clean, clean));
 }

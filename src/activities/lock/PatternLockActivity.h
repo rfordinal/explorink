@@ -66,6 +66,25 @@
 // claim ("a shoulder looking at the panel must learn nothing",
 // WalletUnlockActivity.h) and this screen cannot. docs/pattern-lock.md, "What the
 // hidden path buys".
+//
+// ## Enrollment, and why it is this screen rather than a second one
+//
+// `Config::enroll` turns the same grid into "choose a pattern": pick the start
+// cell, walk the path, walk it again, and only a second walk that matches is
+// handed to the `Verifier`. The caller's verifier then *stores* instead of
+// checking -- for the wallet it makes K and wraps it (`WalletUnlockActivity`).
+//
+// One screen rather than two because every pixel, every step rule and the whole
+// touch model are the same, and a second copy of them is a second place for the
+// geometry and the gate's to drift apart. What enrollment adds is a phase, a
+// second buffer and a comparison; what it must not add is a different idea of
+// what a legal walk is, because a pattern that enrollment can store and the gate
+// cannot walk is a wallet nobody opens (`PatternLock.h`, isWellFormed).
+//
+// The one property it bends: the screen holds the first walk in RAM between the
+// two phases. It is wiped on the match, on the mismatch, on BACK and in
+// onExit() -- every path out, including the cancelled one. It still stores
+// nothing and still knows nothing about what the caller does with the path.
 class PatternLockActivity final : public Activity {
  public:
   enum class Verdict : uint8_t { Wrong, Ok, LockedOut };
@@ -99,6 +118,16 @@ class PatternLockActivity final : public Activity {
     // reaching the last point unlocks by itself. Off by default: see `speculative`
     // above for what it costs a verifier that derives a key.
     bool autoSubmit = false;
+    // Enrollment: pick a start cell, walk the pattern, walk it again, and only
+    // then call the Verifier -- once, with `speculative` false, to *store* the
+    // path it was handed. A mismatch never reaches the verifier and stores
+    // nothing.
+    //
+    // `startCell` is the cell the picker opens on rather than the cell the walk
+    // must start from, because here the rider chooses it. **Incompatible with
+    // autoSubmit**, which would submit a first walk as if it were a confirmed
+    // one; it is ignored and logged rather than obeyed.
+    bool enroll = false;
     // The one point no button press produces, so it has to match the stored
     // pattern's first character or nothing a rider enters can ever match.
     // `patternlock::startCellOf()` reads it off a stored pattern; pass the two
@@ -181,19 +210,54 @@ class PatternLockActivity final : public Activity {
 
   Layout layout() const;
   void draw(HalDisplay::RefreshMode mode);
+  // The segmented point counter under the grid. Its own function because the
+  // start picker draws everything else and not this.
+  void drawMeter(const Layout& l);
+  // The one line under the meter. Every state the screen can be in answers here,
+  // so a new phase cannot quietly leave the previous phase's sentence up.
+  void writeStatusLine(char* out, size_t outLen);
   void redraw(HalDisplay::RefreshMode mode);
   void onStep(patternlock::Step step);
   void onBack();
   bool handleTouch();
   void submit(bool speculative);
+  // CONFIRM, wherever the screen is: fix the start cell, take a walk, or store.
+  void onConfirm();
+  // The enrollment half of submit(): the first walk is remembered, the second is
+  // compared against it, and only a match is handed to the verifier.
+  void submitEnroll();
+  // Leaves the start picker with `startPick_` fixed, rebuilding the entry so the
+  // walk starts where the rider chose.
+  void beginWalk();
+  // Back to walk one with the stored first walk wiped. `mismatch` decides what
+  // the status line says.
+  void restartEnrollWalk(bool mismatch);
   void finishUnlocked();
   // Hands the caller the one attempt a walk of speculative probes costs, if any
   // are outstanding. Idempotent: a walk is counted once or not at all.
   void settleEntry();
 
+  // Where an enrollment is: pick the start cell, walk it, walk it again. An
+  // unlock gate is always Walk and never leaves it.
+  enum class Phase : uint8_t { PickStart, Walk, Confirm };
+
   Config config_;
   Verifier verifier_;
   patternlock::Entry entry_;
+  Phase phase_ = Phase::Walk;
+  // The cell the enrollment's picker is on. Not a secret: the gate will draw its
+  // cursor there before the first press for ever after (WalletKeyStore.h,
+  // `pstart`).
+  uint8_t startPick_ = patternlock::kDefaultStart;
+  // The first of the two enrollment walks, kept only until the second one either
+  // matches it or does not. Wiped on both outcomes, on BACK and in onExit().
+  char firstWalk_[patternlock::kPathBufBytes] = {0};
+  // The second walk did not match the first. One flag rather than reusing
+  // lastAttemptWrong_: that one means "the verifier refused", which during
+  // enrollment means the store failed, and telling a rider their pattern did not
+  // match when the NVS write failed would send them to re-walk a pattern that
+  // was fine.
+  bool mismatch_ = false;
   bool lockedOut_ = false;
   bool lastAttemptWrong_ = false;
   // At least one speculative probe has been fired for the current walk and the

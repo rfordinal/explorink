@@ -468,6 +468,20 @@ inline constexpr size_t kDeviceSecretLen = 32;
 inline constexpr size_t kPbkdf2SaltLen = 16;
 inline constexpr size_t kKekPasswordBufBytes = kPatternMaxPoints + kDeviceSecretLen;
 
+// What an enrollment on the device provisions with.
+//
+// Not a guess and not the format doc's 50,000 placeholder: it is the count every
+// measurement in `../../../docs/wallet-crypto.md` was taken against -- **903 ms
+// on the C3** (X3, `env:default`, 2026-11-26) and **1,047 ms on the S3** (X4 Pro
+// and T5 S3 Pro, 2026-11-23). It is also `tools/walletgen.py`'s own default, so
+// a wallet made on the device and one made on the laptop cost the same unlock.
+//
+// Changing it changes nothing about an existing wallet: the count is stored
+// beside the wrap it was used for, and an unwrap reads it back
+// (`WalletKeyStore.cpp`, `kKeyIters`). It only decides what the *next*
+// enrollment costs.
+inline constexpr uint32_t kProvisionIterations = 18000u;
+
 // The most PBKDF2 iterations a serial command will run in one go.
 //
 // mbedtls's PBKDF2 is one blocking call and the serial commands run on the main

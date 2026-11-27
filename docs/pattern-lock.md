@@ -258,12 +258,16 @@ verifier is then called with `speculative = true`, and both sides of that matter
 
 ## Verified, and not
 
-**Host-tested, 2026-11-23, extended 2026-11-26**: 21 tests in
+**Host-tested, 2026-11-23, extended 2026-11-26**: 27 tests in
 `test/pattern_lock/`, all green -- the grid walk, walls, revisits, the length cap,
 undo down to the start, the encoding, the wipe, `isWellFormed` against both its
 accept and its reject cases and against a caller's own range, a caller's range
 being clamped rather than obeyed, every path the screen can produce validating,
-four space counts, and no encoding collision.
+four space counts, and no encoding collision. The last six are enrollment's:
+two identical walks comparing equal, a walk differing by one step, a prefix of
+the first walk, a null buffer, the wallet's floor of 8 not being storable below
+8, and every one of the sixteen start cells a picker can choose producing
+patterns the gate validates afterwards.
 
 **The producer is walked against its own validator exhaustively, and the count is
 exact**: all 808,526 paths of 4 to 12 points from an interior start are generated
@@ -440,12 +444,90 @@ construction from `buttonHintsRect()` and by luck from the side boxes.
 
 **Still not checked, and T-2079 is where it is tracked:**
 
-1. **`env:sticky` and `env:simulator`** carry the devel flag and nothing has run
+1. **Three states are read off the code, not seen.** The unreadable-card branch
+   needs the card pulled at runtime, which is a hand on the device; the
+   "could not save the pattern" line needs an NVS write to fail; and this
+   screen's own BACK/OK boxes need a board in `TOUCH_ANYWHERE`. All three came
+   out of the 2026-11-26 review rather than a panel.
+2. **`env:sticky` and `env:simulator`** carry the devel flag and nothing has run
    the screen there. Both are the same code paths as envs already passed; this is
    the weakest of the gaps.
-2. **Ghosting.** A framebuffer read cannot show what the panel keeps. Whether a
+3. **Ghosting.** A framebuffer read cannot show what the panel keeps. Whether a
    `FAST_REFRESH` per cursor move leaves the old ring visible is an eye
    question, and nobody has looked at the glass while walking a pattern.
+
+### Enrollment on the panel, 2026-11-26, LilyGo T5 S3 Pro board B
+
+Board `30:ed:a0:a8:37:74`, `env:t5s3pro` plus `ENABLE_WALLET_TEST_CMDS`, NVS
+wiped first (`esptool erase-region 0x9000 0x5000`) so the board had no wallet
+key at all. Driven by `CMD:BUTTON` and read back with `CMD:SCREENSHOT`; the
+rider's own path was never typed anywhere.
+
+| Checked | Result |
+|---|---|
+| Home > Wallet on a cold board | "Set up wallet / No wallet on this device", BACK and OK |
+| OK | the picker: 4x4 grid, ring on the interior default, "Pick a start cell", no meter |
+| Picker walls | UP from row 1 moved to row 0, a second UP changed nothing |
+| Start fixed on cell 6 | meter appears at one segment, "First walk", "8 to 12 points" |
+| CONFIRM at 7 points | nothing happened -- the floor is the wallet's 8, not the file's 4 |
+| The path while walking | thin lines between the walked cells, under the lattice |
+| CONFIRM at 8 points | "Second walk, to check", meter back to one, cursor on the start cell |
+| A different second walk | bold "The two walks differ", back to the first walk, `provisioned=0` |
+| A matching second walk | device secret generated, `provisioned: 18000 PBKDF2 iterations, 16-byte salt, start cell 6, wrap stored`, key in the session, popped to the wallet list |
+| `CMD:WALLETSTATUS` | `provisioned=1 unlocked=1 iters=18000 pattern_start=6` |
+| The whole save | 2,543 ms of main loop, against a 5 s task watchdog |
+| Reboot, then the same pattern | `WALLETUNLOCK_OK unwrap_us=1026272` -- three runs, 1,026 to 1,027 ms |
+| A wrong pattern | `wrong_pattern attempts=1 of 10` |
+| The gate on the same board | `CMD:PATTERNLOCK` walked four points: **no lines, no caption**, "4 of 12 points" |
+
+Shots in the parent repo: `docs/device-shots/2026-11-26-t5s3prob-wallet-setup-*`
+and `-wallet-gate-no-path-540x960.png`.
+
+### The same walk on a C3, 2026-11-26, Xteink X3
+
+Board `7c:e8:b1:6f:c2:9c`, `env:default`, 792x528. NVS wiped the same way. Its
+card still held an encrypted wallet from the gate pass of 2026-11-23, which
+turned the first attempt into a test of the **safety branch** nobody had seen on
+hardware: no key in NVS plus an encrypted card draws "No wallet key on this
+device / This card was set up somewhere else" and **offers no setup**, which is
+exactly what stops a fresh K from making somebody's documents unreadable. Only
+after that manifest was renamed aside did the offer appear.
+
+| Checked | Result |
+|---|---|
+| No key, encrypted card | the dead end, no setup offer |
+| No key, no wallet on the card | the setup offer |
+| The picker, the walls, the floor at 8 | same as the S3 |
+| The path, the caption, the range | drawn, "First walk" / "Second walk, to check", "8 to 12 points" |
+| A matching second walk | `provisioned: 18000 PBKDF2 iterations, 16-byte salt, start cell 9, wrap stored` |
+| The whole save | **3,221 ms** of main loop against the 5 s watchdog -- 903 ms of KDF and about 1.8 s of panel waits (three `X3_DRF`) |
+| Reboot, then the same pattern | `WALLETUNLOCK_OK unwrap_us=909273`, and 905,262 us on a second run |
+| A wrong pattern | `wrong_pattern attempts=1 of 10` |
+
+**The C3 is the board to watch for the watchdog**, not the S3: 3,221 ms against
+2,543 ms, and the difference is the panel rather than the KDF. T-2089 already
+tracks that the second half of an unlock is unbounded.
+
+### env:x4pro, 2026-11-26 -- the gate only
+
+The third environment this change reaches (`ENABLE_WALLET` is in `base`). Board
+`b8:1f:3f:d4:89:bc`, 480x800, the smallest panel in the line and the one where a
+52-character sentence was clipped at both ends three days earlier. It holds a
+working wallet from that pass, so it shows the **gate**, not the setup: grid,
+meter, "At least 8 points", **no path drawn**, everything inside the band.
+
+Two things it did not exercise, and neither is this screen's fault: the setup
+flow (the board is provisioned, and wiping it would destroy a wallet another
+session built), and **this screen's own BACK/OK boxes** -- that board draws the
+theme's hint row, so `TouchPolicy::touchAnywhere()` is false on it as
+configured. The own-touch branch is still the one path in this screen that no
+hardware run has ever taken.
+
+**What no run covers**: the gate reached the way a rider reaches it. A provisioned board with no wallet on the card never shows the gate
+at all -- `goToWallet()` sends it to the browse list, which says the card is
+empty -- so the unlock here was driven through `CMD:WALLETUNLOCK`, which is the
+same `KeyStore::tryUnlock()` the gate's verifier calls, and the gate screen
+itself was proved on an X3 three days earlier with a laptop-made wallet.
 
 ## The first real caller: the wallet
 
@@ -478,6 +560,84 @@ than a change to this screen:
 
 What this screen gave up to take the job is written in "What the hidden path
 buys": the dot PIN could claim a shoulder learns nothing, and a grid cannot.
+
+## Enrollment: choosing a pattern on the same screen
+
+`Config::enroll` turns the gate into "choose a pattern". Three phases, and the
+rider walks the grid in all of them:
+
+| Phase | What the grid does | CONFIRM | BACK |
+|---|---|---|---|
+| pick the start | the cursor moves freely, nothing is recorded | fixes the start cell | leaves, cancelled |
+| walk | a normal walk from that cell | takes the first walk | one point back, then to the picker |
+| walk again | a second walk from the same cell | compares, then stores | one point back, then to the walk |
+
+The meter is not drawn in the picker. There is no walk yet, and an empty scale
+under the grid reads as a control waiting for presses the picker does not take.
+
+**The path IS drawn while enrolling**, as thin lines between the cells, under
+the lattice. That is the opposite of the gate and it is deliberate: a rider
+choosing a pattern has to see what they walked or they cannot repeat it, and
+hiding it buys nothing here -- whoever is watching the panel is watching the
+cursor move anyway, which is the limit "What the hidden path buys" already
+states. Maintainer's call, 2026-11-26, off the first panel run.
+
+**The status area says two things while enrolling.** A bold caption -- "First
+walk" / "Second walk, to check" -- over the count. Without the caption the
+second walk is the first one over again with no sign that anything happened:
+same grid, same empty meter, same sentence about points. And the count gives
+**both ends** of the range, "8 to 12 points", because a rider is choosing how
+long to make it; the gate keeps its floor-only "At least 8 points", where the
+length is already decided and the maximum would be a hint about a secret.
+All three were missing from the first cut and all three were found by the first
+person to use the screen who had not written it.
+
+**Only a matching second walk reaches the `Verifier`**, once, with `speculative`
+false. The caller's verifier *stores* instead of checking -- for the wallet it
+makes K, derives the KEK and writes the wrap. A mismatch never reaches it and
+stores nothing: the screen wipes both walks, says "The two walks differ" and
+returns to the first walk, keeping the chosen start cell.
+
+A verifier that answers anything but `Ok` to that one call means the walks
+agreed and the store failed -- NVS, a refused overwrite. The screen says "Could
+not save the pattern" rather than "Wrong pattern", because sending a rider back
+to re-walk a pattern that was never the problem is the kind of message that
+makes somebody set a shorter one.
+
+**Why this is a mode and not a second screen.** The geometry, the step rules,
+the wall behaviour and the whole touch model are the same, and a second copy of
+them is a second place for them to drift apart. The thing that must not drift is
+what counts as a legal walk: a pattern enrollment can store and the gate cannot
+walk is a wallet nobody opens (`isWellFormed`, and the `Config::minPoints`
+comment). The same `Config` carries the same floor to both.
+
+**What it bends.** The screen holds the first walk in RAM between the two
+phases -- the one thing the gate's "owns no secret" rule otherwise forbids. It
+is wiped through `secureWipe()` on the match, on the mismatch, on BACK and in
+`onExit()`, which covers the cancelled exit and the screen being torn down. The
+comparison is `patternlock::samePattern()`: fixed length over the whole buffer,
+no early exit, host-tested including the prefix case (a second walk that is the
+first one minus its last point).
+
+**Auto-submit is ignored in enrollment**, and logged when a caller asks for
+both. An auto-submitted first walk would be taken as a confirmed one, which
+means storing a pattern the rider typed once.
+
+BACK is one phase back rather than straight out, so a rider who mistyped the
+confirm can redo the pattern without leaving and re-entering the whole setup.
+Leaving is still two presses away from the confirm phase.
+
+### The first caller: setting the wallet up (T-2094)
+
+`WalletUnlockActivity` pushes this mode when the device has no wrap **and** the
+card has no encrypted wallet. It makes K and the salt from
+`wallet::randomBytes()`, calls `KeyStore::provision(..., force=false)` with
+`kProvisionIterations` (18,000), installs K in the session so the rider is not
+asked to unlock what they have just set up, and wipes both buffers.
+
+A device with no wrap but an **encrypted** card keeps the dead end it had. A
+fresh K there would be a wallet that looks ready and draws nothing, with the
+card's documents sealed under a key that is gone.
 
 ## The bench command
 

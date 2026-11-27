@@ -45,6 +45,23 @@
 // and it was what this screen said until an X4 Pro carrying a 2026-11-23 wallet
 // was put in front of it (2026-11-26).
 //
+// ## Setting a wallet up (T-2094)
+//
+// A device with no wrap **and no encrypted tree on the card** is not a dead end
+// any more: it offers setup, and OK pushes the same gate screen in enrollment
+// mode (`PatternLockActivity::Config::enroll`). The pattern the rider walks twice
+// becomes the KEK; the key it wraps is made here, by this device's hardware RNG,
+// and never leaves. `tools/walletgen.py` and `CMD:WALLETPROVISION` stay as the
+// bench path until the phone can send plaintext assets (T-2095, T-2096), and
+// that is the only reason they still exist.
+//
+// **A device with no wrap but an encrypted tree still gets the dead end**, and
+// that distinction is the whole safety of this screen. Enrolling there would
+// make a fresh K while the card's assets are sealed under a key that is gone --
+// a wallet that looks set up and draws nothing, with the old documents
+// unreadable for ever. Re-provisioning that card is a decision somebody takes
+// deliberately, not a button labelled "set up".
+//
 // It replaced a six-to-ten-symbol directional PIN on 2026-11-26. The PIN's own
 // claim -- "a shoulder looking at the panel must learn nothing" -- did not
 // survive the move and the gate's header says so; what did survive is every
@@ -65,6 +82,12 @@ class WalletUnlockActivity final : public Activity {
  private:
   void openGate();
   void onGateResult(bool unlocked);
+  // Pushes the gate in enrollment mode and provisions what comes back.
+  void openEnrollment();
+  // Makes K, a salt and the wrap from the pattern the rider walked twice. Called
+  // from inside the gate's verifier, so it runs with the pattern in hand and
+  // returns the verdict the screen shows.
+  bool provisionWith(const char* pattern);
   void draw(HalDisplay::RefreshMode mode);
 
   const int openItem_;
@@ -76,6 +99,13 @@ class WalletUnlockActivity final : public Activity {
   // Separate from noWrap_ because the two states deserve different sentences --
   // one device has no key and the other has a key nobody can reach.
   bool noPattern_ = false;
+  // The card cannot be read at all. Its own state because every other one here
+  // is a statement about what the card holds, and this is the one where the
+  // device cannot see the card to make such a statement (see onEnter).
+  bool noCard_ = false;
+  // No wrap and no encrypted tree: this device can be set up, here, now.
+  // Deliberately not the same state as noWrap_ -- see the class comment.
+  bool offerSetup_ = false;
   // The gate has been queued or is on top of this screen. Guards the one-shot
   // push: onEnter queues it, and the manager runs the push a loop later, so
   // loop() would otherwise queue a second one in between.
