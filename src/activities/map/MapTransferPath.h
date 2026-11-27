@@ -9,11 +9,18 @@
 // **Pulled out of MapTransferReceiver so it can be host-tested**, after it had
 // held a hole twice: this is the function that decides what a path *means*
 // before any gate compares it, and until 2026-11-27 nothing exercised it at
-// all. Every aliasing spelling the wallet gates were later patched for --
-// `.DAT` against a case-folding filesystem, FAT's `~1` short name, a leading
-// space SdFat silently strips -- is really a question about this function,
-// because a gate that compares strings can only be as sound as the guarantee
-// that one file has one spelling.
+// all.
+//
+// What it settles: the spellings FAT makes equal by *normalising* -- a `.`
+// component, a trailing dot or space, a leading space `parsePathName()` strips,
+// an empty component, a backslash SdFat treats as an ordinary character.
+//
+// **What it does not settle: FAT's 8.3 alias.** `~` is printable, so
+// `wallet/MANIFE~1.JSO` passes here and is stopped one layer up, by the wallet
+// being addressed through a parsed id instead of a string
+// (WalletAssetIngest.h). Outside the wallet directory that alias is unhandled
+// -- T-2105. An earlier version of this comment claimed the `~1` case as one
+// of the things this function answers, which it never did.
 //
 // Pure: no Storage, no globals, nothing from Arduino. The test for it lives in
 // test/wallet, because the wallet is what an alias gets you.

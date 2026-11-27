@@ -69,7 +69,8 @@ bool hostSeal(void* ctx, const uint8_t* nonce, uint8_t* data, size_t len, uint8_
 // Deliberately not a stub: "is this a manifest" is answered by the code that
 // will later have to open it, and a stub here would hide a disagreement between
 // the two.
-bool hostInspect(void*, const char* json, size_t len, uint32_t& walletVersion) {
+bool hostInspect(void*, const char* json, size_t len, uint32_t& walletVersion, bool& outOfMemory) {
+  outOfMemory = false;
   wallet::ManifestParser parser;
   parser.beginList(nullptr, 0);
   parser.feed(json, len);
@@ -459,55 +460,60 @@ TEST(WalletManifestSeal, ManifestPathGateFoldsCase) {
 TEST(WalletManifestSeal, EverythingElseUnderTheWalletDirIsRefused) {
   // What the receiver computes: in the wallet directory, and neither gate
   // claims it.
-  const auto refused = [](const char* path) {
-    return wallet::pathTouchesWalletDir(path) && !wallet::pathIsWalletAsset(path) &&
-           !wallet::pathIsWalletManifest(path);
+  // **What the receiver actually computes**, on the RELATIVE path, which is
+  // what it has when it decides. This used to model the absolute-path
+  // whitelist of an earlier round, and kept testing it for two rounds after
+  // the receiver stopped using it (review, 2026-11-27).
+  const auto refused = [](const char* rel) {
+    char id[wallet::kAssetIdBufBytes] = {0};
+    return wallet::relPathTouchesWalletDir(rel) && !wallet::parseWalletAssetRelPath(rel, id, sizeof(id)) &&
+           !wallet::parseWalletManifestRelPath(rel);
   };
 
   // FAT's own alias for manifest.json. Writing here deletes and replaces the
   // real list, with no key and nothing but BLE range.
-  EXPECT_TRUE(refused("/explorink/wallet/MANIFE~1.JSO"));
+  EXPECT_TRUE(refused("wallet/MANIFE~1.JSO"));
   // The device's own outputs. `manifest.bak` is the half-swap survivor, so junk
   // written over it destroys the only list a half-installed card has; a
   // `manifest.bak` on a CLEARTEXT card also flips treeIsEncrypted() and sends
   // the rider to an unlock screen for a wallet that has no wrap.
-  EXPECT_TRUE(refused("/explorink/wallet/manifest.bak"));
-  EXPECT_TRUE(refused("/explorink/wallet/manifest.enc"));
-  EXPECT_TRUE(refused("/explorink/wallet/manifest.enc.part"));
-  EXPECT_TRUE(refused("/explorink/wallet/MANIFEST.BAK"));
+  EXPECT_TRUE(refused("wallet/manifest.bak"));
+  EXPECT_TRUE(refused("wallet/manifest.enc"));
+  EXPECT_TRUE(refused("wallet/manifest.enc.part"));
+  EXPECT_TRUE(refused("wallet/MANIFEST.BAK"));
   // A sidecar: the format writes these for cleartext trees only and this
   // firmware never reads one, so a device that seals its own tree has no use
   // for them either.
-  EXPECT_TRUE(refused("/explorink/wallet/01/0123456789abcdef.rle"));
-  EXPECT_TRUE(refused("/explorink/wallet/anything"));
+  EXPECT_TRUE(refused("wallet/01/0123456789abcdef.rle"));
+  EXPECT_TRUE(refused("wallet/anything"));
   // **A directory component is not the sender's to choose.** These passed the
   // old asset gate -- prefix plus `.dat`, nothing checked in between -- and the
   // directory creation that runs next turned `manifest.bak` into a directory
   // the firmware can never delete.
-  EXPECT_TRUE(refused("/explorink/wallet/manifest.bak/0123456789abcdef.dat"));
-  EXPECT_TRUE(refused("/explorink/wallet/manifest.enc/0123456789abcdef.dat"));
-  EXPECT_TRUE(refused("/explorink/wallet/manifest.enc.part/0123456789abcdef.dat"));
-  EXPECT_TRUE(refused("/explorink/wallet/01/cd/0123456789abcdef.dat"));
+  EXPECT_TRUE(refused("wallet/manifest.bak/0123456789abcdef.dat"));
+  EXPECT_TRUE(refused("wallet/manifest.enc/0123456789abcdef.dat"));
+  EXPECT_TRUE(refused("wallet/manifest.enc.part/0123456789abcdef.dat"));
+  EXPECT_TRUE(refused("wallet/01/cd/0123456789abcdef.dat"));
   // A name that disagrees with its own shard was never written by this device.
-  EXPECT_TRUE(refused("/explorink/wallet/zz/0123456789abcdef.dat"));
-  EXPECT_TRUE(refused("/explorink/wallet/ff/0123456789abcdef.dat"));
-  EXPECT_TRUE(refused("/explorink/wallet/01/x.dat"));
-  EXPECT_TRUE(refused("/explorink/wallet/01/0123456789abcdefff.dat"));
+  EXPECT_TRUE(refused("wallet/zz/0123456789abcdef.dat"));
+  EXPECT_TRUE(refused("wallet/ff/0123456789abcdef.dat"));
+  EXPECT_TRUE(refused("wallet/01/x.dat"));
+  EXPECT_TRUE(refused("wallet/01/0123456789abcdefff.dat"));
 
   // And the two legitimate shapes are not refused.
-  EXPECT_FALSE(refused("/explorink/wallet/manifest.json"));
-  EXPECT_FALSE(refused("/explorink/wallet/MANIFEST.JSON"));
-  EXPECT_FALSE(refused("/explorink/wallet/01/0123456789abcdef.dat"));
+  EXPECT_FALSE(refused("wallet/manifest.json"));
+  EXPECT_FALSE(refused("wallet/MANIFEST.JSON"));
+  EXPECT_FALSE(refused("wallet/01/0123456789abcdef.dat"));
   // Nor is anything outside the directory -- a tile must still take the plain
   // path.
-  EXPECT_FALSE(refused("/explorink/base/13/4482/2789.tib"));
-  EXPECT_FALSE(refused("/explorink/walletish/manifest.bak"));
+  EXPECT_FALSE(refused("base/13/4482/2789.tib"));
+  EXPECT_FALSE(refused("walletish/manifest.bak"));
   // The directory node itself: a push of the bare path `wallet` would make a
   // regular file where the directory has to be, and the wallet could then never
   // exist on that card.
-  EXPECT_TRUE(refused("/explorink/wallet"));
-  EXPECT_FALSE(wallet::pathTouchesWalletDir(nullptr));
-  EXPECT_FALSE(wallet::pathTouchesWalletDir("/explorink/wall"));
+  EXPECT_TRUE(refused("wallet"));
+  EXPECT_FALSE(wallet::relPathTouchesWalletDir(nullptr));
+  EXPECT_FALSE(wallet::relPathTouchesWalletDir("wall"));
 }
 
 // **One file, one spelling.** Every wallet gate compares a path as a string,
@@ -610,6 +616,28 @@ TEST(WalletManifestSeal, AWalletRequestIsParsedAndTheCardPathIsRebuilt) {
   EXPECT_FALSE(wallet::relPathTouchesWalletDir(nullptr));
 }
 
+// A board that cannot allocate what the check needs must not answer with a
+// verdict about the data. `ERR not a manifest` is permanent -- a phone stops --
+// and the likely failure here is a transient heap condition on a C3 that is
+// already holding the whole manifest.
+TEST(WalletManifestSeal, AnInspectionThatRanOutOfMemoryIsNotCalledMalformed) {
+  const std::string json = kManifest;
+  const SealRun run = sealManifest(json, 128, crcOf(json), [](void*, const char*, size_t, uint32_t&, bool& oom) {
+    oom = true;
+    return false;
+  });
+  EXPECT_EQ(run.last, wallet::ManifestIngestStatus::NoMemory);
+  EXPECT_STREQ(wallet::manifestIngestReason(run.last), "oom");
+  EXPECT_TRUE(run.sealed.empty());
+
+  // And a body that really is not a manifest still says so.
+  const SealRun bad = sealManifest(json, 128, crcOf(json), [](void*, const char*, size_t, uint32_t&, bool& oom) {
+    oom = false;
+    return false;
+  });
+  EXPECT_EQ(bad.last, wallet::ManifestIngestStatus::NotJson);
+}
+
 // A callback the sealer cannot work without is a programming error, and a phone
 // told "oom" retries a condition retrying cannot fix.
 TEST(WalletManifestSeal, MissingCallbacksAreNotReportedAsOom) {
@@ -678,12 +706,18 @@ TEST(WalletManifestSeal, BeginDropsThePreviousRunsBufferAndFlags) {
 
   const std::string json = kManifest;
   const size_t want = wallet::sealedManifestLen(json.size());
-  ASSERT_EQ(ingest.begin(static_cast<uint32_t>(json.size()), crcOf(json), std::unique_ptr<uint8_t[]>(new uint8_t[want]),
-                         want, cb),
+  // The buffer is watched from outside, because the wipe is the half this test
+  // could not see. The raw pointer stays valid: the sealer keeps the
+  // allocation until the next begin() replaces it.
+  auto watched = std::unique_ptr<uint8_t[]>(new uint8_t[want]);
+  const uint8_t* buffer = watched.get();
+  ASSERT_EQ(ingest.begin(static_cast<uint32_t>(json.size()), crcOf(json), std::move(watched), want, cb),
             wallet::ManifestIngestStatus::Ok);
   // One chunk in -- `openingChecked_` is now set and the buffer holds titles --
   // and then the transfer dies without a terminal feed().
   ASSERT_EQ(ingest.feed(reinterpret_cast<const uint8_t*>(json.data()), 40), wallet::ManifestIngestStatus::Ok);
+  ASSERT_EQ(std::memcmp(buffer + wallet::kManifestEnvelopeLen, json.data(), 40), 0)
+      << "the document titles should be in the buffer at this point";
 
   // The next transfer is not JSON, and the refusal has to land on its **first
   // chunk** -- long before the whole body has arrived, so the inspection at the
@@ -695,6 +729,14 @@ TEST(WalletManifestSeal, BeginDropsThePreviousRunsBufferAndFlags) {
   ASSERT_EQ(ingest.begin(static_cast<uint32_t>(notJson.size()), crcOf(notJson),
                          std::unique_ptr<uint8_t[]>(new uint8_t[want2]), want2, cb),
             wallet::ManifestIngestStatus::Ok);
+  // **The previous run's titles are gone, not merely unreachable.** begin()
+  // wipes the old buffer before it drops it; without that the plaintext of the
+  // last manifest sits in a freed heap block. A reviewer deleted that wipe and
+  // the whole suite stayed green (2026-11-27), which is why this is asserted
+  // against the bytes rather than implied by the test's name.
+  for (size_t i = 0; i < 40; ++i) {
+    ASSERT_EQ(buffer[wallet::kManifestEnvelopeLen + i], 0) << "byte " << i << " of the previous manifest survived";
+  }
   EXPECT_EQ(ingest.feed(reinterpret_cast<const uint8_t*>(notJson.data()), 4), wallet::ManifestIngestStatus::NotJson);
 }
 

@@ -64,6 +64,7 @@ enum class ManifestIngestStatus : uint8_t {
   TooBig,       // over the cap the read path enforces -- refused at begin
   NoBuffer,     // the caller's buffer is missing or too small for the seal
   NotWired,     // a callback the sealer cannot work without was not supplied
+  NoMemory,     // the board could not allocate what the check needed
   BadLength,    // a declared length that cannot be a manifest
   NotJson,      // the body is not a wallet manifest this firmware can read
   CrcMismatch,  // the bytes received are not the bytes the sender declared
@@ -88,6 +89,8 @@ inline const char* manifestIngestReason(ManifestIngestStatus status) {
       // Not "oom": a phone told to retry an out-of-memory condition will, and
       // no amount of retrying fixes a caller that forgot a callback.
       return "sealer not wired";
+    case ManifestIngestStatus::NoMemory:
+      return "oom";
     case ManifestIngestStatus::BadLength:
       return "manifest length";
     case ManifestIngestStatus::NotJson:
@@ -114,7 +117,13 @@ inline const char* manifestIngestReason(ManifestIngestStatus status) {
 // sealed. `walletVersion` 0 means the manifest does not state one; see
 // ManifestEnvelope::walletVersion for what that costs (a resend, never a wrong
 // sync).
-using ManifestInspect = bool (*)(void* ctx, const char* json, size_t len, uint32_t& walletVersion);
+// `outOfMemory` separates "this board could not run the check" from "this body
+// is not a manifest". They used to share one answer, and the one they shared
+// was the permanent one: a phone told `ERR not a manifest` stops, and the
+// likely failure here is a transient heap condition on a C3 that is already
+// holding the whole manifest. The mirror of the mistake NotWired exists to
+// avoid. Review, 2026-11-27.
+using ManifestInspect = bool (*)(void* ctx, const char* json, size_t len, uint32_t& walletVersion, bool& outOfMemory);
 
 // A fresh 12-byte nonce per write. **Fresh is the whole requirement**: one key
 // over two different plaintexts with one nonce breaks GCM outright, and this
@@ -297,8 +306,9 @@ class ManifestIngest {
     // Then: is it a manifest? Asked with the read path's own parser, so a body
     // that seals here is a body that opens later.
     uint32_t version = 0;
-    if (!cb_.inspect(cb_.inspectCtx, reinterpret_cast<const char*>(plaintext()), total_, version)) {
-      return ManifestIngestStatus::NotJson;
+    bool inspectOom = false;
+    if (!cb_.inspect(cb_.inspectCtx, reinterpret_cast<const char*>(plaintext()), total_, version, inspectOom)) {
+      return inspectOom ? ManifestIngestStatus::NoMemory : ManifestIngestStatus::NotJson;
     }
     walletVersion_ = version;
 

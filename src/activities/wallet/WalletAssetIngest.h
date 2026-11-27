@@ -526,42 +526,6 @@ inline bool relPathTouchesWalletDir(const char* rel) {
   return rel[dirLen] == '/';
 }
 
-// True for anything at all under `/explorink/wallet`, whatever it is called.
-//
-// **The whitelist's other half.** Two gates decide what gets sealed --
-// pathIsWalletAsset() below and pathIsWalletManifest() -- and anything that
-// misses both used to take the ordinary tile path and land on the card
-// verbatim. That is a hole, because FAT gives one file more than one name:
-// SdFat builds an 8.3 alias for every name that is not 8.3, writing `~1` at
-// `seqPos` and setting FNAME_FLAG_LOST_CHARS (`FatLib/FatFileLFN.cpp`,
-// lfnParse), and its open() matches a query spelled with that alias against
-// the same directory entry (the `memcmp(dir->name, fname->sfn, ...)` branch).
-// So `wallet/MANIFE~1.JSO` is `wallet/manifest.json` to the filesystem and is
-// not `manifest.json` to a name gate. `manifest.enc` and `manifest.bak` have
-// the same shape without needing an alias at all -- and since the backup
-// became the half-swap survivor, writing junk over it is writing over the only
-// list a half-installed card has.
-//
-// So the receiver refuses everything under this directory that is not one of
-// the two things the format puts there. A name nobody can seal is a name
-// nobody can leave in the clear either. Found in review, 2026-11-27, next to
-// the case-fold hole below.
-inline bool pathTouchesWalletDir(const char* fullPath) {
-  if (fullPath == nullptr) return false;
-  const size_t dirLen = std::strlen(kWalletDir);
-  const size_t len = std::strlen(fullPath);
-  if (len < dirLen) return false;
-  if (!asciiEqualFold(fullPath, kWalletDir, dirLen)) return false;
-  // **The directory node itself counts.** An earlier version answered false for
-  // exactly `/explorink/wallet`, so a push of the bare path `wallet` missed the
-  // gate, took the ordinary file path, and on a card with no wallet yet created
-  // a regular *file* with that name -- after which no shard directory can ever
-  // be made and the wallet cannot exist on that card at all. Nothing in the
-  // firmware removes it. Found in review, 2026-11-27.
-  if (len == dirLen) return true;
-  return fullPath[dirLen] == '/';
-}
-
 inline bool pathIsWalletAsset(const char* fullPath) {
   if (fullPath == nullptr) return false;
   const size_t dirLen = std::strlen(kWalletDir);

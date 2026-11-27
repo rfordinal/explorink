@@ -155,7 +155,16 @@ bool feedManifest(ManifestParser& parser, Error& error) {
   // about a perfectly good wallet. Found in review, 2026-11-27.
   g_usingBackup = false;
   if (treeIsEncrypted()) {
-    const char* path = encryptedManifestPath(&g_usingBackup);
+    // **Into a local, and published only once the read succeeded.** The flag
+    // means "the list you are looking at came from the backup", so setting it
+    // before the read made every later failure claim that too: a corrupt or
+    // unreadable `manifest.bak` put "Previous list, last sync unfinished" on
+    // the panel instead of the real error, and swallowed the "N documents are
+    // still on the card" line brief 32 exists for. A rider was told a sync was
+    // pending when the list was in fact unreadable. Found in review,
+    // 2026-11-27.
+    bool fromBackup = false;
+    const char* path = encryptedManifestPath(&fromBackup);
     if (path == nullptr) {
       error = Error::NoManifest;
       return false;
@@ -175,6 +184,9 @@ bool feedManifest(ManifestParser& parser, Error& error) {
       error = Error::ManifestVersion;
       return false;
     }
+    // Last, past every failure: a decrypt that worked and a parse that did not
+    // is still not a list the rider can be shown as "one sync old".
+    g_usingBackup = fromBackup;
     error = Error::None;
     return true;
   }
@@ -277,8 +289,13 @@ bool verifyEncryptedManifestFile(const char* path, Error& error) {
   error = Error::None;
   auto parser = makeUniqueNoThrow<ManifestParser>();
   if (!parser) {
+    // **ManifestTooBig, not ManifestUnreadable.** This is a heap failure on
+    // this board, and the install maps it to `ERR oom` -- a phone told
+    // "unreadable" re-sends the same bytes for ever. The 32 KB buffer's own
+    // OOM inside feedEncryptedManifestAt() was already mapped that way; this
+    // allocation, one frame above it, was not. Review, 2026-11-27.
     LOG_ERR(kLogTag, "OOM: manifest parser");
-    error = Error::ManifestUnreadable;
+    error = Error::ManifestTooBig;
     return false;
   }
   // List mode with nowhere to store: the parse runs in full, `formatVersion()`
