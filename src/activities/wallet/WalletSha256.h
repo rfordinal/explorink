@@ -38,6 +38,19 @@ class Sha256 {
 
   void reset() {
     len_ = 0;
+    // **The block buffer is wiped, not just forgotten.** `update()` memcpy's
+    // caller bytes into it, so after hashing a document the tail of its last
+    // 64-byte block sits here -- and for the wallet's ingest path (T-2095) those
+    // bytes are a rider's plaintext, on a hasher that is then freed. Clearing
+    // `fill_` alone left them in the heap block the next allocation reuses.
+    // Found in review, 2026-11-27.
+    //
+    // Through a volatile pointer, because the call that matters most is the one
+    // in a destructor, which is exactly the store a compiler may delete. Same
+    // reasoning as `wallet::secureWipe()`, written out here rather than called:
+    // this header is below WalletCrypto.h and cannot include it.
+    volatile uint8_t* p = block_;
+    for (size_t i = 0; i < sizeof(block_); ++i) p[i] = 0;
     fill_ = 0;
     h_[0] = 0x6a09e667u;
     h_[1] = 0xbb67ae85u;

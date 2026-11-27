@@ -3,9 +3,18 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 
 #include "HalStorage.h"
 #include "MapTilePath.h"
+
+#if defined(ENABLE_WALLET) && ENABLE_WALLET
+#include "../wallet/WalletAssetIngest.h"
+#endif
+
+// Only for the panel geometry a wallet asset is checked against, and only
+// through a pointer -- this class does not draw.
+class GfxRenderer;
 
 // Receives one map data file over the BLE transfer channel and writes it to
 // the SD card -- docs/ble-map-transfer-brief.md in the parent xteink repo.
@@ -40,6 +49,20 @@
 // ATT write response is the ack, and the device sends it only after the bytes
 // are on the card -- the sender physically cannot outrun the SD card
 // (BlePositionServer.h, TransferHooks).
+//
+// ## A wallet asset is sealed on the way in
+//
+// A `.dat` under `/explorink/wallet` is not stored as it arrives. The phone
+// sends the readable bitmap and the **device** encrypts it with the key it made
+// itself (T-2094), because no laptop and no phone can produce a tree this board
+// can read any more. See WalletAssetIngest.h for the one-pass shape and for why
+// the `OK` reply means something weaker for these files than it does for a tile:
+// the CRC is accumulated from the arriving plaintext instead of read back off
+// the card, since what is on the card is ciphertext the sender has never seen.
+//
+// Everything below about offsets, `.part`, the rename and the threading is
+// unchanged by that -- the asset is the same number of bytes sealed as it was
+// in the clear, so the arithmetic never learns the difference.
 //
 // ## Write to .part, rename at the end
 //
@@ -84,7 +107,13 @@ class MapTransferReceiver {
  public:
   // rootDir is MapActivity's kTileRoot. Every path the sender gives is
   // relative to it and may not escape it.
-  explicit MapTransferReceiver(const char* rootDir);
+  //
+  // `renderer` is the live panel, and it is what a wallet asset's geometry is
+  // checked against before the device seals it (handleBegin). A nullptr means
+  // "this screen cannot take wallet assets" -- the push is refused rather than
+  // written in the clear, because a plaintext document on the card is the one
+  // outcome this whole rung exists to prevent.
+  explicit MapTransferReceiver(const char* rootDir, const GfxRenderer* renderer = nullptr);
   ~MapTransferReceiver();
 
   MapTransferReceiver(const MapTransferReceiver&) = delete;
@@ -226,6 +255,7 @@ class MapTransferReceiver {
   void publish();
 
   const char* rootDir_;
+  const GfxRenderer* renderer_;
 
   // Host task only, all of it.
   HalFile file_;
@@ -262,6 +292,15 @@ class MapTransferReceiver {
   // Host task's side of Status::verifying. Cleared wherever a transfer ends,
   // both ways.
   bool verifying_ = false;
+
+#if defined(ENABLE_WALLET) && ENABLE_WALLET
+  // The sealing state machine for the transfer in flight, when that transfer is
+  // a wallet asset. A pointer, allocated in handleBegin and dropped wherever
+  // the transfer ends, because it carries a 512 B scratch and a SHA-256 state
+  // that a tile push has no use for -- and this object lives for as long as the
+  // map screen is open (MapActivity, TileSyncActivity both hold one).
+  std::unique_ptr<wallet::AssetIngest> walletIngest_;
+#endif
 
   // The one thing both tasks touch. Written by publish(), read by status().
   Status snapshot_;

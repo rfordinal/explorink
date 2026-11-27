@@ -3226,7 +3226,9 @@ void MapActivity::updateDebugOverlay() {
 MapActivity::MapActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, const char* routePath,
                          bool resumedFromSleep, bool adoptRunningGnss, bool forcePhonePosition)
     : Activity("Map", renderer, mappedInput),
-      transfer_(kTileRoot),
+      // The live panel, for the wallet-asset gate on the ingest path
+      // (MapTransferReceiver.h, "A wallet asset is sealed on the way in").
+      transfer_(kTileRoot, &renderer),
       resumedFromSleep_(resumedFromSleep),
       adoptRunningGnss_(adoptRunningGnss),
       forcePhonePosition_(forcePhonePosition) {

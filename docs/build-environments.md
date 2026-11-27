@@ -189,6 +189,89 @@ image SHA256 that follows from them (67 bytes at offsets 177-208, 1576669,
 1578089 and the trailing 32) -- the block was excluded there before, via
 `-UENABLE_SERIAL_LOG`, and is excluded now, via the absent flag.
 
+## A build for one chip can delete another chip's prebuilt directory
+
+`framework-arduinoespressif32-libs/<chip>/` is shared mutable state -- the
+section below already says it is rewritten by whichever build ran last. What is
+not obvious is that a build can remove a chip directory it does not use **and
+not put it back**, which turns the shared state from "stale" into "a whole
+environment cannot start".
+
+Measured on T15, 2026-11-27, after building `x4pro` and `t5s3pro` (both S3) in
+one tree:
+
+```
+$ ls ~/.platformio/packages/framework-arduinoespressif32-libs/
+esp32  esp32h2  esp32p4  esp32s3  package.json  tools.json  versions.txt
+```
+
+No `esp32c3`. `pio run -e default` then exits before compiling anything:
+
+```
+Error: Missing Arduino sdkconfig template at
+'~/.platformio/packages/framework-arduinoespressif32-libs/esp32c3/sdkconfig'
+```
+
+That line comes from the platform's own
+`~/.platformio/platforms/espressif32/builder/frameworks/espidf.py`
+(`write_sdkconfig_file`), which `env.Exit(1)`s when the template is absent.
+
+**It does not self-heal.** Re-running the identical command is the right answer
+to the `idf_component.yml` race below and is the *wrong* answer here -- the
+second run fails in three seconds the same way. The reinstall that would restore
+it is triggered by a version mismatch, not by a missing directory.
+
+This laptop's copy of the same package still carries every chip (`esp32c3`,
+`esp32c5`, `esp32c6`, `esp32s2`, ... ), so the pruning is not something every
+build does. Until the trigger is known, treat it as: **a C3 environment is not
+guaranteed to be buildable on a machine that has just built an S3 one**, and
+check before assuming a build host is available for `env:default`.
+
+Workaround used on the day: build the C3 environment on the other machine. The
+repair -- forcing the package to be refetched -- was not attempted, so whether
+that restores every chip directory is **open**.
+
+## Adding one flag to one env from `platformio.local.ini` needs a new env
+
+The obvious shape is infinite recursion and PlatformIO says so:
+
+```ini
+; WRONG -- ProjectOptionValueError: Infinite recursion has been detected
+; for `build_flags` option in the `env:t5s3pro` section
+[env:t5s3pro]
+build_flags =
+  ${env:t5s3pro.build_flags}
+  -DENABLE_WALLET_TEST_CMDS=1
+```
+
+`platformio.local.ini` is an `extra_configs` include, so a section of the same
+name **merges into** the one in `platformio.ini` rather than inheriting from it.
+The reference then resolves to the option being defined.
+
+Declare a separate env that extends it instead, and build that:
+
+```ini
+[env:t5s3pro_bench]
+extends = env:t5s3pro
+build_flags =
+  ${env:t5s3pro.build_flags}
+  -DENABLE_WALLET_TEST_CMDS=1
+```
+
+The reference now comes from a different section and resolves normally. Its
+output lands in `.pio/build/t5s3pro_bench/`, which also means it does not wipe
+the release-shaped env's build (see "Building a second environment in one
+worktree wipes the first one's build" -- different env name, different
+directory, so that trap does not apply here).
+
+**Say in the pass which binary was tested.** A bench env is not the shape that
+ships: `ENABLE_WALLET_TEST_CMDS` adds `CMD:WALLETPROVISION`, `CMD:WALLETUNLOCK`,
+`CMD:WALLETSTATUS` **and `CMD:GOTO_WEBSERVER`** -- that last one is not a wallet
+command and is gated with them anyway, which is worth knowing before concluding
+a board has no web server. Measured 2026-11-27 on `env:t5s3pro`, where
+`CMD:GOTO_WEBSERVER` returns nothing at all and `CMD:BATT` answers fine, so the
+parser is not wedged -- the command simply is not compiled in.
+
 ## The release envs did not compile from 2026-08-17 to 2026-09-08
 
 And the other two release envs almost certainly do not either. **Measured** on
