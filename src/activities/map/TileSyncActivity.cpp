@@ -36,7 +36,7 @@ constexpr const char* kTileRoot = "/explorink";
 static MissingTilesConsoleSource g_missingTilesConsoleSource;
 
 TileSyncActivity::TileSyncActivity(GfxRenderer& renderer, MappedInputManager& mappedInput)
-    : Activity("TileSync", renderer, mappedInput), transfer_(kTileRoot) {}
+    : Activity("TileSync", renderer, mappedInput), transfer_(kTileRoot, &renderer) {}
 
 bool TileSyncActivity::armRun() {
   // The list the phone is about to read and the count it is about to be told have

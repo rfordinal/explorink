@@ -1,5 +1,9 @@
 add_executable(WalletTest
   WalletTest.cpp
+  # The device sealing an asset as it arrives (T-2095). Its own file: the offset
+  # arithmetic it covers is a different subject from the read path, and
+  # WalletTest.cpp is already long.
+  WalletIngestTest.cpp
   ${REPO_ROOT}/src/activities/wallet/WalletManifestParser.cpp
   ${REPO_ROOT}/lib/JsonParser/StreamingJsonParser.cpp
   # The hint-label width check measures with the firmware's own font table

@@ -11,6 +11,11 @@
 
 #include "MapByteFormat.h"
 
+#if defined(ENABLE_WALLET) && ENABLE_WALLET
+#include "../wallet/WalletCryptoDevice.h"
+#include "../wallet/WalletStore.h"
+#endif
+
 namespace {
 
 constexpr const char* kLogTag = "MAPXFER";
@@ -90,9 +95,37 @@ struct FrameGuard {
   FrameGuard& operator=(const FrameGuard&) = delete;
 };
 
+#if defined(ENABLE_WALLET) && ENABLE_WALLET
+// --- The wallet's three primitives, bound to this device --------------------
+//
+// WalletAssetIngest.h is pure arithmetic and takes these as callbacks, for the
+// same reason WalletCrypto.h's ctrXorInPlace does: the offset maths is the part
+// that gets a windowed CTR read wrong, so it exists once and is host-tested
+// once, against OpenSSL and zlib instead of mbedtls and the ROM.
+
+// AES-256-CTR, which is symmetric -- the same call the read path decrypts with
+// encrypts here. `ctx` is the session key, live only while the wallet is
+// unlocked.
+bool walletCipher(void* ctx, const uint8_t* iv, uint32_t payloadOffset, uint8_t* data, size_t len) {
+  const uint8_t* key = static_cast<const uint8_t*>(ctx);
+  if (key == nullptr) return false;
+  return wallet::ctrDecryptInPlace(key, iv, payloadOffset, data, len);
+}
+
+// The ROM's CRC-32, which is the one that has to produce the number the phone
+// compares against (it computes zlib.crc32 over the same bytes).
+uint32_t walletCrc32(uint32_t crc, const uint8_t* data, size_t len) { return esp_rom_crc32_le(crc, data, len); }
+
+bool walletSink(void* ctx, const uint8_t* data, size_t len) {
+  HalFile* file = static_cast<HalFile*>(ctx);
+  return file != nullptr && file->write(data, len) == len;
+}
+#endif
+
 }  // namespace
 
-MapTransferReceiver::MapTransferReceiver(const char* rootDir) : rootDir_(rootDir) {}
+MapTransferReceiver::MapTransferReceiver(const char* rootDir, const GfxRenderer* renderer)
+    : rootDir_(rootDir), renderer_(renderer) {}
 
 MapTransferReceiver::~MapTransferReceiver() {
   // No status to send and nobody to send it to by now -- just don't leave a
@@ -307,6 +340,50 @@ void MapTransferReceiver::handleBegin(const uint8_t* body, size_t len) {
     }
   }
 
+#if defined(ENABLE_WALLET) && ENABLE_WALLET
+  // A wallet asset is sealed on the way in, and the decision is made here --
+  // before a single byte is opened for write -- so every refusal below leaves
+  // the card exactly as it was. The previous transfer's machine is dropped
+  // whatever this one turns out to be, so a tile push can never inherit one.
+  walletIngest_.reset();
+  if (wallet::pathIsWalletAsset(finalPath_)) {
+    // No key means a locked wallet, and a locked wallet gets a refusal rather
+    // than a half-written document: storing the plaintext "for now" is the one
+    // outcome this rung exists to prevent (docs/wallet-provisioning.md).
+    const uint8_t* key = wallet::Session::instance().key();
+    if (key == nullptr) {
+      refuse("wallet locked");
+      return;
+    }
+    // The geometry gate needs the live panel, and only a screen can supply it.
+    if (renderer_ == nullptr) {
+      refuse("no panel");
+      return;
+    }
+    auto ingest = makeUniqueNoThrow<wallet::AssetIngest>();
+    if (!ingest) {
+      LOG_ERR(kLogTag, "OOM: wallet ingest");
+      refuse("oom");
+      return;
+    }
+    wallet::AssetIngest::Callbacks cb;
+    cb.cipher = walletCipher;
+    // The session key itself, not a copy: it dies when the wallet locks, and a
+    // copy here would be a second place it has to be wiped from.
+    cb.cipherCtx = const_cast<uint8_t*>(key);
+    cb.crc32 = walletCrc32;
+    cb.write = walletSink;
+    // Stable for the life of this object, and nothing is written through it
+    // until the first chunk arrives -- by which time the file below is open.
+    cb.writeCtx = &file_;
+    if (!ingest->begin(total, crc, wallet::livePanel(*renderer_), cb)) {
+      refuse("bad length");
+      return;
+    }
+    walletIngest_ = std::move(ingest);
+  }
+#endif
+
   // A leftover .part from an earlier killed transfer is not resumed -- the
   // whole file is coming again, from offset 0 (O_TRUNC does the rest).
   if (!Storage.openFileForWrite("MAPXFER", partPath_, file_)) {
@@ -371,14 +448,35 @@ void MapTransferReceiver::handleChunk(const uint8_t* body, size_t len) {
     return;
   }
 
-  // Straight from the NimBLE attribute buffer to the card: no copy, no queue,
-  // no buffer of our own. The ATT write response the stack sends when this
-  // callback returns is therefore "the bytes are on the card", which is what
-  // makes it usable as flow control (MapTransferReceiver.h, Threading).
-  if (file_.write(payload, payloadLen) != payloadLen) {
+#if defined(ENABLE_WALLET) && ENABLE_WALLET
+  if (walletIngest_) {
+    // A wallet asset is encrypted into a scratch copy and written from there,
+    // so this one path does copy -- the arriving bytes are NimBLE's buffer and
+    // are not ours to overwrite. Everything the sealer needs (the header, the
+    // IV, the running plaintext hash and CRC) is inside it; the receiver's own
+    // counters below are unchanged, because the file is the same length sealed
+    // as it was in the clear.
+    const wallet::IngestStatus fed = walletIngest_->feed(payload, payloadLen);
+    // feed() writes to the card, so detach() can have abandoned this transfer
+    // underneath it -- same re-check, same reason as the plain path below.
     if (!active_) return;
-    abandon("write failed");
-    return;
+    if (fed != wallet::IngestStatus::Ok && fed != wallet::IngestStatus::Complete) {
+      LOG_ERR(kLogTag, "wallet ingest refused %s: %s", finalPath_, wallet::ingestStatusReason(fed));
+      abandon(wallet::ingestStatusReason(fed));
+      return;
+    }
+  } else
+#endif
+  {
+    // Straight from the NimBLE attribute buffer to the card: no copy, no queue,
+    // no buffer of our own. The ATT write response the stack sends when this
+    // callback returns is therefore "the bytes are on the card", which is what
+    // makes it usable as flow control (MapTransferReceiver.h, Threading).
+    if (file_.write(payload, payloadLen) != payloadLen) {
+      if (!active_) return;
+      abandon("write failed");
+      return;
+    }
   }
   // Every blocking call below is a place detach() can have run its full wait,
   // given up, and abandoned this transfer underneath us -- file closed, .part
@@ -413,19 +511,38 @@ void MapTransferReceiver::handleChunk(const uint8_t* body, size_t len) {
   if (!active_) return;
 
   uint32_t actualCrc = 0;
-  if (!computePartCrc32(actualCrc)) {
-    // Checked before the verdict, not after: the readback failing *because*
-    // detach() deleted the .part out from under it is exactly the spurious
-    // `ERR readback failed` this whole change exists to stop.
-    if (!active_) return;
-    abandon("readback failed");
-    return;
-  }
-  if (actualCrc != declaredCrc_) {
-    LOG_ERR(kLogTag, "crc mismatch: got %08lx, declared %08lx", static_cast<unsigned long>(actualCrc),
-            static_cast<unsigned long>(declaredCrc_));
-    abandon("crc mismatch");
-    return;
+#if defined(ENABLE_WALLET) && ENABLE_WALLET
+  if (walletIngest_) {
+    // **The reply means something weaker for a wallet asset, on purpose.** The
+    // card holds ciphertext, so reading it back would answer a question nobody
+    // asked -- the phone compares this number with the CRC of the plaintext it
+    // sent (android-wallet.md 14.5). So `OK` here is "these bytes arrived whole
+    // and were written", not "the card holds these bytes". Said out loud in
+    // WalletAssetIngest.h and in docs/wallet-crypto.md rather than left to look
+    // like the tile guarantee.
+    //
+    // Both end-of-transfer checks already ran inside feed(), before it answered
+    // Complete: the CRC against what the sender declared, and the plaintext
+    // hash against the prefix the keystream was built from. Neither can be
+    // deferred to here, because this code only runs if they passed.
+    actualCrc = walletIngest_->plaintextCrc();
+  } else
+#endif
+  {
+    if (!computePartCrc32(actualCrc)) {
+      // Checked before the verdict, not after: the readback failing *because*
+      // detach() deleted the .part out from under it is exactly the spurious
+      // `ERR readback failed` this whole change exists to stop.
+      if (!active_) return;
+      abandon("readback failed");
+      return;
+    }
+    if (actualCrc != declaredCrc_) {
+      LOG_ERR(kLogTag, "crc mismatch: got %08lx, declared %08lx", static_cast<unsigned long>(actualCrc),
+              static_cast<unsigned long>(declaredCrc_));
+      abandon("crc mismatch");
+      return;
+    }
   }
 
   // SdFat's rename fails onto an existing name, and re-pushing a tile that is
@@ -453,6 +570,12 @@ void MapTransferReceiver::handleChunk(const uint8_t* body, size_t len) {
   received_ = 0;
   declaredTotal_ = 0;
   activeTileValid_ = false;
+#if defined(ENABLE_WALLET) && ENABLE_WALLET
+  // Freed here rather than kept for the next transfer: it holds a 512 B scratch
+  // and a SHA-256 state, and the next push is usually a tile that needs
+  // neither. Its destructor is also the last thing that wipes the scratch.
+  walletIngest_.reset();
+#endif
   // Same lock resetCounters() zeroes these under (MapTransferReceiver.h,
   // above completed_) -- otherwise its critical section excludes nothing.
   portENTER_CRITICAL(&g_mux);
@@ -507,6 +630,16 @@ void MapTransferReceiver::abandon(const char* reason) {
   received_ = 0;
   declaredTotal_ = 0;
   activeTileValid_ = false;
+#if defined(ENABLE_WALLET) && ENABLE_WALLET
+  // Wiped, **not freed**. This is the one place a transfer ends on the activity
+  // task (detach(), past its kDetachWaitMs bound), and the host task can be
+  // inside feed() right now -- deleting the object under it would be a
+  // use-after-free, where overwriting its buffers is the same kind of data race
+  // the file_ close/remove above already is, and ends the same way: a failed
+  // write and a transfer that is already being abandoned. The memory goes back
+  // at the next begin, which is host-task only.
+  if (walletIngest_) walletIngest_->reset();
+#endif
 
   if (reason == nullptr || endedElsewhere) return;
 
