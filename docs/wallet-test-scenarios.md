@@ -34,13 +34,39 @@ report says "W7 failed" and that has to mean the same thing next month.
 ```
 cd firmware/explorink/test
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
-cmake --build build --target WalletTest PatternLockTest -j8
-./build/wallet/WalletTest && ./build/pattern_lock/PatternLockTest
+cmake --build build --target WalletTest PatternLockTest MapTransferTest -j8
+./build/wallet/WalletTest && ./build/pattern_lock/PatternLockTest && ./build/map_transfer/MapTransferTest
 ```
 
-Both must be green before a board is touched. They cover the arithmetic, the
-ingest state machine and the pattern rules; they cover **no** panel, no card and
-no radio.
+All three must be green before a board is touched. They cover the arithmetic,
+the ingest state machine, the pattern rules and -- since T-2106 -- the transfer
+receiver's own decisions; they cover **no** panel, no card and no radio.
+
+### What `MapTransferTest` now reaches, and what it does not
+
+T-2106 lifted the receiver's frame parse, its begin ladder and its chunk state
+machine into `../src/activities/map/MapTransferDecide.h`, so the **refusal
+decisions** behind these scenarios are now driven by 45 host cases instead of
+only by a board:
+
+| Scenario | What the host now decides | What still needs a board |
+|---|---|---|
+| W20 | `wallet locked` is the answer for an asset with no key, and it is the *first* answer -- before the no-panel gate | That nothing reached the card |
+| W22 | A plain tile push passes every wallet gate untouched | The read-back CRC, the rename, the `OK` |
+| W30 | `manifest too big` fires one byte over the cap and not at the cap | That no bytes were sent, and the `ERR` reaching the phone |
+| W34 | `wallet locked` for the manifest, ahead of the cap check | Same |
+| W37, W40, W41, W42 | `not a wallet file` is answered **after** `busy` and before anything builds a path | That no directory was created |
+| W39 | `bad path` is the first refusal of all, ahead of the subscription and busy gates | That the sealed file of that name is untouched |
+| W43 | Nothing: the parse-and-rebuild is `WalletTest`'s | The card holding exactly one lower-case entry |
+
+**A decision test retires no scenario.** It answers "did the gate fire, in the
+right order, with the right words" and says nothing about the card, the panel,
+the sealing bytes or the radio -- which is the whole of what these scenarios are
+for. Run them all, as before.
+
+Two more things the host now covers that no scenario here ever did: the chunk
+state machine (a repeat, a gap, a reorder, an overrun, a whole file walked
+chunk by chunk) and the stale-transfer reclaim at its exact 30 s boundary.
 
 ## A. Setup, on the device (T-2094)
 
