@@ -106,6 +106,7 @@ arrived under.
 | W40 | Push `wallet/manifest.bak/<id>.dat`, then list the wallet directory | `ERR not a wallet file` and **no new directory** | **Regression.** The gate must run before the directory creation, and must check the whole path shape -- a directory named `manifest.bak` can never be deleted by this firmware |
 | W41 | Push the bare path `wallet` | `ERR not a wallet file` | **Regression.** A regular file there and the wallet can never exist on that card |
 | W42 | Push `wallet/<shard>/x.dat` (not 16 hex), or a shard that disagrees with the id | `ERR not a wallet file` | The accepted shape is the only one the read path can open |
+| W43 | Push `wallet/<SHARD>/<ID>.DAT` in upper case, then list the shard directory | Exactly one file, named in lower case, sealed | **The request is parsed and the path is rebuilt.** The sender's spelling is a lookup key; the card path comes from sixteen validated hex characters and firmware constants, so no spelling can produce a second entry or a different file |
 
 ## D. Reading (T-2094 and earlier)
 

@@ -375,6 +375,13 @@ the filesystem is not reachable.** A folded case, a `~1` short name, a leading
 space, a directory component -- none of them can change which file is opened,
 because none of them survives being parsed into an id and rebuilt.
 
+**Confirmed on both boards, 2026-11-27.** `wallet/D1/D1CCCB5B0744F2A2.DAT`
+answered `OK` and the log named the file it actually opened:
+`/explorink/wallet/d1/d1cccb5b0744f2a2.dat`. The shard directory afterwards
+held exactly one entry, lower case, with `flags = 3` (encrypted, content IV)
+and a ciphertext payload -- one file, built by the device, whatever the request
+spelled.
+
 **The half that is still a comparison.** A path that does not parse as a wallet
 request is still written where the sender spelled it, so a spelling that
 aliases *into* the wallet directory without naming it is held off by
