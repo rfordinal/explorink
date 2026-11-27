@@ -49,6 +49,22 @@ bool hostCipher(void* ctx, const uint8_t* iv, uint32_t payloadOffset, uint8_t* d
   return true;
 }
 
+// A cipher that refuses once it has enciphered `limit` bytes, standing in for
+// the session key dying part-way through a transfer -- which is what the device
+// binding does now that it re-reads the key per chunk.
+struct FlakyCipher {
+  size_t done = 0;
+  size_t limit = 0;
+};
+
+bool flakyCipher(void* ctx, const uint8_t* iv, uint32_t payloadOffset, uint8_t* data, size_t len) {
+  auto* c = static_cast<FlakyCipher*>(ctx);
+  if (c->done + len > c->limit) return false;
+  c->done += len;
+  wallet::host::ctrXor(kKey, iv, payloadOffset, data, len);
+  return true;
+}
+
 bool hostSink(void* ctx, const uint8_t* data, size_t len) {
   auto* out = static_cast<std::vector<uint8_t>*>(ctx);
   out->insert(out->end(), data, data + len);
@@ -222,15 +238,35 @@ TEST(WalletIngest, ChunkSizeDoesNotChangeTheCiphertext) {
   }
 }
 
-TEST(WalletIngest, HeaderSplitAcrossChunksStillGates) {
+TEST(WalletIngest, NothingIsDecidedUntilTheHeaderIsWhole) {
   // At a 23-byte MTU the 32-byte header arrives in three pieces, so nothing can
-  // be decided until the third one lands. A sealer that parsed the first chunk
-  // would read a short header as malformed and refuse every asset on a
-  // misconfigured link.
+  // be decided until the third one lands.
+  //
+  // **Asserted as "still Ok at byte 31, Malformed at byte 32"**, because the
+  // obvious version of this test cannot fail: feeding a bad header in 15-byte
+  // chunks answers Malformed whether the sealer waits for all 32 bytes or
+  // wrongly parses the first 15, since parseAssetHeader() refuses a short
+  // buffer too. The byte-by-byte form is the one that distinguishes them.
   std::vector<uint8_t> file = buildX4Tile();
-  file[5] = wallet::kBitDepth2;  // a tile that claims grey: refused
-  const SealRun run = seal(file, 15, crc32Of(file));
-  EXPECT_EQ(run.status, wallet::IngestStatus::Malformed);
+  file[5] = wallet::kBitDepth2;  // a 1bpp tile claiming grey: refused once read
+
+  wallet::AssetIngest ingest;
+  std::vector<uint8_t> sink;
+  wallet::AssetIngest::Callbacks cb;
+  cb.cipher = hostCipher;
+  cb.cipherCtx = const_cast<uint8_t*>(kKey);
+  cb.crc32 = crc32Bitwise;
+  cb.write = hostSink;
+  cb.writeCtx = &sink;
+  ASSERT_TRUE(ingest.begin(static_cast<uint32_t>(file.size()), crc32Of(file), wallet::kPanelX4, cb));
+
+  for (size_t i = 0; i < wallet::kAssetHeaderBytes - 1; ++i) {
+    ASSERT_EQ(ingest.feed(file.data() + i, 1), wallet::IngestStatus::Ok) << "byte " << i;
+  }
+  // Nothing has been written yet either: the header the device owns is not
+  // known until its last byte lands.
+  EXPECT_TRUE(sink.empty());
+  EXPECT_EQ(ingest.feed(file.data() + wallet::kAssetHeaderBytes - 1, 1), wallet::IngestStatus::Malformed);
 }
 
 // --- the checks that keep a bad asset off the card -------------------------
@@ -398,8 +434,14 @@ TEST(WalletIngest, PageImageIsCheckedAgainstItsOwnStride) {
 
 TEST(WalletIngest, GreyPlanesCarryThreePlanes) {
   // assetType 7 is three concatenated 1bpp planes, so its rawLen is three times
-  // a 1bpp page's. A sealer that divided by one plane would compute a stride
-  // three times too big and take an asset that cannot be drawn.
+  // a 1bpp page's.
+  //
+  // **This test is written so that deleting the `3u` factor breaks it**, which
+  // the first version was not: with the old "stride is at least the panel's"
+  // rule, dividing by one plane merely produced a stride three times too big
+  // and the asset was taken either way, so both assertions held with the factor
+  // removed. The stride upper bound is what makes the two answers differ now --
+  // 3 x the row is wider than the row can possibly be.
   const uint16_t width = 1200;
   const uint16_t height = 1600;
   const uint32_t planeBytes = (width / 8u) * height;
@@ -408,10 +450,72 @@ TEST(WalletIngest, GreyPlanesCarryThreePlanes) {
       buildPlainAsset(payload, wallet::AssetType::GreyPlanes, wallet::kBitDepth2, width, height, 3);
   EXPECT_EQ(seal(file, 509, crc32Of(file)).status, wallet::IngestStatus::Complete);
 
-  // The same bytes claiming to be one plane: the length no longer divides.
-  const std::vector<uint8_t> oneLess = buildPlainAsset(fakePayload(planeBytes * 3u + 1u), wallet::AssetType::GreyPlanes,
-                                                       wallet::kBitDepth2, width, height, 3);
-  EXPECT_EQ(seal(oneLess, 509, crc32Of(oneLess)).status, wallet::IngestStatus::Malformed);
+  // Proof that the factor is load-bearing, stated as the gate rather than a
+  // whole transfer: the same header read as one plane is a 450-byte stride for
+  // a row that needs 150, which the stride bound refuses.
+  wallet::AssetHeader asOnePlane;
+  ASSERT_TRUE(wallet::parseAssetHeader(file.data(), wallet::kAssetHeaderBytes, asOnePlane));
+  asOnePlane.assetType = wallet::AssetType::PageImageGrey;  // one image, not three planes
+  EXPECT_EQ(wallet::checkAssetForIngest(asOnePlane, wallet::kPanelX4, planeBytes * 3u),
+            wallet::IngestStatus::Malformed);
+}
+
+TEST(WalletIngest, AStrideWiderThanTheRowIsRefused) {
+  // The skew case, and the reason the stride has an upper bound at all. 800
+  // pixels need 100 bytes a row; this header declares 200 and every other check
+  // here passes. Taken, it would be sealed and then refused for ever by the read
+  // path, which compares the stride against the manifest.
+  const uint16_t width = 800;
+  const uint16_t height = 1600;
+  const uint32_t rawLen = 200u * height;
+  const std::vector<uint8_t> file =
+      buildPlainAsset(fakePayload(rawLen), wallet::AssetType::PageImage, wallet::kBitDepth1, width, height, 3);
+  EXPECT_EQ(seal(file, 509, crc32Of(file)).status, wallet::IngestStatus::Malformed);
+
+  // And the honest stride for the same page is taken.
+  const uint32_t honest = 100u * height;
+  const std::vector<uint8_t> ok =
+      buildPlainAsset(fakePayload(honest), wallet::AssetType::PageImage, wallet::kBitDepth1, width, height, 3);
+  EXPECT_EQ(seal(ok, 509, crc32Of(ok)).status, wallet::IngestStatus::Complete);
+}
+
+TEST(WalletIngest, ADegeneratePanelTakesNothing) {
+  // A renderer answering zero must not make every page image pass. The tile
+  // branch already guarded its own geometry; this is the page branch's.
+  const std::vector<uint8_t> file = buildX4Tile();
+  wallet::AssetHeader header;
+  ASSERT_TRUE(wallet::parseAssetHeader(file.data(), wallet::kAssetHeaderBytes, header));
+  header.assetType = wallet::AssetType::PageImage;
+  const wallet::PanelGeometry dead = {};
+  EXPECT_EQ(wallet::checkAssetForIngest(header, dead, wallet::kPanelX4.bufferBytes), wallet::IngestStatus::WrongPanel);
+}
+
+TEST(WalletIngest, ACipherThatFailsMidTransferEndsIt) {
+  // The device re-reads the session key on every chunk, so a wallet locked
+  // part-way through -- the rider pressing power, CMD:WALLETLOCK -- makes the
+  // cipher refuse. That must end the transfer. It cannot be caught any other
+  // way: the hash and the CRC are both over the plaintext, so both would still
+  // pass on a half-enciphered file.
+  const std::vector<uint8_t> file = buildX4Tile();
+  FlakyCipher cipher;
+  cipher.limit = 10000;
+  std::vector<uint8_t> sink;
+  wallet::AssetIngest ingest;
+  wallet::AssetIngest::Callbacks cb;
+  cb.cipher = flakyCipher;
+  cb.cipherCtx = &cipher;
+  cb.crc32 = crc32Bitwise;
+  cb.write = hostSink;
+  cb.writeCtx = &sink;
+  ASSERT_TRUE(ingest.begin(static_cast<uint32_t>(file.size()), crc32Of(file), wallet::kPanelX4, cb));
+  size_t at = 0;
+  wallet::IngestStatus status = wallet::IngestStatus::Ok;
+  while (at < file.size() && status == wallet::IngestStatus::Ok) {
+    const size_t take = std::min<size_t>(180, file.size() - at);
+    status = ingest.feed(file.data() + at, take);
+    at += take;
+  }
+  EXPECT_EQ(status, wallet::IngestStatus::CipherFailed);
 }
 
 // --- which files get sealed at all -----------------------------------------
@@ -429,6 +533,20 @@ TEST(WalletIngest, OnlyWalletDatFilesAreSealed) {
   EXPECT_FALSE(wallet::pathIsWalletAsset("/explorink/walletish/ab/x.dat"));
   EXPECT_FALSE(wallet::pathIsWalletAsset("/explorink/wallet"));
   EXPECT_FALSE(wallet::pathIsWalletAsset(nullptr));
+}
+
+TEST(WalletIngest, TheGateFoldsCaseBecauseTheFilesystemDoes) {
+  // SdFat matches directory entries case-insensitively, so an exact-case gate
+  // and the filesystem under it disagreed about what one name means. Pushing
+  // `…abcdef.DAT` skipped the sealer -- no key needed, wallet locked -- and then
+  // replaced the sealed `…abcdef.dat`, which the viewer drew as a genuine
+  // document because the encrypted flag was clear. Found in review 2026-11-27.
+  EXPECT_TRUE(wallet::pathIsWalletAsset("/explorink/wallet/ab/abcdef0123456789.DAT"));
+  EXPECT_TRUE(wallet::pathIsWalletAsset("/explorink/wallet/AB/ABCDEF0123456789.Dat"));
+  EXPECT_TRUE(wallet::pathIsWalletAsset("/EXPLORINK/WALLET/ab/x.dat"));
+  // Folding must not widen it past the wallet.
+  EXPECT_FALSE(wallet::pathIsWalletAsset("/explorink/WALLETISH/ab/x.dat"));
+  EXPECT_FALSE(wallet::pathIsWalletAsset("/explorink/wallet/ab/x.datx"));
 }
 
 // --- the version is part of the keystream ----------------------------------

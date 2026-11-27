@@ -170,20 +170,51 @@ inline IngestStatus checkAssetForIngest(const AssetHeader& header, const PanelGe
     case AssetType::PageImage:
     case AssetType::PageImageGrey:
     case AssetType::GreyPlanes: {
+      const bool twoBitImage = header.assetType == AssetType::PageImageGrey;
+      const bool threePlanes = header.assetType == AssetType::GreyPlanes;
       const uint8_t wantDepth = header.assetType == AssetType::PageImage ? kBitDepth1 : kBitDepth2;
       if (header.bitDepth != wantDepth) return IngestStatus::Malformed;
       // Three concatenated planes for assetType 7, one image otherwise
       // (WalletAsset.h, "Grey page images").
-      const uint32_t rows =
-          static_cast<uint32_t>(header.height) * (header.assetType == AssetType::GreyPlanes ? 3u : 1u);
+      const uint32_t rows = static_cast<uint32_t>(header.height) * (threePlanes ? 3u : 1u);
       if (rows == 0 || header.rawLen % rows != 0) return IngestStatus::Malformed;
       const uint32_t stride = header.rawLen / rows;
+
+      // **The stride must be exactly wide enough for the row, never wider.**
+      // Deriving it and then only asking "is it at least the panel's" was the
+      // gap a review found on 2026-11-27: a header claiming width 800, height
+      // 1600, rawLen 320000 yields a 200-byte stride where the row needs 100,
+      // passes every other check here, gets sealed, and is then refused for ever
+      // by the read path, which compares the stride against the manifest. That
+      // is exactly "stores something that can never be drawn".
+      //
+      // It is also the one bug that draws a *plausible* picture when a reader
+      // does accept it -- every row shifted a little further than the last,
+      // which reads as a skewed document rather than as a broken file. The read
+      // path says so in those words (WalletAsset.h, checkGreyGeometry); ingest
+      // now makes the same check, against the file's own numbers rather than a
+      // manifest it does not have.
+      //
+      // The upper bound is the ceiling form, so both spellings a generator might
+      // use for a width that is a multiple of 8 agree, and nothing
+      // `tools/walletgen.py` emits is refused: it writes `native_w // 8` for a
+      // 1bpp page and `native_w // 4` for the 2bpp form, which equal the ceiling
+      // for every width it produces.
+      const uint32_t pixelsPerByte = twoBitImage ? 4u : 8u;
+      const uint32_t maxStride = twoBitImage ? greyRowBytes2bpp(header.width) : greyPlaneRowBytes(header.width);
+      if (stride * pixelsPerByte < header.width || stride > maxStride) return IngestStatus::Malformed;
+
       // A page is bigger than the panel and is not panel-shaped, so the only
-      // thing that can be asserted without a manifest is that a panel-sized
-      // window fits inside it. The 2bpp form is checked against the 1bpp stride
-      // its planes would have, same as checkGreyGeometry() does: a page
-      // narrower than the panel is a wrong-device asset either way.
-      const uint32_t panelRow = header.assetType == AssetType::PageImageGrey ? greyPlaneRowBytes(header.width) : stride;
+      // thing left to assert without a manifest is that a panel-sized window
+      // fits inside it. The 2bpp form is checked against the 1bpp stride its
+      // planes would have, same as checkGreyGeometry() does: a page narrower
+      // than the panel is a wrong-device asset either way.
+      //
+      // The live geometry is checked for zero here, the same way the tile branch
+      // checks `live.bufferBytes` -- a renderer that answered zero would
+      // otherwise make every page image pass.
+      if (live.rowBytes == 0 || live.height == 0) return IngestStatus::WrongPanel;
+      const uint32_t panelRow = twoBitImage ? greyPlaneRowBytes(header.width) : stride;
       if (panelRow < live.rowBytes || header.height < live.height) return IngestStatus::WrongPanel;
       return IngestStatus::Ok;
     }
@@ -213,6 +244,14 @@ class AssetIngest {
   // `declaredCrc` is its CRC-32 over those same bytes. False for a transfer too
   // short to be an asset at all, or callbacks that are not all wired.
   bool begin(uint32_t totalLen, uint32_t declaredCrc, const PanelGeometry& live, const Callbacks& cb) {
+    // **First, before any way out.** A refused begin that left `active_` set
+    // would let a caller that ignored the return value feed the *next*
+    // transfer's plaintext into the *previous* transfer's keystream, at the
+    // previous payload offset -- one keystream over two plaintexts, which is
+    // the one failure in this file that cannot be recovered from. The receiver
+    // allocates a fresh instance per transfer today, so this is unreachable;
+    // it is one line and it keeps the class safe to reuse. Review, 2026-11-27.
+    active_ = false;
     if (totalLen <= kAssetHeaderBytes) return false;
     if (cb.cipher == nullptr || cb.crc32 == nullptr || cb.write == nullptr) return false;
     cb_ = cb;
@@ -371,18 +410,50 @@ class AssetIngest {
   bool active_ = false;
 };
 
+// ASCII case fold, because the thing this gate protects is matched that way.
+inline char asciiUpper(char c) { return (c >= 'a' && c <= 'z') ? static_cast<char>(c - 'a' + 'A') : c; }
+
+inline bool asciiEqualFold(const char* a, const char* b, size_t len) {
+  for (size_t i = 0; i < len; ++i) {
+    if (asciiUpper(a[i]) != asciiUpper(b[i])) return false;
+  }
+  return true;
+}
+
 // True for a path this receiver must seal rather than store verbatim: a `.dat`
 // under the wallet directory. **The path is the signal, not a flag on the
 // wire**, so a sender cannot ask for a wallet asset to be written in the clear
 // by clearing a bit, and a map tile cannot be turned into one by setting it.
+//
+// **Case-insensitive, because SdFat is.** This gate decides in C and the
+// filesystem underneath decides in FAT, and FAT compares names folded:
+// `FatFile::cmpName()` is `toUpper(u) != toUpper(fname->getch())`
+// (SdFat `FatLib/FatFileLFN.cpp`). An exact-case gate therefore had a hole
+// wide enough to drive a plaintext document through -- found in review,
+// 2026-11-27, and it was not theoretical:
+//
+//   push `wallet/ab/0123456789abcdef.DAT`
+//     -> this gate says "not a wallet asset", so no key is needed and the
+//        wallet may be locked
+//     -> the bytes take the plain tile path and land verbatim
+//     -> `Storage.exists()` matches the *sealed* `…abcdef.dat`
+//        case-insensitively, `remove()` deletes it, `rename()` puts the
+//        plaintext in its place
+//     -> the viewer opens `…abcdef.dat`, finds `kFlagEncrypted` clear, and
+//        blits the attacker's bitmap as a genuine document.
+//
+// So the two sides have to agree on what one name means. They now fold the
+// same way for the directory prefix and the extension; `relPathIsSafe()`
+// (MapTransferReceiver) rejects the other spellings of one name -- a `.`
+// component, and a component FAT would strip a trailing dot or space from.
 inline bool pathIsWalletAsset(const char* fullPath) {
   if (fullPath == nullptr) return false;
   const size_t dirLen = std::strlen(kWalletDir);
-  if (std::strncmp(fullPath, kWalletDir, dirLen) != 0) return false;
-  if (fullPath[dirLen] != '/') return false;
   const size_t len = std::strlen(fullPath);
-  if (len < 4) return false;
-  return std::strcmp(fullPath + len - 4, ".dat") == 0;
+  if (len < dirLen + 1 + 4) return false;
+  if (!asciiEqualFold(fullPath, kWalletDir, dirLen)) return false;
+  if (fullPath[dirLen] != '/') return false;
+  return asciiEqualFold(fullPath + len - 4, ".dat", 4);
 }
 
 }  // namespace wallet

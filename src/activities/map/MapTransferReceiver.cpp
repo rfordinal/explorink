@@ -104,10 +104,29 @@ struct FrameGuard {
 // once, against OpenSSL and zlib instead of mbedtls and the ROM.
 
 // AES-256-CTR, which is symmetric -- the same call the read path decrypts with
-// encrypts here. `ctx` is the session key, live only while the wallet is
-// unlocked.
-bool walletCipher(void* ctx, const uint8_t* iv, uint32_t payloadOffset, uint8_t* data, size_t len) {
-  const uint8_t* key = static_cast<const uint8_t*>(ctx);
+// encrypts here.
+//
+// **The key is fetched here, every chunk, and never captured at begin.** A
+// pointer taken once would still be a valid, non-null pointer after the wallet
+// locked: `Session::clear()` wipes `key_` in place and drops a flag, it does not
+// move or free anything (`WalletCryptoDevice.cpp`). So a lock part-way through a
+// transfer -- the rider pressing power, which calls `clear("sleep")` several
+// hundred milliseconds before the chip actually resets (`main.cpp`), or
+// `CMD:WALLETLOCK` -- would have silently enciphered the rest of the asset under
+// 32 zero bytes.
+//
+// That failure had no error in it anywhere, which is what made it worth a
+// re-read per chunk rather than a comment: both end-of-transfer checks are over
+// the **plaintext**, so the hash and the CRC would both still have passed, and
+// the half-good file would have been renamed over the previous good one.
+// Permanently undecryptable, and the asset it replaced gone. Found in review,
+// 2026-11-27.
+//
+// Cost is a flag test and a pointer load per chunk, against AES over the same
+// bytes. `ctx` is unused and stays in the signature because the sealer's
+// callback contract is shared with the host tests, which do bind a key to it.
+bool walletCipher(void*, const uint8_t* iv, uint32_t payloadOffset, uint8_t* data, size_t len) {
+  const uint8_t* key = wallet::Session::instance().key();
   if (key == nullptr) return false;
   return wallet::ctrDecryptInPlace(key, iv, payloadOffset, data, len);
 }
@@ -368,9 +387,11 @@ void MapTransferReceiver::handleBegin(const uint8_t* body, size_t len) {
     }
     wallet::AssetIngest::Callbacks cb;
     cb.cipher = walletCipher;
-    // The session key itself, not a copy: it dies when the wallet locks, and a
-    // copy here would be a second place it has to be wiped from.
-    cb.cipherCtx = const_cast<uint8_t*>(key);
+    // No key is carried: walletCipher() asks the session for it on every chunk,
+    // so a wallet locked mid-transfer ends the transfer instead of sealing the
+    // rest of it under zeros. The `key == nullptr` check above is the "do not
+    // even start" half of the same rule.
+    cb.cipherCtx = nullptr;
     cb.crc32 = walletCrc32;
     cb.write = walletSink;
     // Stable for the life of this object, and nothing is written through it
@@ -387,6 +408,12 @@ void MapTransferReceiver::handleBegin(const uint8_t* body, size_t len) {
   // A leftover .part from an earlier killed transfer is not resumed -- the
   // whole file is coming again, from offset 0 (O_TRUNC does the rest).
   if (!Storage.openFileForWrite("MAPXFER", partPath_, file_)) {
+#if defined(ENABLE_WALLET) && ENABLE_WALLET
+    // The sealer was built above and has no transfer behind it now. Dropped
+    // here rather than left for the next begin frame, so "a live sealer exists"
+    // and "a transfer is in flight" never disagree.
+    walletIngest_.reset();
+#endif
     refuse("open failed");
     return;
   }
@@ -692,11 +719,24 @@ bool MapTransferReceiver::relPathIsSafe(const char* path, size_t len) {
   // `..` anywhere is the one that matters: it is how a relative path escapes
   // the root. Checked as a whole component so a file legitimately called
   // `a..b.tib` is still allowed.
+  //
+  // **`.` and FAT's trailing-character trimming are rejected for a different
+  // reason**: not escape, but *aliasing*. One file must have one spelling here,
+  // because a second spelling is a second answer from every gate that reads the
+  // path -- `wallet::pathIsWalletAsset()` decides whether a document gets
+  // sealed, and FAT resolves `wallet/./ab/x.dat` and `wallet/ab/x.dat.` to the
+  // same directory entry the gate just said was not a wallet asset. Added
+  // 2026-11-27 with the case-folding fix next to it; the escape check alone let
+  // all of these through.
   const char* cursor = path;
   while (cursor != nullptr) {
     const char* slash = strchr(cursor, '/');
     const size_t partLen = slash != nullptr ? static_cast<size_t>(slash - cursor) : strlen(cursor);
     if (partLen == 2 && cursor[0] == '.' && cursor[1] == '.') return false;
+    if (partLen == 1 && cursor[0] == '.') return false;
+    // FAT trims trailing dots and spaces from a name, so `x.dat.` and `x.dat `
+    // open `x.dat`. An honest sender never writes either.
+    if (partLen > 0 && (cursor[partLen - 1] == '.' || cursor[partLen - 1] == ' ')) return false;
     cursor = slash != nullptr ? slash + 1 : nullptr;
   }
 
