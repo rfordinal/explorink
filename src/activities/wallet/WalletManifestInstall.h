@@ -43,6 +43,7 @@ enum class ManifestInstallStatus : uint8_t {
   Ok = 0,
   WriteFailed,  // the card refused the bytes, or took fewer than offered
   Unreadable,   // the written file did not open: card, or a sealer bug
+  TooBig,       // it sealed and wrote, and this board had no memory to read it back
   SwapFailed,   // a rename the card refused -- the previous list is still live
 };
 
@@ -50,11 +51,25 @@ enum class ManifestInstallStatus : uint8_t {
 // statuses: stable strings, because a host script greps them.
 const char* manifestInstallReason(ManifestInstallStatus status);
 
-// Writes `sealed`, proves it opens, and swaps it in. `sealed` is the whole
-// file: envelope, ciphertext, tag.
+// **Two calls, so the two 32 KB buffers are never alive at once.** The sender's
+// buffer holds the sealed file; the verification reads the same file back off
+// the card into a buffer of its own. Doing both inside one call means a peak of
+// twice the manifest, and on a C3 with BLE up that is what actually happens:
+// measured on an X3, 2026-11-27, an 8,234-byte manifest sealed, wrote, and then
+// failed to verify with `OOM: 8234 bytes for the encrypted manifest` -- the
+// install refused a list the board could have held, and the old one stayed.
 //
-// Needs the session key, because step 2 decrypts. The caller already holds it
-// -- a locked wallet never gets as far as sealing.
-ManifestInstallStatus installSealedManifest(const uint8_t* sealed, size_t len);
+// So the caller writes the part file, **drops its own buffer**, and only then
+// asks for the verify and the swap.
+//
+// `sealed` is the whole file: envelope, ciphertext, tag.
+ManifestInstallStatus writeSealedManifestPart(const uint8_t* sealed, size_t len);
+
+// Proves the part file opens with the read path, then swaps it in and deletes a
+// stale cleartext manifest. Needs the session key, because it decrypts; the
+// caller already holds it, since a locked wallet never gets as far as sealing.
+//
+// Every failure here leaves a card the read path can still open.
+ManifestInstallStatus finishManifestInstall();
 
 }  // namespace wallet

@@ -87,11 +87,16 @@ bool feedEncryptedManifestAt(const char* path, ManifestParser& parser, Error& er
     return false;
   }
   uint8_t* cipher = buffer.get() + envelope.ciphertextOffset;
-  if (!gcmDecryptInPlace(key, envelope.nonce, kGcmNonceLen, buffer.get() + envelope.tagOffset, kGcmTagLen, cipher,
-                         envelope.ciphertextLen)) {
-    // Wrong key or an altered file, and GCM cannot tell those apart. Nothing has
-    // been parsed and nothing will be.
-    error = Error::ManifestAuth;
+  const GcmResult decrypted = gcmDecryptInPlace(key, envelope.nonce, kGcmNonceLen, buffer.get() + envelope.tagOffset,
+                                                kGcmTagLen, cipher, envelope.ciphertextLen);
+  if (decrypted != GcmResult::Ok) {
+    // **Two different messages, because these are two different facts.** A tag
+    // mismatch is wrong key or an altered file, and GCM cannot tell those apart.
+    // Anything else is the primitive refusing -- on this chip almost always the
+    // AES DMA driver out of memory, which is the same "too big for this device"
+    // the cap above reports and must not read as "somebody changed your wallet"
+    // (WalletCryptoDevice.h, GcmResult). Nothing has been parsed either way.
+    error = decrypted == GcmResult::AuthFailed ? Error::ManifestAuth : Error::ManifestTooBig;
     return false;
   }
 
@@ -126,14 +131,14 @@ bool g_usingBackup = false;
 //
 // It is a fallback and never a preference: `manifest.enc` wins whenever it
 // exists, so a completed install retires the backup on the spot.
-const char* encryptedManifestPath() {
-  g_usingBackup = false;
+const char* encryptedManifestPath(bool* usingBackup) {
+  if (usingBackup != nullptr) *usingBackup = false;
   if (Storage.exists(kManifestEncPath)) return kManifestEncPath;
   if (Storage.exists(kManifestBakPath)) {
     // Loud, because the rider is about to be shown a list that may be a sync
     // behind and the panel says so in four words at most.
     LOG_ERR(kLogTag, "manifest.enc is missing; reading manifest.bak -- an install was interrupted");
-    g_usingBackup = true;
+    if (usingBackup != nullptr) *usingBackup = true;
     return kManifestBakPath;
   }
   return nullptr;
@@ -144,7 +149,7 @@ const char* encryptedManifestPath() {
 // no business on the main task's stack).
 bool feedManifest(ManifestParser& parser, Error& error) {
   if (treeIsEncrypted()) {
-    const char* path = encryptedManifestPath();
+    const char* path = encryptedManifestPath(&g_usingBackup);
     if (path == nullptr) {
       error = Error::NoManifest;
       return false;
@@ -319,9 +324,18 @@ void countCardAssets(uint16_t& assets, uint16_t& codes) {
 
 bool readCardWalletVersion(uint32_t& out) {
   out = 0;
-  if (!Storage.exists(kManifestEncPath)) return false;
+  // The same chooser the read path uses, so a card whose install was cut in
+  // half still answers. Measured on an X3, 2026-11-27: with only the backup on
+  // the card this read `manifest.enc` by name, found nothing, and reported "no
+  // version" -- which costs the phone a full resend for a card that could have
+  // told it exactly where it was.
+  // nullptr: this is not the read that decides what the browse screen says.
+  // Only the one in feedManifest() moves that flag, so a background version
+  // query can never silently clear a "previous list" the rider is looking at.
+  const char* path = encryptedManifestPath(nullptr);
+  if (path == nullptr) return false;
   HalFile file;
-  if (!Storage.openFileForRead(kLogTag, kManifestEncPath, file)) return false;
+  if (!Storage.openFileForRead(kLogTag, path, file)) return false;
   // Only the envelope, and only its cleartext part: 26 bytes off the front, no
   // key involved. This is what lets a locked device answer "which version do I
   // hold" so the phone can compute pending work without a PIN (brief 23-26, 54).

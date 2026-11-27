@@ -41,25 +41,31 @@ bool ctrDecryptInPlace(const uint8_t key[kWalletKeyLen], const uint8_t iv[kAsset
   return true;
 }
 
-bool gcmDecryptInPlace(const uint8_t key[kWalletKeyLen], const uint8_t* nonce, const size_t nonceLen,
-                       const uint8_t* tag, const size_t tagLen, uint8_t* data, const size_t len) {
-  if (key == nullptr || nonce == nullptr || tag == nullptr || data == nullptr) return false;
+GcmResult gcmDecryptInPlace(const uint8_t key[kWalletKeyLen], const uint8_t* nonce, const size_t nonceLen,
+                            const uint8_t* tag, const size_t tagLen, uint8_t* data, const size_t len) {
+  if (key == nullptr || nonce == nullptr || tag == nullptr || data == nullptr) return GcmResult::Failed;
 
   mbedtls_gcm_context gcm;
   mbedtls_gcm_init(&gcm);
-  bool ok = mbedtls_gcm_setkey(&gcm, MBEDTLS_CIPHER_ID_AES, key, static_cast<unsigned int>(kWalletKeyLen * 8)) == 0;
-  if (ok) {
+  int rc = mbedtls_gcm_setkey(&gcm, MBEDTLS_CIPHER_ID_AES, key, static_cast<unsigned int>(kWalletKeyLen * 8));
+  if (rc == 0) {
     // No associated data: the generator seals with none, so the envelope around
     // this ciphertext is not covered by the tag (WalletCrypto.h).
-    ok = mbedtls_gcm_auth_decrypt(&gcm, len, nonce, nonceLen, nullptr, 0, tag, tagLen, data, data) == 0;
+    rc = mbedtls_gcm_auth_decrypt(&gcm, len, nonce, nonceLen, nullptr, 0, tag, tagLen, data, data);
   }
   mbedtls_gcm_free(&gcm);
-  if (!ok) {
+  if (rc == 0) return GcmResult::Ok;
+  if (rc == MBEDTLS_ERR_GCM_AUTH_FAILED) {
     // Wrong key, or somebody changed the file. Not distinguishable, and that is
     // GCM working as intended.
     LOG_ERR(kLogTag, "GCM tag did not verify over %u bytes", static_cast<unsigned>(len));
+    return GcmResult::AuthFailed;
   }
-  return ok;
+  // Anything else is the primitive refusing, not a verdict about the data. On
+  // this chip the usual one is the AES DMA driver failing to allocate, which
+  // prints `esp-aes: Failed to allocate memory` just above this line.
+  LOG_ERR(kLogTag, "GCM decrypt failed over %u bytes: %d (not a tag mismatch)", static_cast<unsigned>(len), rc);
+  return GcmResult::Failed;
 }
 
 bool gcmEncryptInPlace(const uint8_t key[kWalletKeyLen], const uint8_t* nonce, const size_t nonceLen, uint8_t* data,

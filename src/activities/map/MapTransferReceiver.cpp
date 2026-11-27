@@ -658,12 +658,19 @@ void MapTransferReceiver::handleChunk(const uint8_t* body, size_t len) {
     // holds ciphertext, so the number the phone compares against is the CRC of
     // the plaintext as it arrived.
     actualCrc = manifestIngest_->plaintextCrc();
-    const wallet::ManifestInstallStatus installed =
-        wallet::installSealedManifest(manifestIngest_->sealed(), manifestIngest_->sealedLen());
-    LOG_INF(kLogTag, "manifest walletVersion %lu", static_cast<unsigned long>(manifestIngest_->walletVersion()));
-    // Freed before the verdict is sent: it holds the whole document list, and
-    // the install is the last thing that needs it.
+    LOG_INF(kLogTag, "manifest walletVersion %lu, %u bytes sealed",
+            static_cast<unsigned long>(manifestIngest_->walletVersion()),
+            static_cast<unsigned>(manifestIngest_->sealedLen()));
+    wallet::ManifestInstallStatus installed =
+        wallet::writeSealedManifestPart(manifestIngest_->sealed(), manifestIngest_->sealedLen());
+    // **Dropped before the verify, not after.** The verification reads the file
+    // back off the card into a buffer of its own, and holding both at once
+    // doubles the peak -- which on a C3 with BLE up is the difference between
+    // an install and an `ERR manifest unreadable`. Measured on an X3,
+    // 2026-11-27: an 8,234-byte manifest sealed and wrote, then failed its own
+    // verification with `OOM: 8234 bytes`.
     manifestIngest_.reset();
+    if (installed == wallet::ManifestInstallStatus::Ok) installed = wallet::finishManifestInstall();
     if (!active_) return;
     if (installed != wallet::ManifestInstallStatus::Ok) {
       abandon(wallet::manifestInstallReason(installed));

@@ -24,12 +24,32 @@ namespace wallet {
 bool ctrDecryptInPlace(const uint8_t key[kWalletKeyLen], const uint8_t iv[kAssetIvLen], uint32_t offset, uint8_t* data,
                        size_t len);
 
+// Why a GCM decrypt failed, which is **not** one question.
+//
+// A wrong key and an altered file are genuinely indistinguishable and both are
+// AuthFailed -- that is GCM working as intended. An allocation failure inside
+// the chip's AES driver is a third thing entirely, and lumping it in with the
+// other two puts "wrong key, or the wallet list was altered" on a rider's panel
+// when the truth is "this board had no memory for it".
+//
+// Measured on an X3, 2026-11-27: a 22,528-byte manifest read back with BLE up
+// logged `E esp-aes: Failed to allocate memory` and failed as a tag mismatch.
+// The separation is exact rather than a guess -- the ESP-IDF port returns
+// MBEDTLS_ERR_GCM_AUTH_FAILED only for a real tag difference and propagates -1
+// from the DMA allocation
+// (`components/mbedtls/port/aes/esp_aes_gcm.c`, esp_aes_gcm_auth_decrypt).
+enum class GcmResult : uint8_t {
+  Ok = 0,
+  AuthFailed,  // the tag did not match: wrong key, or somebody changed the file
+  Failed,      // the primitive itself refused -- out of memory, bad parameters
+};
+
 // AES-256-GCM decrypt, tag verified **before** the caller sees a plaintext byte.
 // In place is allowed and is what the manifest read does: mbedtls refuses only a
 // partial overlap, not an identical pointer (mbedtls/library/gcm.c, the
 // `output > input` guard).
-bool gcmDecryptInPlace(const uint8_t key[kWalletKeyLen], const uint8_t* nonce, size_t nonceLen, const uint8_t* tag,
-                       size_t tagLen, uint8_t* data, size_t len);
+GcmResult gcmDecryptInPlace(const uint8_t key[kWalletKeyLen], const uint8_t* nonce, size_t nonceLen, const uint8_t* tag,
+                            size_t tagLen, uint8_t* data, size_t len);
 
 // AES-256-GCM seal of a buffer in place, with the tag written out separately.
 // The manifest's write half: `data` goes in as plaintext and comes out as

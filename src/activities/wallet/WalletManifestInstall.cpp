@@ -47,30 +47,39 @@ const char* manifestInstallReason(const ManifestInstallStatus status) {
       return "write failed";
     case ManifestInstallStatus::Unreadable:
       return "manifest unreadable";
+    case ManifestInstallStatus::TooBig:
+      // **Not "unreadable".** The file is fine; this board could not hold it
+      // while reading it back. A phone told "unreadable" re-sends the same
+      // bytes for ever; one told "too big" has something to act on. Measured
+      // on an X3 with BLE up, 2026-11-27: 20,480 bytes installed and 22,528 did
+      // not, nowhere near the 32 KB the format allows.
+      return "manifest too big";
     case ManifestInstallStatus::SwapFailed:
       return "swap failed";
   }
   return "manifest unreadable";
 }
 
-ManifestInstallStatus installSealedManifest(const uint8_t* sealed, const size_t len) {
+ManifestInstallStatus writeSealedManifestPart(const uint8_t* sealed, const size_t len) {
   if (sealed == nullptr || len == 0) return ManifestInstallStatus::WriteFailed;
-
   if (!writePart(sealed, len)) {
     Storage.remove(kManifestPartPath);
     return ManifestInstallStatus::WriteFailed;
   }
+  return ManifestInstallStatus::Ok;
+}
 
+ManifestInstallStatus finishManifestInstall() {
   // The read path, on the file that is about to become the list. Not a second
   // implementation and not a re-decrypt of the buffer still in RAM: what has to
   // be proved is that **the card** holds a readable list, and only a read off
   // the card proves that.
   Error error = Error::None;
   if (!verifyEncryptedManifestFile(kManifestPartPath, error)) {
-    LOG_ERR(kLogTag, "the sealed manifest did not open (error %u) -- keeping the old list",
-            static_cast<unsigned>(error));
+    LOG_ERR(kLogTag, "the sealed manifest did not open (%s) -- keeping the old list",
+            error == Error::ManifestTooBig ? "no memory to read it back" : "unreadable");
     Storage.remove(kManifestPartPath);
-    return ManifestInstallStatus::Unreadable;
+    return error == Error::ManifestTooBig ? ManifestInstallStatus::TooBig : ManifestInstallStatus::Unreadable;
   }
 
   // From here the card is being changed. Every failure below leaves a state the
@@ -110,7 +119,7 @@ ManifestInstallStatus installSealedManifest(const uint8_t* sealed, const size_t 
     LOG_ERR(kLogTag, "the stale cleartext %s is still on the card", kManifestPath);
   }
 
-  LOG_INF(kLogTag, "sealed manifest installed, %u bytes", static_cast<unsigned>(len));
+  LOG_INF(kLogTag, "sealed manifest installed");
   return ManifestInstallStatus::Ok;
 }
 
