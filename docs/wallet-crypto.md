@@ -293,6 +293,66 @@ That decrypt is a stronger check than the panel: it is byte-exact rather than
 "it looked right", and it is the only thing that proves the IV, because a wrong
 IV produces noise and no error.
 
+### Re-run after the review fixes, 2026-11-27
+
+The two serious findings below changed the sealing path itself, so the whole
+pass above was run again on `d324b1be`. Everything it claims still holds, and
+the bypass is now demonstrably shut on hardware rather than only in a test.
+
+**X3, `env:default`**, wallet unlocked with the known K:
+
+| what | result |
+|---|---|
+| `wallet/d0/<id>.dat` | `OK 52304 dbc8ea61`, the plaintext CRC |
+| `wallet/d0/CASETEST0000BEEF.DAT` -- **the bypass** | `OK 52304 dbc8ea61` |
+| both pulled off the card and decrypted with K and the content IV | `flags=03`, ciphertext on the card, **both decrypt byte-identical** |
+| flipped payload byte, honest CRC | `ERR hash mismatch` |
+| map tile | `OK 78392 51e90ff5`, unchanged |
+
+Before the fix that second row returned `OK` as well -- and stored the bitmap
+**in the clear**. The reply is the same; what is on the card is not. That is
+why the check that matters is the decrypt, not the status line.
+
+**X4 Pro, `env:x4pro`, release-shaped, wallet locked:**
+
+| what | result |
+|---|---|
+| `wallet/21/<id>.dat` | `ERR wallet locked` |
+| `wallet/21/CASETEST0000BEEF.DAT` | `ERR wallet locked` |
+| `wallet/21/<id>.dat.` (trailing dot) | `ERR bad path` |
+| map tile | `OK 54394 4aa50b89`, unchanged |
+
+The second row is the whole case fix in one line: a refusal **means the gate
+classified the uppercase path as a wallet asset**. Before the fix it was not one,
+and the push succeeded with no key at all.
+
+**T5 S3 Pro, `env:t5s3pro`, release-shaped** -- no wallet commands, so the gate
+was walked with `CMD:BUTTON` (3 x RIGHT, DOWN, 3 x LEFT from cell 0, CONFIRM) and
+the 585,750 B page image pushed at an **uppercase** path answered
+`OK 585750 8c915f52`, the plaintext CRC. A sealed asset on a release-shaped S3
+binary, sealed because the path gate now folds case.
+
+**One thing the re-run did not repeat**: pulling that file back off the T5 and
+decrypting it. The board slept before the web server could be reached, and this
+environment has no `CMD:GOTO_WEBSERVER` to wake it with. The byte-exact decrypt
+of an uppercase path was done on the C3 above, and the arithmetic is chip
+independent; the S3 evidence after the fix is the plaintext-CRC reply and the
+refusals, not a decrypt.
+
+**And one thing nothing on the bench can reach**: the wallet locking *during* a
+transfer, which is what `walletCipher()` re-reading the key per chunk protects
+against. Locking needs the serial console, opening the serial port resets the
+board, and a reset ends the transfer -- so there is no way to lock mid-push from
+here. It is covered by the host test (`ACipherThatFailsMidTransferEndsIt`) and
+by reading `Session::clear()`, and that is all it is covered by. A second control
+channel would settle it.
+
+**An incidental confirmation.** The T5's gate accepted the walk and the wallet
+screen then said "Wrong key, or the wallet list was altered" -- its card still
+held a `manifest.enc` from a different wallet. Unlocking and reading the
+manifest are separate, and the session key is set either way, which is why the
+push above worked on a board whose list cannot be drawn.
+
 ### And on an S3, 2026-11-27
 
 Two boards, because the two S3 environments answer different questions.
@@ -888,8 +948,11 @@ hardware.
   with the wallet key and the content IV (see "Ingest" above), **and on both S3
   environments** -- the decrypt proof repeated on a T5 S3 Pro with the bench
   flag, and the locked-wallet refusal plus an unchanged tile push on an X4 Pro
-  running the release-shaped binary. The Wi-Fi upload endpoint still bypasses it
-  (T-2103).
+  running the release-shaped binary. **Re-run end to end on all three boards
+  after the review fixes** (see "Re-run after the review fixes"), where the
+  closed case-folding bypass was confirmed by decrypting an uppercase-path asset
+  off the card. Still open: the Wi-Fi upload endpoint bypasses the sealer
+  (T-2103), and a lock *during* a transfer cannot be reached from the bench.
 - The encrypted tree **rendered host-side** through the device's own reader code
   (`wallet_preview --key`): the decrypted QR is **byte-identical** to the cleartext
   tree's render and still decodes to the exact payload through `zxing-cpp`.
