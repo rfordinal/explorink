@@ -28,6 +28,10 @@ Home menu row **Wallet**, between *Sync map tiles* and *Settings*
 (`src/activities/home/HomeActivity.cpp:14-21`, `:121-134`), opening through
 `ActivityManager::goToWallet()` (`src/activities/ActivityManager.cpp:222`).
 
+The regression suite for the whole wallet chain is
+[`wallet-test-scenarios.md`](wallet-test-scenarios.md). Run all of it after any
+wallet change.
+
 ## Confirmed on the panel, 2026-08-18
 
 Flashed, assets pushed to the card over BLE, checked from device screenshots:

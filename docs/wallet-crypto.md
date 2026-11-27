@@ -8,6 +8,11 @@ still unverified.
 
 The viewer itself, its screens and its button map are `wallet-viewer.md`.
 
+**Every wallet change runs the scenarios in
+[`wallet-test-scenarios.md`](wallet-test-scenarios.md)**, all of them, not the
+ones that look related. That file is the regression suite and a landing rung
+adds its own scenarios to it.
+
 ## The threat boundary, first
 
 Two cases, and they are not close to each other:
