@@ -293,6 +293,46 @@ That decrypt is a stronger check than the panel: it is byte-exact rather than
 "it looked right", and it is the only thing that proves the IV, because a wrong
 IV produces noise and no error.
 
+### And on an S3, 2026-11-27
+
+Two boards, because the two S3 environments answer different questions.
+
+**LilyGo T5 S3 Pro, `env:t5s3pro` plus `ENABLE_WALLET_TEST_CMDS`** -- the bench
+flag, added in `platformio.local.ini` for this run only (see
+`build-environments.md`, "Adding one flag to one env"), so the laptop could
+provision a known K here too and decrypt what the board wrote. Panel 960x540,
+120 B/row.
+
+| what | result |
+|---|---|
+| 800x480 asset pushed to a 960x540 panel | `ERR wrong panel` -- the geometry gate, on hardware |
+| 585,750 B 1:1 page image (stride 322, fits the window) | `OK 585750 8c915f52`, 74.5 s |
+| pulled back off the card and decrypted with K and the content IV | **byte-identical**, 585,718 B of payload |
+| header flags, other 31 bytes, hash prefix | `00` -> `03`, unchanged, matches |
+| flipped payload byte, honest CRC | `ERR hash mismatch` |
+
+**Xteink X4 Pro, `env:x4pro`, no bench flag** -- the release-shaped binary, which
+is the one that matters for "is this code actually live in what ships". It
+carries no wallet commands, so there is no key to unlock with and no decrypt to
+do; what it proves is that the path exists and shuts:
+
+| what | result |
+|---|---|
+| wallet `.dat` pushed with the wallet locked | `ERR wallet locked`, nothing on the card |
+| map tile on the same board | `OK 49854 5285c152`, read-back path unchanged |
+
+**Two traps on the way, both worth the next person's time.** The T5 S3 Pro's map
+screen does not start BLE at all when the board has its own GNSS fix
+(`bleInUse_ = SETTINGS.mapGnssPosition == 0 || forcePhonePosition_`,
+`MapActivity.cpp`), and `transfer_.attach()` sits inside that branch -- so the
+transfer receiver is not attached either and `blepush` finds nothing
+advertising. `CMD:SETTING mapGnssPosition 0` for the run, and set it back.
+
+And `--chunk` really is not optional on that board: BlueZ reported an MTU of 517
+and the link refused a 509-byte write with
+`BleakGATTProtocolError: Invalid Attribute Value Length`. `--chunk 240` ran
+clean. Same note as `../../docs/synchro.md`, "blepush and the MTU".
+
 **Cost against the transport: none visible.** The same 585,750 bytes took
 **72.1 s** sealed and **72.5 s** down the plain path, both at 7.9 kB/s, one
 board, one session. Sealing is not slower than the path it replaces: the
@@ -845,8 +885,11 @@ hardware.
   the ciphertext proved identical across chunk sizes from 1 to 4096 bytes), and
   the whole chain **ran end to end on an X3** -- plaintext pushed over BLE,
   sealed on the board, pulled back off the card and decrypted byte-identical
-  with the wallet key and the content IV (see "Ingest" above). **Not yet on an
-  S3**, and the Wi-Fi upload endpoint still bypasses it (T-2103).
+  with the wallet key and the content IV (see "Ingest" above), **and on both S3
+  environments** -- the decrypt proof repeated on a T5 S3 Pro with the bench
+  flag, and the locked-wallet refusal plus an unchanged tile push on an X4 Pro
+  running the release-shaped binary. The Wi-Fi upload endpoint still bypasses it
+  (T-2103).
 - The encrypted tree **rendered host-side** through the device's own reader code
   (`wallet_preview --key`): the decrypted QR is **byte-identical** to the cleartext
   tree's render and still decodes to the exact payload through `zxing-cpp`.
