@@ -446,6 +446,86 @@ inline bool asciiEqualFold(const char* a, const char* b, size_t len) {
 // same way for the directory prefix and the extension; `relPathIsSafe()`
 // (MapTransferReceiver) rejects the other spellings of one name -- a `.`
 // component, and a component FAT would strip a trailing dot or space from.
+// Lower-cases one hex character. The id a path names and the id the read path
+// builds a filename from have to be the same string, and `buildAssetPath()`
+// emits whatever it is handed -- so the fold happens here, once.
+inline char hexFold(char c) { return (c >= 'A' && c <= 'F') ? static_cast<char>(c - 'A' + 'a') : c; }
+
+// --- The wallet's half of "what is this request for?" -----------------------
+//
+// **These parse a RELATIVE path into what it asks for. They do not build a
+// destination, and nothing downstream may use the sender's bytes to address
+// the card.** The caller takes the answer and rebuilds the path itself from
+// `buildAssetPath()` and from constants (MapTransferReceiver::handleBegin).
+//
+// That inversion is the point. Four review rounds each found one more string
+// that a gate read as one file and SdFat opened as another -- a folded case, a
+// `~1` short name, a leading space, a directory component nobody looked at.
+// Each was patched as a better comparison, and a comparison between our
+// normalisation and the filesystem's is a fixed point we cannot reach by
+// inspection: the rules live in a pinned dependency, they have a second
+// implementation for exFAT, and the string a gate answers about is not
+// necessarily the string that later gets opened.
+//
+// So the sender's spelling stops being an address and becomes a **lookup key**.
+// Whatever it writes, a wallet asset lands at
+// `/explorink/wallet/<id[0:2]>/<id>.dat` built out of sixteen validated hex
+// characters, and the manifest lands at a constant. An alias of a path we
+// never hand to the filesystem is not reachable. 2026-11-27.
+//
+// What this does **not** do: a path that does not parse as a wallet request is
+// still written where the sender spelled it, so a spelling that aliases *into*
+// the wallet directory without naming it is still held off by
+// `relPathIsSafe()` alone. Ending that needs every transfer kind to be parsed
+// and rebuilt the same way -- T-2105.
+
+// `wallet/<2 hex>/<16 hex>.dat`, case-insensitively, with the shard matching
+// the id. Fills `outId` with the lower-case id on success.
+inline bool parseWalletAssetRelPath(const char* rel, char* outId, size_t outLen) {
+  if (rel == nullptr || outId == nullptr || outLen < kAssetIdBufBytes) return false;
+  const char* kPrefix = "wallet/";
+  const size_t prefixLen = std::strlen(kPrefix);
+  const size_t want = prefixLen + 2 + 1 + kAssetIdLen + 4;
+  if (std::strlen(rel) != want) return false;
+  if (!asciiEqualFold(rel, kPrefix, prefixLen)) return false;
+  const char* at = rel + prefixLen;
+  if (!isHexDigit(at[0]) || !isHexDigit(at[1])) return false;
+  const char* shard = at;
+  at += 2;
+  if (*at++ != '/') return false;
+  for (size_t i = 0; i < kAssetIdLen; ++i) {
+    if (!isHexDigit(at[i])) return false;
+    outId[i] = hexFold(at[i]);
+  }
+  outId[kAssetIdLen] = '\0';
+  // The shard is the first two characters of the id, so a request whose
+  // directory disagrees with its own name is not one this device ever wrote.
+  if (hexFold(shard[0]) != outId[0] || hexFold(shard[1]) != outId[1]) return false;
+  return asciiEqualFold(at + kAssetIdLen, ".dat", 4);
+}
+
+// `wallet/manifest.json`, case-insensitively.
+inline bool parseWalletManifestRelPath(const char* rel) {
+  if (rel == nullptr) return false;
+  const char* kName = "wallet/manifest.json";
+  const size_t len = std::strlen(kName);
+  if (std::strlen(rel) != len) return false;
+  return asciiEqualFold(rel, kName, len);
+}
+
+// Anything at all under `wallet/`, or the directory itself. What this claims
+// and the two parsers above refuse is what gets refused outright.
+inline bool relPathTouchesWalletDir(const char* rel) {
+  if (rel == nullptr) return false;
+  const char* kDir = "wallet";
+  const size_t dirLen = std::strlen(kDir);
+  const size_t len = std::strlen(rel);
+  if (len < dirLen) return false;
+  if (!asciiEqualFold(rel, kDir, dirLen)) return false;
+  if (len == dirLen) return true;
+  return rel[dirLen] == '/';
+}
+
 // True for anything at all under `/explorink/wallet`, whatever it is called.
 //
 // **The whitelist's other half.** Two gates decide what gets sealed --

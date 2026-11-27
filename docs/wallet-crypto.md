@@ -347,6 +347,42 @@ nothing. The wallet directory node itself is refused too: a push of the bare
 path `wallet` would make a regular file where the directory has to be, and the
 wallet could then never exist on that card.
 
+### The sender's spelling is a lookup key, not an address
+
+**This is the answer to the four rounds above, and it is a different shape from
+all of them.** Each of those was an attempt to make a gate's idea of what a
+path means equal SdFat's idea of it. That is a fixed point you cannot reach by
+inspection: the rules live in a pinned dependency (`FatLib/FatFileLFN.cpp`),
+there is a second implementation for exFAT, and the string a gate answers about
+is not necessarily the string that later gets opened.
+
+So the wallet stopped comparing and started parsing. A begin frame's relative
+path is read as a **request**, not as a destination:
+
+- `wallet/<2 hex>/<16 hex>.dat` parses to an asset id, and the card path is
+  **rebuilt** by `buildAssetPath()` from those sixteen validated, folded hex
+  characters. The shard directory is derived from the id, so a wallet asset has
+  nowhere in it to name a directory.
+- `wallet/manifest.json` parses to "the manifest", which is never written at
+  the name it arrived under anyway -- it is sealed in RAM and installed at
+  three absolute constants.
+- Anything else under `wallet/` is refused, before the directory creation that
+  cannot be undone.
+
+What that buys: whatever a sender spells, a wallet file lands at a path built
+out of firmware constants and hex digits. **An alias of a path nothing hands to
+the filesystem is not reachable.** A folded case, a `~1` short name, a leading
+space, a directory component -- none of them can change which file is opened,
+because none of them survives being parsed into an id and rebuilt.
+
+**The half that is still a comparison.** A path that does not parse as a wallet
+request is still written where the sender spelled it, so a spelling that
+aliases *into* the wallet directory without naming it is held off by
+`relPathIsSafe()` alone -- which is exactly the kind of completeness argument
+this section exists to stop relying on. Ending it means parsing and rebuilding
+every transfer kind, which is T-2105. Until then the wallet's guarantee rests
+on two things rather than one, and that is stated here rather than implied.
+
 **The gate runs before the directory is created, and that ordering is the
 fix, not a detail.** `handleBegin` calls `ensureDirectoryExists()` on the
 parent of every accepted path, and `SDCardManager` creates every component. A

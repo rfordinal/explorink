@@ -447,31 +447,50 @@ void MapTransferReceiver::handleBegin(const uint8_t* body, size_t len) {
     abandon(nullptr);
   }
 
-  snprintf(finalPath_, sizeof(finalPath_), "%s/%s", rootDir_, rel);
-  snprintf(partPath_, sizeof(partPath_), "%s.part", finalPath_);
-
-#if defined(ENABLE_WALLET) && ENABLE_WALLET
-  // **Before the mkdir below, and that is the whole point.** Everything under
-  // the wallet directory is either sealed or refused, never stored as it
-  // arrived -- `manifest.enc`, `manifest.bak` and FAT's own 8.3 alias of
-  // `manifest.json` all land here (WalletAssetIngest.h, pathTouchesWalletDir).
+  // **A wallet request is parsed, not pasted.** For everything else the
+  // sender's relative path is still the destination, as it always was; for the
+  // wallet the sender's bytes are a lookup key and the card path is rebuilt
+  // here out of validated hex and firmware constants.
   //
-  // The first version of this gate sat after the directory creation, which
-  // left a hole as bad as the one it closed: `ensureDirectoryExists()` creates
-  // every parent component (`SDCardManager.cpp`, `vol().mkdir()`), so a push
-  // to `wallet/manifest.bak/x` made a **directory** called `manifest.bak` and
-  // only then was the file refused. `Storage.exists()` is true for a
-  // directory and `Storage.remove()` cannot delete one, so every later sync
-  // would answer `ERR swap failed` for ever, with nothing in the firmware able
-  // to undo it. Found in review, 2026-11-27. Nothing may touch the card before
-  // this gate.
-  if (wallet::pathTouchesWalletDir(finalPath_) && !wallet::pathIsWalletAsset(finalPath_) &&
-      !wallet::pathIsWalletManifest(finalPath_)) {
-    LOG_ERR(kLogTag, "refusing a wallet path this device does not write: %s", finalPath_);
+  // That is the answer to four review rounds that each found one more string a
+  // gate read as one file and SdFat opened as another. A comparison between
+  // our normalisation and the filesystem's is a fixed point we cannot reach by
+  // inspection -- the rules are in a pinned dependency with a second
+  // implementation for exFAT. An alias of a path we never hand to the
+  // filesystem, on the other hand, is not reachable at all
+  // (WalletAssetIngest.h, "what is this request for?"). 2026-11-27.
+  bool pathBuilt = false;
+#if defined(ENABLE_WALLET) && ENABLE_WALLET
+  char assetId[wallet::kAssetIdBufBytes] = {0};
+  if (wallet::parseWalletAssetRelPath(rel, assetId, sizeof(assetId))) {
+    // Sixteen hex characters in, a canonical path out. The shard directory is
+    // *derived* from the id rather than taken from the request, so a wallet
+    // asset cannot name a directory at all -- which is what made
+    // `wallet/manifest.bak/x.dat` able to create an undeletable one.
+    if (!wallet::buildAssetPath(assetId, finalPath_, sizeof(finalPath_))) {
+      refuse("bad path");
+      return;
+    }
+    pathBuilt = true;
+  } else if (wallet::parseWalletManifestRelPath(rel)) {
+    // The manifest is never written at the name it arrives under: it is sealed
+    // in RAM and installed at three absolute constants. `finalPath_` is set
+    // only so the rest of this function and the log have something to name.
+    snprintf(finalPath_, sizeof(finalPath_), "%s", wallet::kManifestPath);
+    pathBuilt = true;
+  } else if (wallet::relPathTouchesWalletDir(rel)) {
+    // Under the wallet and not one of the two things the format puts there.
+    // **Before anything touches the card**, including the directory creation
+    // below, which creates every parent component and cannot be undone: a push
+    // to `wallet/manifest.bak/x` used to make a *directory* called
+    // `manifest.bak`, and `Storage.remove()` cannot delete one.
+    LOG_ERR(kLogTag, "refusing a wallet path this device does not write: %s", rel);
     refuse("not a wallet file");
     return;
   }
 #endif
+  if (!pathBuilt) snprintf(finalPath_, sizeof(finalPath_), "%s/%s", rootDir_, rel);
+  snprintf(partPath_, sizeof(partPath_), "%s.part", finalPath_);
 
 #if defined(ENABLE_WALLET) && ENABLE_WALLET
   // A wallet asset is sealed on the way in, and the decision is made here --

@@ -558,6 +558,58 @@ TEST(WalletManifestSeal, PathSafetyRejectsEverySpellingOfOneName) {
   EXPECT_FALSE(safe("wallet/ab/\x80.dat"));
 }
 
+// **The sender's spelling is a lookup key, not an address.** What makes a
+// wallet write safe is no longer that the gate's normalisation matches SdFat's
+// -- four rounds showed that is not a fixed point we can reach -- but that the
+// card path is built here, out of sixteen validated hex characters and
+// firmware constants. Whatever the request spelled, this is what gets opened.
+TEST(WalletManifestSeal, AWalletRequestIsParsedAndTheCardPathIsRebuilt) {
+  char id[wallet::kAssetIdBufBytes] = {0};
+  char path[128] = {0};
+
+  // The canonical request.
+  ASSERT_TRUE(wallet::parseWalletAssetRelPath("wallet/ab/abcdef0123456789.dat", id, sizeof(id)));
+  EXPECT_STREQ(id, "abcdef0123456789");
+  ASSERT_TRUE(wallet::buildAssetPath(id, path, sizeof(path)));
+  EXPECT_STREQ(path, "/explorink/wallet/ab/abcdef0123456789.dat");
+
+  // Upper case in: the id is folded, so the path built is the one the read
+  // path builds, not a second spelling of it on the card.
+  char upper[wallet::kAssetIdBufBytes] = {0};
+  ASSERT_TRUE(wallet::parseWalletAssetRelPath("WALLET/AB/ABCDEF0123456789.DAT", upper, sizeof(upper)));
+  EXPECT_STREQ(upper, "abcdef0123456789");
+  char upperPath[128] = {0};
+  ASSERT_TRUE(wallet::buildAssetPath(upper, upperPath, sizeof(upperPath)));
+  EXPECT_STREQ(upperPath, path);
+
+  // **The shard is derived, never taken.** This is what makes a directory
+  // component unspellable: there is nowhere in the request for one to go.
+  EXPECT_FALSE(wallet::parseWalletAssetRelPath("wallet/manifest.bak/abcdef0123456789.dat", id, sizeof(id)));
+  EXPECT_FALSE(wallet::parseWalletAssetRelPath("wallet/ab/cd/abcdef0123456789.dat", id, sizeof(id)));
+  EXPECT_FALSE(wallet::parseWalletAssetRelPath("wallet/zz/abcdef0123456789.dat", id, sizeof(id)));
+  EXPECT_FALSE(wallet::parseWalletAssetRelPath("wallet/ab/gbcdef0123456789.dat", id, sizeof(id)));
+  EXPECT_FALSE(wallet::parseWalletAssetRelPath("wallet/ab/abcdef0123456789.rle", id, sizeof(id)));
+  EXPECT_FALSE(wallet::parseWalletAssetRelPath("wallet/abcdef0123456789.dat", id, sizeof(id)));
+  EXPECT_FALSE(wallet::parseWalletAssetRelPath("", id, sizeof(id)));
+  EXPECT_FALSE(wallet::parseWalletAssetRelPath(nullptr, id, sizeof(id)));
+
+  // The manifest names itself and nothing else.
+  EXPECT_TRUE(wallet::parseWalletManifestRelPath("wallet/manifest.json"));
+  EXPECT_TRUE(wallet::parseWalletManifestRelPath("WALLET/MANIFEST.JSON"));
+  EXPECT_FALSE(wallet::parseWalletManifestRelPath("wallet/manifest.enc"));
+  EXPECT_FALSE(wallet::parseWalletManifestRelPath("wallet/MANIFE~1.JSO"));
+  EXPECT_FALSE(wallet::parseWalletManifestRelPath("wallet/manifest.json.part"));
+
+  // Everything else under the wallet is refused rather than written, because
+  // the parsers above are the only way to address anything there.
+  EXPECT_TRUE(wallet::relPathTouchesWalletDir("wallet"));
+  EXPECT_TRUE(wallet::relPathTouchesWalletDir("wallet/manifest.bak"));
+  EXPECT_TRUE(wallet::relPathTouchesWalletDir("WALLET/MANIFE~1.JSO"));
+  EXPECT_FALSE(wallet::relPathTouchesWalletDir("base/13/4482/2789.tib"));
+  EXPECT_FALSE(wallet::relPathTouchesWalletDir("walletish/x"));
+  EXPECT_FALSE(wallet::relPathTouchesWalletDir(nullptr));
+}
+
 // A callback the sealer cannot work without is a programming error, and a phone
 // told "oom" retries a condition retrying cannot fix.
 TEST(WalletManifestSeal, MissingCallbacksAreNotReportedAsOom) {
