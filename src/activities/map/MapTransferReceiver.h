@@ -316,6 +316,11 @@ class MapTransferReceiver {
   // path's 32 KB cap (WalletManifestIngest.h). It owns the plaintext buffer,
   // which is why dropping this pointer is what frees it.
   std::unique_ptr<wallet::ManifestIngest> manifestIngest_;
+  // Takes the manifest's plaintext buffer from the sealer under g_mux and wipes
+  // it outside the lock. Both tasks call it -- the host task part-way through
+  // the install, the activity task from abandon() -- and exactly one of them
+  // can get the memory.
+  void takeManifestBuffer();
 #endif
 
   // The one thing both tasks touch. Written by publish(), read by status().

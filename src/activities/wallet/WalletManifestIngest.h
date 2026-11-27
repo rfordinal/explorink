@@ -233,11 +233,9 @@ class ManifestIngest {
   uint32_t plaintextCrc() const { return crc_; }
   bool active() const { return active_; }
 
-  // Drops the document plaintext. The buffer is wiped and kept, not freed: the
-  // one caller that reaches here off its own task (MapTransferReceiver::abandon)
-  // can be racing a feed() on the host task, and freeing under it would be a
-  // use-after-free where overwriting is the same benign race the file close
-  // next to it already is.
+  // Ends the transfer and drops the document plaintext. **Only ever called by
+  // whoever owns the buffer**, which after takeBuffer() is nobody: the two
+  // tasks agree on that through the handover, not through timing.
   void reset() {
     active_ = false;
     sealedLen_ = 0;
@@ -246,24 +244,33 @@ class ManifestIngest {
     if (buffer_) secureWipe(buffer_.get(), bufferLen_);
   }
 
-  // Wipes the buffer and gives the memory back, **without destroying this
-  // object**. The install needs the 32 KB back before it reads the same file
-  // off the card, and the object has to outlive that: a transfer is only over
-  // once its caller clears `active_`, and until then the activity task may
-  // enter abandon() and call reset() on this pointer. Freeing the object there
-  // instead -- which is what the first version of this did -- is a
-  // use-after-free that writes up to 32 KB of zeros over the heap, found in
-  // review 2026-11-27.
-  void releaseBuffer() {
+  // Hands the buffer to the caller, and nobody else can get it afterwards.
+  //
+  // **Two tasks race for this buffer and the handover is how they are kept
+  // apart.** The host task gives the 32 KB back part-way through the install
+  // (the verification reads the same file off the card into a buffer of its
+  // own, and holding both is what an X3 ran out of memory on); the activity
+  // task can be inside MapTransferReceiver::abandon() at the same instant,
+  // trying to wipe the document titles out of it. Whoever calls this first
+  // gets the memory, the other gets an empty hand -- so the buffer is wiped
+  // exactly once and freed exactly once, with no window in which one task
+  // writes through a pointer the other has freed.
+  //
+  // **The caller does the wiping**, outside whatever lock it serialises this
+  // call with: a wipe is up to 32 KB and has no business inside a critical
+  // section. See MapTransferReceiver, `takeManifestBuffer()`.
+  //
+  // The earlier version of this freed here and let both tasks wipe, which was
+  // the use-after-free this whole arrangement exists to remove (review,
+  // 2026-11-27).
+  std::unique_ptr<uint8_t[]> takeBuffer(size_t& length) {
+    length = bufferLen_;
+    bufferLen_ = 0;
     active_ = false;
     sealedLen_ = 0;
     received_ = 0;
     openingChecked_ = false;
-    if (buffer_) {
-      secureWipe(buffer_.get(), bufferLen_);
-      buffer_.reset();
-    }
-    bufferLen_ = 0;
+    return std::move(buffer_);
   }
 
   // A transfer killed mid-stream -- Back pressed, link dropped -- never reaches

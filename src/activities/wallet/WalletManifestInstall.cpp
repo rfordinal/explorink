@@ -3,6 +3,7 @@
 #include <HalStorage.h>
 #include <Logging.h>
 
+#include "WalletCryptoDevice.h"
 #include "WalletStore.h"
 
 namespace wallet {
@@ -86,7 +87,15 @@ ManifestInstallStatus finishManifestInstall() {
     if (error == Error::ManifestTooBig) {
       status = ManifestInstallStatus::TooBig;
       why = "no memory to read it back";
-    } else if (error == Error::Locked) {
+    } else if (error == Error::Locked || !Session::instance().hasKey()) {
+      // The second half of that test is not belt and braces. `Error::Locked`
+      // only comes out when the key was already gone at the top of the read; a
+      // lock landing a moment later, **inside** the GCM decrypt, surfaces as a
+      // tag mismatch -- which would otherwise be reported as "wrong key, or the
+      // wallet list was altered" about a file this device had just written
+      // correctly. If the session has no key by the time we are standing here,
+      // that is the explanation, whatever the read called it (review,
+      // 2026-11-27).
       status = ManifestInstallStatus::Locked;
       why = "the wallet locked while it was being written";
     }

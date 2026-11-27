@@ -470,13 +470,16 @@ TEST(WalletManifestSeal, MissingCallbacksAreNotReportedAsOom) {
   EXPECT_EQ(ingest.begin(100, 0, std::unique_ptr<uint8_t[]>(new uint8_t[512]), 512, cb),
             wallet::ManifestIngestStatus::NotWired);
   EXPECT_STREQ(wallet::manifestIngestReason(wallet::ManifestIngestStatus::NotWired), "sealer not wired");
-  EXPECT_STRNE(wallet::manifestIngestReason(wallet::ManifestIngestStatus::NotWired), "oom");
 }
 
-// The install gives the card its memory back before it reads the file off the
-// card, and the object has to survive that -- the transfer is not over until
-// its caller says so, and until then another task may still call reset() on it.
-TEST(WalletManifestSeal, ReleaseBufferKeepsTheObjectUsable) {
+// The install gives the card's memory back before it reads the file off the
+// card. What is checked here is the single-threaded half of that: after the
+// handover the sealer owns nothing, says so, and survives the calls the other
+// task can still make on it. **The cross-task half -- that exactly one of two
+// tasks gets the buffer -- is a scheduling property this test cannot reach**;
+// what makes it true is that both callers go through
+// MapTransferReceiver::takeManifestBuffer() under g_mux.
+TEST(WalletManifestSeal, TakeBufferLeavesTheObjectSafeToTouch) {
   const std::string json = kManifest;
   NonceSource nonces;
   wallet::ManifestIngest ingest;
@@ -495,7 +498,14 @@ TEST(WalletManifestSeal, ReleaseBufferKeepsTheObjectUsable) {
             wallet::ManifestIngestStatus::Complete);
   ASSERT_NE(ingest.sealed(), nullptr);
 
-  ingest.releaseBuffer();
+  size_t taken = 0;
+  std::unique_ptr<uint8_t[]> buffer = ingest.takeBuffer(taken);
+  EXPECT_NE(buffer, nullptr);
+  EXPECT_EQ(taken, want);
+  // And a second taker gets nothing -- which is the whole mechanism.
+  size_t again = 1234;
+  EXPECT_EQ(ingest.takeBuffer(again), nullptr);
+  EXPECT_EQ(again, 0u);
   EXPECT_EQ(ingest.sealed(), nullptr);
   EXPECT_EQ(ingest.sealedLen(), 0u);
   EXPECT_FALSE(ingest.active());
@@ -527,15 +537,17 @@ TEST(WalletManifestSeal, BeginDropsThePreviousRunsBufferAndFlags) {
   // and then the transfer dies without a terminal feed().
   ASSERT_EQ(ingest.feed(reinterpret_cast<const uint8_t*>(json.data()), 40), wallet::ManifestIngestStatus::Ok);
 
-  // The next transfer is not JSON. It has to be refused on its first chunk,
-  // which only happens if begin() cleared the flag.
-  const std::string notJson = "MTIL not a list at all";
+  // The next transfer is not JSON, and the refusal has to land on its **first
+  // chunk** -- long before the whole body has arrived, so the inspection at the
+  // end cannot be what refused it. That is the only way this test fails when
+  // `openingChecked_` is left stale: with the flag stale the first chunk is
+  // accepted as Ok and the verdict waits for the last one.
+  const std::string notJson = "MTIL not a list at all, and rather longer than one chunk of it";
   const size_t want2 = wallet::sealedManifestLen(notJson.size());
   ASSERT_EQ(ingest.begin(static_cast<uint32_t>(notJson.size()), crcOf(notJson),
                          std::unique_ptr<uint8_t[]>(new uint8_t[want2]), want2, cb),
             wallet::ManifestIngestStatus::Ok);
-  EXPECT_EQ(ingest.feed(reinterpret_cast<const uint8_t*>(notJson.data()), notJson.size()),
-            wallet::ManifestIngestStatus::NotJson);
+  EXPECT_EQ(ingest.feed(reinterpret_cast<const uint8_t*>(notJson.data()), 4), wallet::ManifestIngestStatus::NotJson);
 }
 
 }  // namespace

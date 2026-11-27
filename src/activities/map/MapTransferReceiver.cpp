@@ -183,6 +183,27 @@ bool walletInspectManifest(void*, const char* json, size_t len, uint32_t& wallet
 
 }  // namespace
 
+#if defined(ENABLE_WALLET) && ENABLE_WALLET
+// Takes the manifest buffer from the sealer, under the lock both tasks use, and
+// wipes and frees it outside that lock.
+//
+// **The two tasks race for this buffer.** The host task gives it back part-way
+// through the install, because the verification needs a buffer of its own and
+// an X3 has no room for both; the activity task reaches abandon() on a Back
+// press and wants the document titles gone. Whoever calls this first gets the
+// memory and the other gets nothing, so the buffer is wiped once and freed
+// once. The wipe is up to 32 KB, so it happens after the critical section, on
+// memory that by then nobody else can reach.
+void MapTransferReceiver::takeManifestBuffer() {
+  std::unique_ptr<uint8_t[]> buffer;
+  size_t length = 0;
+  portENTER_CRITICAL(&g_mux);
+  if (manifestIngest_) buffer = manifestIngest_->takeBuffer(length);
+  portEXIT_CRITICAL(&g_mux);
+  if (buffer) wallet::secureWipe(buffer.get(), length);
+}
+#endif
+
 MapTransferReceiver::MapTransferReceiver(const char* rootDir, const GfxRenderer* renderer)
     : rootDir_(rootDir), renderer_(renderer) {}
 
@@ -381,6 +402,29 @@ void MapTransferReceiver::handleBegin(const uint8_t* body, size_t len) {
   snprintf(finalPath_, sizeof(finalPath_), "%s/%s", rootDir_, rel);
   snprintf(partPath_, sizeof(partPath_), "%s.part", finalPath_);
 
+#if defined(ENABLE_WALLET) && ENABLE_WALLET
+  // **Before the mkdir below, and that is the whole point.** Everything under
+  // the wallet directory is either sealed or refused, never stored as it
+  // arrived -- `manifest.enc`, `manifest.bak` and FAT's own 8.3 alias of
+  // `manifest.json` all land here (WalletAssetIngest.h, pathIsUnderWalletDir).
+  //
+  // The first version of this gate sat after the directory creation, which
+  // left a hole as bad as the one it closed: `ensureDirectoryExists()` creates
+  // every parent component (`SDCardManager.cpp`, `vol().mkdir()`), so a push
+  // to `wallet/manifest.bak/x` made a **directory** called `manifest.bak` and
+  // only then was the file refused. `Storage.exists()` is true for a
+  // directory and `Storage.remove()` cannot delete one, so every later sync
+  // would answer `ERR swap failed` for ever, with nothing in the firmware able
+  // to undo it. Found in review, 2026-11-27. Nothing may touch the card before
+  // this gate.
+  if (wallet::pathIsUnderWalletDir(finalPath_) && !wallet::pathIsWalletAsset(finalPath_) &&
+      !wallet::pathIsWalletManifest(finalPath_)) {
+    LOG_ERR(kLogTag, "refusing a wallet path this device does not write: %s", finalPath_);
+    refuse("not a wallet file");
+    return;
+  }
+#endif
+
   // `base/13/4482/2789.tib` needs /explorink/base/13/4482 to exist first.
   // ensureDirectoryExists creates parents (SdFat's mkdir defaults to pFlag).
   //
@@ -453,17 +497,6 @@ void MapTransferReceiver::handleBegin(const uint8_t* body, size_t len) {
     // replaced by the install -- are both written as a test of this pointer,
     // rather than as a second copy of the begin and completion tails that would
     // drift away from them.
-  }
-  if (wallet::pathIsUnderWalletDir(finalPath_) && !wallet::pathIsWalletAsset(finalPath_) &&
-      !wallet::pathIsWalletManifest(finalPath_)) {
-    // Everything under the wallet directory is either sealed or refused, never
-    // stored as it arrived. `manifest.enc`, `manifest.bak` and FAT's own 8.3
-    // alias of `manifest.json` all land here (WalletAssetIngest.h,
-    // pathIsUnderWalletDir). Refused before the `.part` is opened, so the card
-    // is untouched.
-    LOG_ERR(kLogTag, "refusing a wallet path this device does not write: %s", finalPath_);
-    refuse("not a wallet file");
-    return;
   }
   if (wallet::pathIsWalletAsset(finalPath_)) {
     // No key means a locked wallet, and a locked wallet gets a refusal rather
@@ -674,20 +707,19 @@ void MapTransferReceiver::handleChunk(const uint8_t* body, size_t len) {
             static_cast<unsigned>(manifestIngest_->sealedLen()));
     wallet::ManifestInstallStatus installed =
         wallet::writeSealedManifestPart(manifestIngest_->sealed(), manifestIngest_->sealedLen());
-    // **The buffer is dropped before the verify, and the object is not.** The
+    // **The buffer goes back before the verify, and the object does not.** The
     // verification reads the file back off the card into a buffer of its own,
     // and holding both at once doubles the peak -- which on a C3 with BLE up is
     // the difference between an install and a refusal. Measured on an X3,
     // 2026-11-27: an 8,234-byte manifest sealed and wrote, then failed its own
     // verification with `OOM: 8234 bytes`.
     //
-    // Destroying the object here instead is a use-after-free, and it was the
-    // first version of this line (review, 2026-11-27). `active_` is still true
-    // for everything below, so detach() on the activity task may be inside
-    // abandon() -- which tests this pointer, finds it non-null, and calls
-    // reset() on it. The object therefore lives until active_ is cleared, with
-    // the rest of the sealers, and only its memory goes back now.
-    manifestIngest_->releaseBuffer();
+    // Destroying the object here was the first version of this line and is a
+    // use-after-free: `active_` is still true for everything below, so the
+    // activity task can be inside abandon() holding this pointer. The object
+    // now lives until the next begin, which is host-task only, and the buffer
+    // is handed over rather than freed -- both reviewed 2026-11-27.
+    takeManifestBuffer();
     if (installed == wallet::ManifestInstallStatus::Ok) installed = wallet::finishManifestInstall();
     if (!active_) return;
     if (installed != wallet::ManifestInstallStatus::Ok) {
@@ -764,14 +796,18 @@ void MapTransferReceiver::handleChunk(const uint8_t* body, size_t len) {
   declaredTotal_ = 0;
   activeTileValid_ = false;
 #if defined(ENABLE_WALLET) && ENABLE_WALLET
-  // Freed here rather than kept for the next transfer: it holds a 512 B scratch
-  // and a SHA-256 state, and the next push is usually a tile that needs
-  // neither. Its destructor is also the last thing that wipes the scratch.
-  walletIngest_.reset();
-  // Freed here and not on the manifest branch above, for the reason written
-  // there: until `active_` is false, the activity task can still be inside
-  // abandon() holding this pointer. Its buffer is already gone by now.
-  manifestIngest_.reset();
+  // **Wiped, not freed -- the memory goes back at the next begin, which is
+  // host-task only.** That is the rule abandon() below has always stated, and
+  // freeing here broke it: detach() gates only the *entry* to abandon(), so an
+  // activity task already inside it holds these pointers while this task runs,
+  // and a free under that is a use-after-free however narrow the window looks
+  // (review, 2026-11-27 -- and on an S3 the two tasks are genuinely parallel).
+  //
+  // What that costs is one AssetIngest (a 512 B scratch and a SHA-256 state)
+  // held until the next transfer starts. The manifest sealer's own 32 KB is
+  // already gone by here, handed over above.
+  if (walletIngest_) walletIngest_->reset();
+  if (manifestIngest_) manifestIngest_->reset();
 #endif
   // Same lock resetCounters() zeroes these under (MapTransferReceiver.h,
   // above completed_) -- otherwise its critical section excludes nothing.
@@ -835,10 +871,13 @@ void MapTransferReceiver::abandon(const char* reason) {
   // the file_ close/remove above already is, and ends the same way: a failed
   // write and a transfer that is already being abandoned. The memory goes back
   // at the next begin, which is host-task only.
+  //
+  // **The manifest's buffer is taken rather than wiped in place**, because the
+  // host task may be giving the same buffer back right now (the install hands
+  // it over mid-way). takeManifestBuffer() settles that under the lock: one of
+  // the two tasks gets the memory and wipes it, the other gets nothing.
   if (walletIngest_) walletIngest_->reset();
-  // Same rule, and it matters more here: this one holds the whole document
-  // list, so leaving it un-wiped would leave every title in a heap block until
-  // the next transfer.
+  takeManifestBuffer();
   if (manifestIngest_) manifestIngest_->reset();
 #endif
 
