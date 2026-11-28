@@ -122,6 +122,9 @@ TEST(WalletKeySlot, TheGenerationSaysWhichKeyItWas) {
   const wallet::KeyCopy again(slot);
   ASSERT_TRUE(first);
   EXPECT_EQ(first.generation(), again.generation());
+  // The number alone, without a copy, names the same key -- the receiver reads
+  // it this way at begin.
+  EXPECT_EQ(slot.generation(), first.generation());
 
   slot.clear();
   slot.set(b);

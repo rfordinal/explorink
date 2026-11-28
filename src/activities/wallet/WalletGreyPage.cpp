@@ -159,14 +159,13 @@ bool GreyPageReader::fillPlaneBand(const bool lsbPlane, uint8_t* const rows, con
 
 GreyOutcome GreyPageReader::readPlaneRows(const GreyPlane plane, const uint32_t xByte, const uint32_t y,
                                           const uint32_t rows, uint8_t* const dest, const uint32_t destRowBytes) {
-  // Borrowed per band and wiped when it returns (WalletKeySlot.h). A wallet
-  // locked between two bands ends the page on the next one.
-  const KeyCopy borrowed(Session::instance());
-  const uint8_t* const key = encrypted_ ? borrowed.bytes() : nullptr;
-  if (encrypted_ && key == nullptr) return GreyOutcome::Locked;
+  // A hint; the key is borrowed per row inside readPlaneWindow(), after each
+  // row's card read (WalletStore.h). A wallet locked between rows ends the page.
+  if (encrypted_ && !Session::instance().hasKey()) return GreyOutcome::Locked;
   Error error = Error::None;
-  if (!readPlaneWindow(file_, key, iv_, greyPlaneOffset(spec_, plane), spec_.rowBytes, xByte, y, rows, dest,
+  if (!readPlaneWindow(file_, encrypted_, iv_, greyPlaneOffset(spec_, plane), spec_.rowBytes, xByte, y, rows, dest,
                        destRowBytes, error)) {
+    if (error == Error::Locked) return GreyOutcome::Locked;
     return error == Error::AssetDecrypt ? GreyOutcome::DecryptFailed : GreyOutcome::ShortRead;
   }
   return GreyOutcome::Ok;

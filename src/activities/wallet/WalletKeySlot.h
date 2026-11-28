@@ -36,9 +36,10 @@
 // Blocking with interrupts masked is not allowed. So the lock covers the 32-byte
 // memcpy and nothing else, and the AES runs on the copy.
 //
-// **One accessor, on purpose.** There is `has()` -- a cheap "is there a key now",
-// for gates that only decide whether to start -- and `copyKey()`. A second way to
-// reach the bytes is how the pointer survives. Callers take a `KeyCopy` below
+// **One accessor to the bytes, on purpose.** There is `has()` -- a cheap "is
+// there a key now", for gates that only decide whether to start -- `generation()`,
+// which names the key without exposing it, and `copyKey()`. A second way to reach
+// the bytes is how the pointer survives. Callers take a `KeyCopy` below
 // rather than calling copyKey() with a buffer of their own, so the wipe is in a
 // destructor and not in every caller's memory.
 //
@@ -54,6 +55,17 @@ class KeySlot {
   // on it. Fine for "should this start at all"; never a licence to use the key --
   // that is copyKey(), which answers again under the lock.
   bool has() const { return has_.load(std::memory_order_acquire); }
+
+  // Which key is in the slot now, without the key. For a caller that only has to
+  // remember what it started under (the asset sealer, at begin), so it need not
+  // take a copy of the bytes just to read this number. Under the lock, because
+  // set() and clear() move it under the lock.
+  uint32_t generation() const {
+    lock_.lock();
+    const uint32_t gen = generation_;
+    lock_.unlock();
+    return gen;
+  }
 
   void set(const uint8_t key[kWalletKeyLen]) {
     if (key == nullptr) return;
@@ -109,10 +121,13 @@ class KeySlot {
 
 // A borrowed copy of the key, wiped when it goes out of scope.
 //
-// The rule it carries: **the copy lives for one unit of work** -- one chunk of a
-// transfer, one manifest seal, one page decrypt -- and the next unit borrows
-// again. Holding one across a transfer would bring back the bug this exists to
-// remove, one level up: a key that survives a lock.
+// The rule it carries: **the copy lives for one crypto call** -- one chunk's
+// cipher, one manifest seal or decrypt, one row of a page -- and the next call
+// borrows again. Never across a card read or write: on a C3 a panic copies 1 KB
+// of the faulting task's stack to /crash_report.txt on the card
+// (lib/hal/HalSystem.cpp), and no destructor runs on a panic. And never across a
+// transfer, which would bring back the bug this exists to remove, one level up:
+// a key that survives a lock.
 //
 // 32 bytes on the caller's stack. The receiver's callers run on the NimBLE host
 // task's 4 KB stack; 32 bytes there is the same order as the IV next to it.
@@ -128,8 +143,7 @@ class KeyCopy {
   explicit operator bool() const { return ok_; }
   // nullptr when there was no key, so a caller that forgets to test still cannot
   // run a cipher over 32 zero bytes: the crypto primitives refuse a null key
-  // (WalletCryptoDevice.cpp). readPlaneWindow() does NOT -- there null means
-  // "cleartext asset" -- so a read-path caller must test before passing it.
+  // (WalletCryptoDevice.cpp).
   const uint8_t* bytes() const { return ok_ ? bytes_ : nullptr; }
   // Which key this was (KeySlot::copyKey). Compare, never interpret.
   uint32_t generation() const { return generation_; }
