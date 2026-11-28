@@ -1,5 +1,6 @@
 add_executable(SyncChannelTest
   SyncNoiseTest.cpp
+  SyncChannelTest.cpp
 )
 
 # SyncNoise.h and SyncChannel.h only: header-only and pure, the primitives
