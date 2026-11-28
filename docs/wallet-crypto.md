@@ -903,9 +903,13 @@ enciphered the rest of the file under a half-zeroed key, the hash and the CRC
 passed because both are over the plaintext, and the file was renamed over the
 previous good one. Read off the code; never reproduced on a board.
 
-**Why no lock across the AES.** A 585 KB asset is seconds of work on the BLE host
-task. A lock held that long blocks sleep and the BLE stack. The lock covers a
-32-byte memcpy.
+**Why no lock across the AES.** The lock is a `portMUX` critical section, and the
+AES call cannot run inside one: on both chips the ESP-IDF AES driver is the DMA
+one, and it takes a blocking lock for the peripheral (framework-espidf 5.5.2,
+`components/mbedtls/port/aes/dma/esp_aes.c`, `AES_LOCK()` ->
+`esp_crypto_sha_aes_lock_acquire()` -> `_lock_acquire()`). Blocking with
+interrupts masked is not allowed. The lock covers a 32-byte memcpy; the AES runs
+on the copy.
 
 **The lock is a `portMUX` critical section.** On an S3 it is a spinlock between
 the cores. On the C3 the pinned ESP-IDF ignores the mux and masks interrupts
@@ -924,8 +928,9 @@ same borrow the device binds and show the sealer ends with `CipherFailed` /
 `SealFailed`; they do not run `walletCipher()` itself or the receiver's
 `abandon()`, which are read off the code. The race test runs two threads against a
 `std::mutex`-bound slot and sees zero torn copies in at least 200,000 borrows.
-The same 200,000-borrow loop with a no-op lock gave 28,000 to 127,000 torn
-copies in three runs (measured 2026-11-28, 14-core laptop, `-O2`). It proves `KeySlot` takes its lock
+The same 200,000-borrow loop with a no-op lock fails every run: 28,000 to
+182,000 torn copies across six runs on a 14-core laptop at varying load,
+2026-11-28, `-O2`. The count swings with host load; the failure does not. It proves `KeySlot` takes its lock
 around every touch of the bytes. It does not prove `portENTER_CRITICAL` is
 exclusive across an S3's cores; that is ESP-IDF's claim.
 

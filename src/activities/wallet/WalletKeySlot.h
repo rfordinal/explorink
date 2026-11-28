@@ -26,9 +26,13 @@
 // lands after the copy is taken does not touch the copy; the next chunk asks
 // again and is refused, so the transfer ends instead of finishing wrong.
 //
-// **Why no lock across the AES.** A 585 KB asset is seconds of work on the BLE
-// host task; a lock held that long would block sleep and the BLE stack. The lock
-// covers 32 bytes of memcpy and nothing else.
+// **Why no lock across the AES.** The lock is a portMUX critical section, and
+// the AES call cannot run inside one: on both the C3 and the S3 the ESP-IDF AES
+// driver is the DMA one, and it takes a blocking lock for the peripheral
+// (framework-espidf 5.5.2, components/mbedtls/port/aes/dma/esp_aes.c, AES_LOCK()
+// -> esp_crypto_sha_aes_lock_acquire() -> _lock_acquire(), esp_crypto_lock.c).
+// Blocking with interrupts masked is not allowed. So the lock covers the 32-byte
+// memcpy and nothing else, and the AES runs on the copy.
 //
 // **One accessor, on purpose.** There is `has()` -- a cheap "is there a key now",
 // for gates that only decide whether to start -- and `copyKey()`. A second way to
