@@ -175,9 +175,11 @@ bool slotSeal(void* ctx, const uint8_t* nonce, uint8_t* data, size_t len, uint8_
 }
 
 TEST(WalletManifestSeal, AWalletLockedBeforeTheSealSealsNothing) {
-  // T-2104, item 1. The list arrives with the wallet unlocked and the lock lands
-  // before the last chunk seals it. The seal must refuse -- SealFailed, which
+  // T-2104, item 1. One pass with the slot set seals a list the read path
+  // opens; a second pass with the slot cleared must refuse -- SealFailed, which
   // the receiver turns into abandon() -- rather than seal under a wiped key.
+  // Clearing before the pass stands in for a lock landing mid-list, because
+  // ManifestIngest touches the key only through the seal callback, at the end.
   wallet::KeySlot<std::mutex> slot;
   slot.set(kKey);
   const std::string json = kManifest;
