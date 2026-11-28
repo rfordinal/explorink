@@ -916,8 +916,9 @@ reads a number and no bytes.
 the session's own array, and `clear()` wiped that array in place. On a dual-core
 board (`env:x4pro`, `env:t5s3pro`: NimBLE on core 0, the Arduino task on core 1,
 `CONFIG_FREERTOS_UNICORE` unset) a sleep -- `clear("sleep")`, the only lock those
-builds have, because `CMD:WALLETLOCK` sits behind `ENABLE_WALLET_TEST_CMDS`, which
-only the single-core `env:default` sets -- could land between
+builds can land during a transfer, because `CMD:WALLETLOCK` sits behind
+`ENABLE_WALLET_TEST_CMDS`, which only the single-core `env:default` sets, and the
+idle lock runs only on wallet screens -- could land between
 the null check and `mbedtls_aes_setkey_enc()`, or inside it. The asset sealer then
 enciphered the rest of the file under a half-zeroed key, the hash and the CRC
 passed because both are over the plaintext, and the file was renamed over the
@@ -958,6 +959,20 @@ check: it is sealed once, at the end, under whichever key is there then.
 Host-tested: `WalletKeySlot.TheGenerationSaysWhichKeyItWas`,
 `WalletIngest.ADifferentKeyMidTransferEndsWithCipherFailed` (the sealer driven
 with the same check, not `walletCipher()` itself).
+
+**A failed AES block is a refusal, not a zero.** On both chips the ESP-IDF AES
+driver is the DMA one. On an allocation failure, an ISR init failure or any AES
+failure it zeroises the output block and returns -1 (framework-espidf 5.5.2,
+`components/mbedtls/port/aes/dma/esp_aes_dma_core.c`, the comment above
+`esp_aes_process_dma`). Until 2026-11-28 the CTR loop ignored that return, so a
+failed block left the plaintext as it was: on the ingest path a document written
+to the card in the clear under an `OK`, since both end-of-transfer checks are over
+the plaintext. Older than T-2104; found by its security review. Now
+`BlockEncrypt` returns whether it worked, `ctrXorInPlace()` stops and answers
+false, `ctrDecryptInPlace()` passes that up, and `walletCipher()` ends the
+transfer with `CipherFailed`. GCM was never affected: mbedtls checks the block
+cipher's return there. Host-tested (`WalletCryptoCtr.AFailedBlockIsReportedNotLeftAsPlaintext`);
+whether DMA memory runs out during a push on a board is not measured.
 
 **Verified on the host, not on a board** (`test/wallet/WalletKeySlotTest.cpp`,
 and the slot-bound tests in `WalletIngestTest.cpp` and

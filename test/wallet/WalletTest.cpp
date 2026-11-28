@@ -10,13 +10,13 @@
 #include "WalletAsset.h"
 #include "WalletCrypto.h"
 #include "WalletCryptoHost.h"
-#include "components/lock/PatternLock.h"
 #include "WalletGreyStatus.h"
 #include "WalletGreySynth.h"
 #include "WalletManifestParser.h"
 #include "WalletSha256.h"
 #include "WalletSidecar.h"
 #include "builtinFonts/ubuntu_10_regular.h"
+#include "components/lock/PatternLock.h"
 
 // The two pure halves of the wallet viewer: the 32-byte asset header, and the
 // manifest reader. Both run here with no Storage, no renderer and no panel --
@@ -1582,6 +1582,39 @@ TEST(WalletCryptoIv, TheFlagPicksTheForm) {
   EXPECT_EQ(std::memcmp(content, expectContent, sizeof(content)), 0);
 }
 
+TEST(WalletCryptoCtr, AFailedBlockIsReportedNotLeftAsPlaintext) {
+  // What the ESP-IDF DMA AES driver does on an allocation failure: zeroise the
+  // output block and return -1 (esp_aes_dma_core.c, above esp_aes_process_dma).
+  // Ignored, that zero keystream XORs to the plaintext, and the ingest path wrote
+  // documents to the card in the clear under an OK (T-2104 security review). The
+  // loop must answer false so walletCipher() refuses and the transfer ends.
+  struct FailAt {
+    int calls = 0;
+    int failOn = 0;
+  };
+  auto failingBlock = [](void* ctx, const uint8_t in[16], uint8_t out[16]) {
+    auto* f = static_cast<FailAt*>(ctx);
+    if (f->calls++ == f->failOn) {
+      std::memset(out, 0, 16);
+      return false;
+    }
+    for (int i = 0; i < 16; ++i) out[i] = static_cast<uint8_t>(in[i] ^ 0x5A);
+    return true;
+  };
+  const uint8_t iv[wallet::kAssetIvLen] = {0};
+  uint8_t data[64];
+  std::memset(data, 0xC3, sizeof(data));
+  FailAt fail;
+  fail.failOn = 2;
+  EXPECT_FALSE(wallet::ctrXorInPlace(failingBlock, &fail, iv, 0, data, sizeof(data)));
+  EXPECT_EQ(fail.calls, 3);  // stopped at the failing block, did not go on
+
+  FailAt never;
+  never.failOn = -1;
+  std::memset(data, 0xC3, sizeof(data));
+  EXPECT_TRUE(wallet::ctrXorInPlace(failingBlock, &never, iv, 0, data, sizeof(data)));
+}
+
 TEST(WalletCryptoCtr, OffsetSplitsIntoABlockAndARemainder) {
   // The whole reason the format uses CTR: a windowed read reaches an arbitrary
   // payload offset by starting the counter at offset / 16 and dropping offset % 16
@@ -1690,14 +1723,14 @@ TEST(WalletCryptoCtr, DecryptsRealGeneratorContentIvCiphertext) {
   EXPECT_NE(header.flags & kFlagContentIv, 0) << "the generator must mark the IV form";
 
   const std::vector<uint8_t> legacy = encFixture("enc/f3/f3e7250a407c088b.dat");
-  EXPECT_NE(std::memcmp(file.data() + kAssetHeaderBytes, legacy.data() + kAssetHeaderBytes,
-                        file.size() - kAssetHeaderBytes),
-            0)
+  EXPECT_NE(
+      std::memcmp(file.data() + kAssetHeaderBytes, legacy.data() + kAssetHeaderBytes, file.size() - kAssetHeaderBytes),
+      0)
       << "the two IV forms must not produce the same ciphertext";
 
   uint8_t iv[kAssetIvLen];
-  ASSERT_TRUE(buildAssetIvForAsset(header.flags, kEncCodeAssetId, header.sha256Prefix,
-                                   sizeof(header.sha256Prefix), header.version, iv));
+  ASSERT_TRUE(buildAssetIvForAsset(header.flags, kEncCodeAssetId, header.sha256Prefix, sizeof(header.sha256Prefix),
+                                   header.version, iv));
 
   std::vector<uint8_t> plain(file.begin() + kAssetHeaderBytes, file.end());
   wallet::host::ctrXor(kTestKey, iv, 0, plain.data(), plain.size());
@@ -1942,7 +1975,8 @@ TEST(WalletCryptoKek, ThePasswordIsPatternThenSecretAndTheWrapRoundTrips) {
 
   uint8_t password[kKekPasswordBufBytes];
   size_t passwordLen = 0;
-  ASSERT_TRUE(buildKekPassword(pattern, std::strlen(pattern), secret, sizeof(secret), password, sizeof(password), passwordLen));
+  ASSERT_TRUE(
+      buildKekPassword(pattern, std::strlen(pattern), secret, sizeof(secret), password, sizeof(password), passwordLen));
   EXPECT_EQ(passwordLen, std::strlen(pattern) + sizeof(secret));
   EXPECT_EQ(std::memcmp(password, "567ba98c", 8), 0) << "the encoded path comes first, start cell included";
   EXPECT_EQ(std::memcmp(password + 8, secret, sizeof(secret)), 0) << "then the device secret, nothing between";
@@ -2049,12 +2083,12 @@ TEST(WalletCryptoPattern, ProvisioningRefusesAPathTheGateCannotWalk) {
   // four points; passing the wallet's range is what keeps the two from
   // disagreeing about the same stored pattern.
   EXPECT_TRUE(patternlock::isWellFormed("567b", patternlock::startCellOf("567b")));
-  EXPECT_FALSE(patternlock::isWellFormed("567b", patternlock::startCellOf("567b"), kPatternMinPoints,
-                                         kPatternMaxPoints));
+  EXPECT_FALSE(
+      patternlock::isWellFormed("567b", patternlock::startCellOf("567b"), kPatternMinPoints, kPatternMaxPoints));
   // The start cell the gate will open on has to be the stored pattern's first
   // character, or every walk a rider can produce begins with the wrong one.
-  EXPECT_FALSE(patternlock::isWellFormed("567ba98c", patternlock::kDefaultStart + 1, kPatternMinPoints,
-                                         kPatternMaxPoints));
+  EXPECT_FALSE(
+      patternlock::isWellFormed("567ba98c", patternlock::kDefaultStart + 1, kPatternMinPoints, kPatternMaxPoints));
 }
 
 TEST(WalletCryptoRateLimit, FreeTriesThenDoublingThenAHardStop) {
@@ -2209,7 +2243,8 @@ TEST(WalletUnlockOutcomes, TheDelayAHostWillWatchIsTheOneTheScreenEnforces) {
   // rather than as six separate cases.
   const uint32_t expected[] = {0, 0, 0, 0, 1000, 2000, 4000, 8000, 16000, 30000};
   for (uint8_t failures = 0; failures < 10; ++failures) {
-    EXPECT_EQ(unlockFailureDelayMs(failures), expected[failures]) << "after " << static_cast<int>(failures) << " failures";
+    EXPECT_EQ(unlockFailureDelayMs(failures), expected[failures])
+        << "after " << static_cast<int>(failures) << " failures";
   }
   // And the tenth failure is not a delay at all: it is the end.
   EXPECT_TRUE(isLockedOut(kMaxUnlockFailures));

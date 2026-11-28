@@ -30,21 +30,25 @@ struct AesCtx {
   const uint8_t* key = nullptr;
 };
 
-inline void encryptBlock(void* ctx, const uint8_t in[16], uint8_t out[16]) {
+inline bool encryptBlock(void* ctx, const uint8_t in[16], uint8_t out[16]) {
   const AesCtx* aes = static_cast<const AesCtx*>(ctx);
   EVP_CIPHER_CTX* evp = EVP_CIPHER_CTX_new();
+  if (evp == nullptr) return false;
   int len = 0;
-  EVP_EncryptInit_ex(evp, EVP_aes_256_ecb(), nullptr, aes->key, nullptr);
-  EVP_CIPHER_CTX_set_padding(evp, 0);
-  EVP_EncryptUpdate(evp, out, &len, in, 16);
+  const bool ok = EVP_EncryptInit_ex(evp, EVP_aes_256_ecb(), nullptr, aes->key, nullptr) == 1 &&
+                  EVP_CIPHER_CTX_set_padding(evp, 0) == 1 && EVP_EncryptUpdate(evp, out, &len, in, 16) == 1 &&
+                  len == 16;
   EVP_CIPHER_CTX_free(evp);
+  return ok;
 }
 
 // AES-256-CTR in place at a payload offset, through the shared loop.
 inline void ctrXor(const uint8_t key[kWalletKeyLen], const uint8_t iv[kAssetIvLen], uint32_t offset, uint8_t* data,
                    size_t len) {
   AesCtx ctx{key};
-  ctrXorInPlace(encryptBlock, &ctx, iv, offset, data, len);
+  // Host OpenSSL does not fail here in practice; a failure would show as a
+  // round-trip mismatch in every test that uses this.
+  (void)ctrXorInPlace(encryptBlock, &ctx, iv, offset, data, len);
 }
 
 // AES-256-GCM decrypt with the tag verified. False means the tag failed, and the
