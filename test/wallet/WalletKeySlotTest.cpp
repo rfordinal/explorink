@@ -20,7 +20,22 @@
 
 #include "WalletKeySlot.h"
 
+#if defined(__linux__)
+#include <sched.h>
+#endif
+
 namespace {
+
+// CPUs this process may actually run on; hardware_concurrency() ignores
+// affinity, so under `taskset -c 0` it still reports every core. Same helper as
+// test/map_transfer/MapTransferGateTest.cpp.
+unsigned usableCpus() {
+#if defined(__linux__)
+  cpu_set_t set;
+  if (sched_getaffinity(0, sizeof(set), &set) == 0) return static_cast<unsigned>(CPU_COUNT(&set));
+#endif
+  return std::thread::hardware_concurrency();
+}
 
 using HostSlot = wallet::KeySlot<std::mutex>;
 
@@ -113,6 +128,12 @@ TEST(WalletKeySlot, ACopyIsNeverTornByAConcurrentClear) {
   // it can, the other borrows the key as fast as it can. Every borrow must be
   // either the whole key or a refusal -- never the half-zeroed key that the old
   // pointer accessor could hand mbedtls on a dual-core board.
+  //
+  // **Needs two CPUs to be evidence.** On one CPU a torn copy needs the locker
+  // to be preempted mid-copy, which is rare: a copy without its lock passed 4 of
+  // 5 runs there (review, 2026-11-28, `taskset -c 0`). Skipped rather than
+  // passed.
+  if (usableCpus() < 2) GTEST_SKIP() << "needs two CPUs to race";
   HostSlot slot;
   uint8_t key[wallet::kWalletKeyLen];
   fillKey(key, 7);
