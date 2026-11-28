@@ -14,8 +14,9 @@
 // handed out a pointer into the holder's own array, and `clear()` wipes that array
 // in place. On a dual-core board (`env:x4pro`, `env:t5s3pro`: NimBLE on core 0,
 // the Arduino task on core 1, `sdkconfig.x4pro` leaves CONFIG_FREERTOS_UNICORE
-// unset) a sleep -- `clear("sleep")`, the one lock those builds have, since
-// `CMD:WALLETLOCK` is compiled only into the single-core `env:default` -- can
+// unset) a sleep -- `clear("sleep")`, the one lock those builds can land during
+// a transfer: `CMD:WALLETLOCK` is compiled only into the single-core
+// `env:default`, and the idle lock runs only on wallet screens -- can
 // wipe the bytes on one core while the
 // other core is inside `mbedtls_aes_setkey_enc()` with that pointer. A null check
 // before the call does not close it: the wipe lands after the check. The asset

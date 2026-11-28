@@ -16,8 +16,10 @@ constexpr const char* kLogTag = "WALLETCRY";
 
 // The block-encrypt callback ctrXorInPlace() drives. One AES-ECB block, which on
 // the C3 is the hardware accelerator through mbedtls.
-void encryptBlock(void* ctx, const uint8_t in[kAesBlockLen], uint8_t out[kAesBlockLen]) {
-  mbedtls_aes_crypt_ecb(static_cast<mbedtls_aes_context*>(ctx), MBEDTLS_AES_ENCRYPT, in, out);
+// Its return is the whole point: the DMA driver zeroises `out` and returns -1 on
+// a failure (WalletCrypto.h, BlockEncrypt), and a zero keystream is plaintext.
+bool encryptBlock(void* ctx, const uint8_t in[kAesBlockLen], uint8_t out[kAesBlockLen]) {
+  return mbedtls_aes_crypt_ecb(static_cast<mbedtls_aes_context*>(ctx), MBEDTLS_AES_ENCRYPT, in, out) == 0;
 }
 
 }  // namespace
@@ -36,9 +38,10 @@ bool ctrDecryptInPlace(const uint8_t key[kWalletKeyLen], const uint8_t iv[kAsset
     LOG_ERR(kLogTag, "AES setkey failed");
     return false;
   }
-  ctrXorInPlace(encryptBlock, &aes, iv, offset, data, len);
+  const bool ok = ctrXorInPlace(encryptBlock, &aes, iv, offset, data, len);
   mbedtls_aes_free(&aes);
-  return true;
+  if (!ok) LOG_ERR(kLogTag, "AES block failed; %u bytes left unusable", static_cast<unsigned>(len));
+  return ok;
 }
 
 GcmResult gcmDecryptInPlace(const uint8_t key[kWalletKeyLen], const uint8_t* nonce, const size_t nonceLen,

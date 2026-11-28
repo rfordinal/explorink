@@ -111,6 +111,11 @@ bool feedEncryptedManifestAt(const char* path, ManifestParser& parser, Error& er
     // AES DMA driver out of memory, which is the same "too big for this device"
     // the cap above reports and must not read as "somebody changed your wallet"
     // (WalletCryptoDevice.h, GcmResult). Nothing has been parsed either way.
+    //
+    // Wiped here as on the success path: a primitive that failed part-way may
+    // have left some of the list decrypted in the buffer, and that buffer is about
+    // to be freed (T-2104 security review, 2026-11-28).
+    secureWipe(buffer.get(), fileSize);
     error = decrypted == GcmResult::AuthFailed ? Error::ManifestAuth : Error::ManifestTooBig;
     return false;
   }

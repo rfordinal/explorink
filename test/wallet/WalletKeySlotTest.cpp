@@ -17,6 +17,7 @@
 #include <chrono>
 #include <cstring>
 #include <mutex>
+#include <new>
 #include <thread>
 
 #include "WalletKeySlot.h"
@@ -149,6 +150,30 @@ TEST(WalletKeySlot, TheGenerationSaysWhichKeyItWas) {
   slot.set(a);
   const wallet::KeyCopy same(slot);
   EXPECT_NE(same.generation(), overHeld.generation());
+}
+
+TEST(WalletKeySlot, ClearWipesTheBytesNotJustTheFlag) {
+  // A clear() that only dropped the flag would pass every test above: no
+  // borrow can reach the bytes afterwards. The wipe is the point of a lock --
+  // the RAM is what a device in someone else's hands keeps (review round 9,
+  // 2026-11-28). Built in raw storage and searched for the key's bytes, so the
+  // test needs no access to the slot's members and no knowledge of its layout.
+  uint8_t key[wallet::kWalletKeyLen];
+  fillKey(key, 7);
+  alignas(HostSlot) unsigned char storage[sizeof(HostSlot)];
+  std::memset(storage, 0, sizeof(storage));
+  auto* slot = new (storage) HostSlot();
+  const auto holdsKey = [&] {
+    for (size_t at = 0; at + sizeof(key) <= sizeof(storage); ++at)
+      if (std::memcmp(storage + at, key, sizeof(key)) == 0) return true;
+    return false;
+  };
+  slot->set(key);
+  // The search must be able to find it, or the check below proves nothing.
+  ASSERT_TRUE(holdsKey());
+  slot->clear();
+  EXPECT_FALSE(holdsKey());
+  slot->~HostSlot();
 }
 
 TEST(WalletKeySlot, AKeyCopyWipesItselfOnScopeExit) {
