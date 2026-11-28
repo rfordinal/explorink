@@ -122,6 +122,11 @@ add_subdirectory(lora_beacon)
 add_subdirectory(missing_tile_priority)
 add_subdirectory(missing_tile_retry)
 add_subdirectory(map_tile_path)
+# The BLE transfer receiver's decisions -- the frame parse, the begin ladder and
+# the chunk state machine. Its own target rather than a file in test/wallet,
+# because the receiver carries every transfer kind and the wallet is one of
+# them (T-2106).
+add_subdirectory(map_transfer)
 add_subdirectory(map_follow)
 add_subdirectory(map_gnss_heading)
 add_subdirectory(map_gnss_bars)

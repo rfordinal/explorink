@@ -11,6 +11,7 @@
 #include <cstring>
 
 #include "MapByteFormat.h"
+#include "MapTransferDecide.h"
 #include "MapTransferPath.h"
 
 #if defined(ENABLE_WALLET) && ENABLE_WALLET
@@ -22,22 +23,6 @@
 namespace {
 
 constexpr const char* kLogTag = "MAPXFER";
-
-// Opcodes. See the wire format block in MapTransferReceiver.h.
-constexpr uint8_t kOpBegin = 0x01;
-constexpr uint8_t kOpChunk = 0x02;
-constexpr uint8_t kOpAbort = 0x03;
-
-// Bytes after the opcode: totalLen + crc32 + pathLen.
-constexpr size_t kBeginFixedBytes = 9;
-// Bytes after the opcode: offset.
-constexpr size_t kChunkHeaderBytes = 4;
-
-// A sanity ceiling, not a real limit. The whole point of this channel is the
-// small stuff -- a corridor of tiles, a safety layer, a trip file. Anything
-// bigger belongs on the card over WiFi/SD, and a declared length in the
-// hundreds of MB is a corrupt frame, not a plan.
-constexpr uint32_t kMaxFileBytes = 8u * 1024u * 1024u;
 
 // Read-back buffer for the completion CRC check. One-shot heap allocation,
 // held only for the duration of computePartCrc32() (freed at scope exit,
@@ -72,15 +57,6 @@ constexpr size_t kCrcReadBufferBytes = 4096;
 constexpr size_t kCrcFallbackReadBufferBytes = 128;
 
 portMUX_TYPE g_mux = portMUX_INITIALIZER_UNLOCKED;
-
-// Little-endian u32 out of an unaligned BLE attribute buffer. memcpy, never a
-// cast-and-deref: the ESP32-C3 faults on an unaligned wide load (firmware
-// CLAUDE.md, "RISC-V Alignment").
-uint32_t readU32(const uint8_t* p) {
-  uint32_t value;
-  memcpy(&value, p, sizeof(value));
-  return value;
-}
 
 // Holds MapTransferReceiver::inFrame_ true for the lifetime of the frame
 // callback, so detach() on the activity task can wait the frame out.
@@ -341,7 +317,12 @@ void MapTransferReceiver::disconnectTrampoline(void* ctx) {
 }
 
 void MapTransferReceiver::onFrame(const uint8_t* data, size_t len) {
-  if (!attached_ || data == nullptr || len == 0) return;
+  // What this frame is. The dispatch is arithmetic over one byte, so it lives
+  // in MapTransferDecide.h with the rest of the decisions -- including the
+  // `Ignore` that returns here, before the guard below, rather than falling
+  // through to the shared tail (T-2106).
+  const maptransfer::FrameAction action = maptransfer::decideFrame(attached_, data, len);
+  if (action == maptransfer::FrameAction::Ignore) return;
 
   // Everything below can touch transfer state, so from here on detach() must
   // wait for this call to return. Declared before the dispatch and never
@@ -369,24 +350,28 @@ void MapTransferReceiver::onFrame(const uint8_t* data, size_t len) {
   // written down as T-2104 and not changed here (review, 2026-11-27).
   FrameGuard guard(inFrame_);
 
-  const uint8_t opcode = data[0];
-  switch (opcode) {
-    case kOpBegin:
+  switch (action) {
+    case maptransfer::FrameAction::Begin:
       handleBegin(data + 1, len - 1);
       break;
-    case kOpChunk:
+    case maptransfer::FrameAction::Chunk:
       handleChunk(data + 1, len - 1);
       break;
-    case kOpAbort:
+    case maptransfer::FrameAction::Abort:
+      // An abort with no transfer behind it does nothing, but it still stamps
+      // lastFrameMs_ and publishes on the way out -- which is why this is a
+      // case and not an early return.
       if (active_) {
         LOG_INF(kLogTag, "sender aborted at %lu/%lu bytes", static_cast<unsigned long>(received_),
                 static_cast<unsigned long>(declaredTotal_));
         abandon("aborted");
       }
       break;
-    default:
+    case maptransfer::FrameAction::BadOpcode:
       refuse("bad opcode");
       break;
+    case maptransfer::FrameAction::Ignore:
+      break;  // returned above
   }
 
   lastFrameMs_ = millis();
@@ -394,26 +379,16 @@ void MapTransferReceiver::onFrame(const uint8_t* data, size_t len) {
 }
 
 void MapTransferReceiver::handleBegin(const uint8_t* body, size_t len) {
-  if (len < kBeginFixedBytes + 1) {
-    refuse("short begin");
+  // The three refusals that need nothing but the frame itself: `short begin`,
+  // `bad path length`, `bad length`. Parse and ladder both live in
+  // MapTransferDecide.h, where a host test can drive them (T-2106).
+  maptransfer::BeginHeader header;
+  if (const char* malformed = maptransfer::parseBeginHeader(body, len, header); malformed != nullptr) {
+    refuse(malformed);
     return;
   }
-
-  const uint32_t total = readU32(body + 0);
-  const uint32_t crc = readU32(body + 4);
-  const size_t pathLen = body[8];
-
-  // Exact length, not "at least": trailing bytes in a begin frame mean the
-  // sender and this parser disagree about the format, and guessing which one
-  // is right is how a wire format rots.
-  if (pathLen == 0 || pathLen > kMaxRelPathBytes || len != kBeginFixedBytes + pathLen) {
-    refuse("bad path length");
-    return;
-  }
-  if (total == 0 || total > kMaxFileBytes) {
-    refuse("bad length");
-    return;
-  }
+  const uint32_t total = header.total;
+  const uint32_t crc = header.crc;
 
   // A multi-KB push at a 15 B (default MTU 23) payload runs at 1/25th the
   // airtime a negotiated MTU gives it (docs/ble-review-2026-08.md,
@@ -431,37 +406,13 @@ void MapTransferReceiver::handleBegin(const uint8_t* body, size_t len) {
   }
 
   char rel[kMaxRelPathBytes + 1];
-  memcpy(rel, body + kBeginFixedBytes, pathLen);
-  rel[pathLen] = '\0';
-  if (!relPathIsSafe(rel, pathLen)) {
-    LOG_ERR(kLogTag, "rejected path: %s", rel);
-    refuse("bad path");
-    return;
-  }
-
-  // The status channel is where every verdict goes. Starting a transfer with
-  // nobody subscribed means writing a file and never being able to say
-  // whether it is good, which is worse than not starting.
-  if (!freeink::BlePositionServer::getInstance().isTransferSubscribed()) {
-    refuse("status not subscribed");
-    return;
-  }
-
-  if (active_) {
-    // A sender that died without disconnecting leaves this stuck busy
-    // forever, so a long-idle transfer is reclaimed rather than defended.
-    if (millis() - lastFrameMs_ < kStaleTransferMs) {
-      refuse("busy");
-      return;
-    }
-    LOG_ERR(kLogTag, "reclaiming stale transfer of %s at %lu bytes", partPath_, static_cast<unsigned long>(received_));
-    abandon(nullptr);
-  }
+  memcpy(rel, header.path, header.pathLen);
+  rel[header.pathLen] = '\0';
 
   // **A wallet request is parsed, not pasted.** For everything else the
   // sender's relative path is still the destination, as it always was; for the
   // wallet the sender's bytes are a lookup key and the card path is rebuilt
-  // here out of validated hex and firmware constants.
+  // below out of validated hex and firmware constants.
   //
   // That is the answer to four review rounds that each found one more string a
   // gate read as one file and SdFat opened as another. A comparison between
@@ -470,10 +421,67 @@ void MapTransferReceiver::handleBegin(const uint8_t* body, size_t len) {
   // implementation for exFAT. An alias of a path we never hand to the
   // filesystem, on the other hand, is not reachable at all
   // (WalletAssetIngest.h, "what is this request for?"). 2026-11-27.
-  bool pathBuilt = false;
+  //
+  // **Resolved here, refused below.** These parsers are pure, so working the
+  // answer out before the gates costs a few hundred nanoseconds in the `busy`
+  // case and changes nothing observable -- the refusal a wallet path this
+  // device does not write earns is still issued in its original place in the
+  // ladder, after `busy` and before anything touches the card.
+  maptransfer::BeginTarget target = maptransfer::BeginTarget::Plain;
 #if defined(ENABLE_WALLET) && ENABLE_WALLET
   char assetId[wallet::kAssetIdBufBytes] = {0};
   if (wallet::parseWalletAssetRelPath(rel, assetId, sizeof(assetId))) {
+    target = maptransfer::BeginTarget::WalletAsset;
+  } else if (wallet::parseWalletManifestRelPath(rel)) {
+    target = maptransfer::BeginTarget::WalletManifest;
+  } else if (wallet::relPathTouchesWalletDir(rel)) {
+    target = maptransfer::BeginTarget::WalletForeign;
+  }
+#endif
+
+  maptransfer::BeginGateFacts facts;
+  facts.pathSafe = relPathIsSafe(rel, header.pathLen);
+  // The status channel is where every verdict goes. Both of these are const
+  // getters on the server, so asking for them before the ladder rather than
+  // inside it has no side effect of its own.
+  facts.statusSubscribed = freeink::BlePositionServer::getInstance().isTransferSubscribed();
+  facts.transferActive = active_;
+  facts.msSinceLastFrame = millis() - lastFrameMs_;
+  facts.staleAfterMs = kStaleTransferMs;
+  facts.target = target;
+
+  const maptransfer::BeginDecision decision = maptransfer::decideBeginGates(facts);
+  if (decision.action == maptransfer::BeginAction::Refuse) {
+    // Two of these name the offending path in the log, and the reason string
+    // the rider reads cannot: `bad path` and `not a wallet file` are about one
+    // spelling each. Switched on the gate rather than on the string, so a
+    // reason two gates came to share could not silently mislabel a log line.
+    if (decision.gate == maptransfer::BeginGate::UnsafePath) {
+      LOG_ERR(kLogTag, "rejected path: %s", rel);
+    } else if (decision.gate == maptransfer::BeginGate::ForeignWalletPath) {
+      LOG_ERR(kLogTag, "refusing a wallet path this device does not write: %s", rel);
+    }
+    refuse(decision.reason);
+    return;
+  }
+  if (decision.action == maptransfer::BeginAction::ReclaimStaleThenProceed) {
+    LOG_ERR(kLogTag, "reclaiming stale transfer of %s at %lu bytes", partPath_, static_cast<unsigned long>(received_));
+    abandon(nullptr);
+  }
+
+  // The destination, built from what the request resolved to above. Nothing
+  // here reads the sender's bytes except for the plain case, where the relative
+  // path is still the destination and always has been.
+  //
+  // **Below the ladder, where it has always been.** These two buffers are what
+  // abandon() deletes and what the completion path renames, so writing them for
+  // a request that is about to be refused would clobber a *live* transfer's
+  // state -- the `busy` case refuses the new frame and leaves the old transfer
+  // running. Said out loud here because the resolution that feeds this block
+  // did move above the ladder (T-2106) and the build must not follow it.
+  bool pathBuilt = false;
+#if defined(ENABLE_WALLET) && ENABLE_WALLET
+  if (target == maptransfer::BeginTarget::WalletAsset) {
     // Sixteen hex characters in, a canonical path out. The shard directory is
     // *derived* from the id rather than taken from the request, so a wallet
     // asset cannot name a directory at all -- which is what made
@@ -482,27 +490,19 @@ void MapTransferReceiver::handleBegin(const uint8_t* body, size_t len) {
     // [0-9a-f], which `isValidAssetId()` accepts, and the 42 bytes it needs fit
     // `finalPath_`'s 128. Kept because the alternative is a silent truncation
     // if either constant moves, and said here so it does not read as a live
-    // branch somebody should be testing.
+    // branch somebody should be testing. That is also why it stays here rather
+    // than in the decision layer: nothing can drive it from a test either.
     if (!wallet::buildAssetPath(assetId, finalPath_, sizeof(finalPath_))) {
       refuse("bad path");
       return;
     }
     pathBuilt = true;
-  } else if (wallet::parseWalletManifestRelPath(rel)) {
+  } else if (target == maptransfer::BeginTarget::WalletManifest) {
     // The manifest is never written at the name it arrives under: it is sealed
     // in RAM and installed at three absolute constants. `finalPath_` is set
     // only so the rest of this function and the log have something to name.
     snprintf(finalPath_, sizeof(finalPath_), "%s", wallet::kManifestPath);
     pathBuilt = true;
-  } else if (wallet::relPathTouchesWalletDir(rel)) {
-    // Under the wallet and not one of the two things the format puts there.
-    // **Before anything touches the card**, including the directory creation
-    // below, which creates every parent component and cannot be undone: a push
-    // to `wallet/manifest.bak/x` used to make a *directory* called
-    // `manifest.bak`, and `Storage.remove()` cannot delete one.
-    LOG_ERR(kLogTag, "refusing a wallet path this device does not write: %s", rel);
-    refuse("not a wallet file");
-    return;
   }
 #endif
   if (!pathBuilt) snprintf(finalPath_, sizeof(finalPath_), "%s/%s", rootDir_, rel);
@@ -517,24 +517,44 @@ void MapTransferReceiver::handleBegin(const uint8_t* body, size_t len) {
   // activity task reads them through -- this is the one place they are freed,
   // and it is host-task only (see clearSealers()).
   clearSealers();
-  if (wallet::pathIsWalletManifest(finalPath_)) {
-    // The list of documents. Buffered whole and sealed once, which is why every
-    // refusal it can answer is answered here, before a byte is taken: the begin
-    // frame carries the length, so an oversized manifest costs nothing on the
-    // wire (WalletManifestIngest.h, "Why this one is buffered").
-    const uint8_t* key = wallet::Session::instance().key();
-    if (key == nullptr) {
-      refuse("wallet locked");
-      return;
-    }
-    if (total > wallet::kMaxManifestPlaintextBytes) {
+
+  // The wallet's own three refusals -- a locked wallet, a manifest over the cap
+  // this device can seal in one shot, an asset with no panel to check its
+  // geometry against. All of them before a single byte is opened for write, so
+  // every one leaves the card exactly as it was.
+  //
+  // **Keyed on `target`, and so is the construction below it**, because a gate
+  // and the thing it guards must answer the same question. They agree by
+  // construction: `WalletManifest` set `finalPath_` to `wallet::kManifestPath`
+  // and `WalletAsset` had `buildAssetPath()` write it, so
+  // `pathIsWalletManifest()` and `pathIsWalletAsset()` -- which the sealers used
+  // to be selected by -- are true of exactly those two and of nothing else a
+  // `Plain` request can spell (`relPathTouchesWalletDir()` already took
+  // everything under `/explorink/wallet` away from `Plain`, and the tile root is
+  // `/explorink`).
+  const maptransfer::WalletGateDecision walletGate = maptransfer::decideWalletGates({
+      target,
+      wallet::Session::instance().key() != nullptr,
+      renderer_ != nullptr,
+      total,
+      static_cast<uint32_t>(wallet::kMaxManifestPlaintextBytes),
+  });
+  if (walletGate.gate != maptransfer::WalletGate::None) {
+    if (walletGate.gate == maptransfer::WalletGate::ManifestTooBig) {
       // Said with both numbers, because the person reading it has to decide
-      // what to drop from the wallet.
+      // what to drop from the wallet -- which the reason string alone cannot.
       LOG_ERR(kLogTag, "manifest is %lu bytes, this device can seal at most %u", static_cast<unsigned long>(total),
               static_cast<unsigned>(wallet::kMaxManifestPlaintextBytes));
-      refuse("manifest too big");
-      return;
     }
+    refuse(walletGate.reason);
+    return;
+  }
+
+  if (target == maptransfer::BeginTarget::WalletManifest) {
+    // The list of documents. Buffered whole and sealed once, which is why every
+    // refusal it can answer is answered above, before a byte is taken: the
+    // begin frame carries the length, so an oversized manifest costs nothing on
+    // the wire (WalletManifestIngest.h, "Why this one is buffered").
     auto ingest = makeUniqueNoThrow<wallet::ManifestIngest>();
     auto buffer = makeUniqueNoThrow<uint8_t[]>(wallet::sealedManifestLen(total));
     if (!ingest || !buffer) {
@@ -562,20 +582,12 @@ void MapTransferReceiver::handleBegin(const uint8_t* body, size_t len) {
     // rather than as a second copy of the begin and completion tails that would
     // drift away from them.
   }
-  if (wallet::pathIsWalletAsset(finalPath_)) {
-    // No key means a locked wallet, and a locked wallet gets a refusal rather
-    // than a half-written document: storing the plaintext "for now" is the one
-    // outcome this rung exists to prevent (docs/wallet-provisioning.md).
-    const uint8_t* key = wallet::Session::instance().key();
-    if (key == nullptr) {
-      refuse("wallet locked");
-      return;
-    }
-    // The geometry gate needs the live panel, and only a screen can supply it.
-    if (renderer_ == nullptr) {
-      refuse("no panel");
-      return;
-    }
+  if (target == maptransfer::BeginTarget::WalletAsset) {
+    // The locked-wallet and no-panel refusals are both above: a locked wallet
+    // gets a refusal rather than a half-written document, because storing the
+    // plaintext "for now" is the one outcome this rung exists to prevent
+    // (docs/wallet-provisioning.md), and the geometry gate needs a live panel
+    // that only a screen can supply.
     auto ingest = makeUniqueNoThrow<wallet::AssetIngest>();
     if (!ingest) {
       LOG_ERR(kLogTag, "OOM: wallet ingest");
@@ -667,44 +679,49 @@ void MapTransferReceiver::handleBegin(const uint8_t* body, size_t len) {
 }
 
 void MapTransferReceiver::handleChunk(const uint8_t* body, size_t len) {
-  if (!active_) {
-    refuse("no transfer");
-    return;
-  }
-  if (len <= kChunkHeaderBytes) {
-    abandon("short chunk");
-    return;
-  }
+  maptransfer::ChunkFacts facts;
+  facts.transferActive = active_;
+  facts.bodyLen = len;
+  // Read only when the frame is long enough to hold an offset at all -- four
+  // bytes out of a shorter one is four bytes past the end of NimBLE's buffer.
+  // A frame of exactly kChunkHeaderBytes is still a `short chunk`, so the value
+  // read there is never used.
+  facts.offset = len >= maptransfer::kChunkHeaderBytes ? maptransfer::readU32le(body) : 0;
+  facts.received = received_;
+  facts.declaredTotal = declaredTotal_;
 
-  const uint32_t offset = readU32(body);
-  const uint8_t* payload = body + kChunkHeaderBytes;
-  const size_t payloadLen = len - kChunkHeaderBytes;
+  // The whole state machine -- no transfer, short chunk, repeat, gap, reorder,
+  // overrun -- is arithmetic over those five numbers, so it lives in
+  // MapTransferDecide.h where a host test can walk it (T-2106).
+  const maptransfer::ChunkDecision chunk = maptransfer::decideChunk(facts);
 
-  // The offset is checked against bytes actually written, so this catches a
-  // repeat, a gap and a reorder with one comparison. On a single BLE link with
-  // write-with-response none of the three should ever happen; if one does, the
-  // transfer is wrong and finishing it would produce a file that passes no
-  // check anyway.
-  if (offset != received_) {
-    LOG_ERR(kLogTag, "chunk offset %lu, expected %lu", static_cast<unsigned long>(offset),
-            static_cast<unsigned long>(received_));
-    abandon("offset");
-    return;
-  }
-
-  // Offset 0 and received_ == 0 (checked above) can only be the transfer's
-  // first chunk -- logged once per transfer, not once per chunk, which would
-  // itself eat into the airtime this is diagnosing (docs/ble-review-2026-08.md,
-  // "Performance", item 4).
-  if (offset == 0) {
-    LOG_INF("MAPTX", "first chunk payload %u B (mtu %u)", static_cast<unsigned>(payloadLen),
+  // Logged once per transfer, not once per chunk, which would itself eat into
+  // the airtime this is diagnosing (docs/ble-review-2026-08.md, "Performance",
+  // item 4). Before the verdict is acted on, because that is where it has
+  // always been: after the offset check and before the overrun one.
+  if (chunk.isFirst) {
+    LOG_INF("MAPTX", "first chunk payload %u B (mtu %u)", static_cast<unsigned>(chunk.payloadLen),
             static_cast<unsigned>(freeink::BlePositionServer::getInstance().negotiatedMtu()));
   }
 
-  if (received_ + payloadLen > declaredTotal_) {
-    abandon("overrun");
+  if (chunk.action == maptransfer::ChunkAction::Refuse) {
+    // Nothing is in flight to tear down, so the transfer state is untouched.
+    refuse(chunk.reason);
     return;
   }
+  if (chunk.action == maptransfer::ChunkAction::Abandon) {
+    if (chunk.gate == maptransfer::ChunkGate::BadOffset) {
+      // Both numbers, because the pair is the whole diagnosis: which of a
+      // repeat, a gap and a reorder this was.
+      LOG_ERR(kLogTag, "chunk offset %lu, expected %lu", static_cast<unsigned long>(facts.offset),
+              static_cast<unsigned long>(received_));
+    }
+    abandon(chunk.reason);
+    return;
+  }
+
+  const uint8_t* payload = body + maptransfer::kChunkHeaderBytes;
+  const size_t payloadLen = chunk.payloadLen;
 
 #if defined(ENABLE_WALLET) && ENABLE_WALLET
   if (manifestIngest_) {
@@ -768,7 +785,12 @@ void MapTransferReceiver::handleChunk(const uint8_t* body, size_t len) {
   if (!active_) return;
   received_ += payloadLen;
 
-  if (received_ < declaredTotal_) return;
+  // The last transition the state machine owns. Same test as `received_ <
+  // declaredTotal_` after the increment -- the overrun gate has already
+  // excluded every case where the sum could exceed the total -- but asked of
+  // the decision, so the walk from first chunk to completion is one thing a
+  // host test can drive end to end (T-2106).
+  if (!chunk.completesTransfer) return;
 
   // --- complete ---
   // Every byte is on the card and the verdict work starts. Published right

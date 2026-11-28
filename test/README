@@ -14,6 +14,12 @@ Run a single suite directly:
 Google Test is fetched via CMake FetchContent on first configure; the pinned
 version lives in test/CMakeLists.txt.
 
+map_transfer covers the BLE transfer receiver's decisions -- the frame parse,
+the begin refusal ladder and the chunk state machine, lifted out of
+MapTransferReceiver.cpp so the host can reach them at all. A new refusal or gate
+goes in src/activities/map/MapTransferDecide.h (T-2106; the parent repo's
+docs/ble-map-transfer-protocol.md has the why).
+
 gnss_sky_view covers the satellite wait screen's projection: azimuth and
 elevation to a pixel, the signal buckets and the mountain ridge profile
 (docs/gnss-acquire.md).
