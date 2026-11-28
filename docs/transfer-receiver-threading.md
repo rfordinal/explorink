@@ -28,8 +28,10 @@ while `detach()` abandons under it.
 
 Host-tested with two threads, `test/map_transfer/MapTransferGateTest.cpp`,
 `ConcurrentCloseNeverOverlapsAFrame`. Measured 2026-11-28 on a 14-core laptop,
-three runs each: the shipped gate 0 overlapping teardowns; a release/acquire
-mutant 68-83; the old order (check "attached", then mark "inside") 140-374. The
+six runs each across two review passes at varying load: the shipped gate 0
+overlapping teardowns every run; a release/acquire mutant 56-308; the old order
+(check "attached", then mark "inside") 129-465. Both mutants fail every run; the
+count swings with host load. The
 test **skips on fewer than two usable CPUs**, and when fewer than 2,000 rounds
 fit in its 10 s budget: a one-CPU host cannot reorder, so a mutant passes there,
 and a busy-spinning host thread on a contended host ran it for minutes.

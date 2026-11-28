@@ -135,8 +135,9 @@ TEST(MapTransferGate, ConcurrentCloseNeverOverlapsAFrame) {
   // release/acquire mutant passes. Worse, the host thread busy-spins, so on one
   // CPU every yield below hands it a whole timeslice and the test took over 90 s
   // (review, 2026-11-28, `taskset -c 0`). Skipped there rather than passed.
-  // Measured 2026-11-28 on a 14-core laptop, three runs each: 0 overlaps here,
-  // 68-83 for an acq/rel mutant, 140-374 for the old read-then-publish order.
+  // Measured 2026-11-28 on a 14-core laptop at varying load, six runs each: 0
+  // overlaps here; an acq/rel mutant 56-308, the old read-then-publish order
+  // 129-465. Both mutants fail every run; the count swings with load.
   if (usableCpus() < 2) GTEST_SKIP() << "needs two CPUs to race";
   // Up to 20,000 rounds or 10 s, whichever first. The budget always wins, so a
   // loaded CI host ends it in bounded time (review, 2026-11-28: with a
