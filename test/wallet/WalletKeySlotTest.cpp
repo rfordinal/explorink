@@ -126,7 +126,11 @@ TEST(WalletKeySlot, TheGenerationSaysWhichKeyItWas) {
   // it this way at begin.
   EXPECT_EQ(slot.generation(), first.generation());
 
+  // clear() alone moves it: a borrow that finds the slot empty and then the
+  // same generation again later would be naming a key that was wiped.
+  const uint32_t beforeClear = slot.generation();
   slot.clear();
+  EXPECT_NE(slot.generation(), beforeClear);
   slot.set(b);
   const wallet::KeyCopy later(slot);
   ASSERT_TRUE(later);

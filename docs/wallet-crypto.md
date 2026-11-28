@@ -943,7 +943,11 @@ manifest ends with `SealFailed` the same way.
 
 **A different key mid-transfer ends it too.** "There is a key" is not "it is the
 same key". The slot counts generations: every `set()` and every `clear()` moves
-it, and `KeyCopy::generation()` says which one a borrow saw. The receiver takes
+it, and `KeyCopy::generation()` says which one a borrow saw. **The same key set
+again counts as new too**: the slot cannot tell a re-unlock from a re-provision.
+So `CMD:WALLETUNLOCK` sent to an already unlocked `env:default` board while an
+asset arrives now ends that transfer with `ERR encrypt failed`, where before
+T-2104 it finished. Fails safe, devel console only. The receiver takes
 the generation at begin and hands it to `walletCipher()` as the sealer's
 context; a borrow under any other generation refuses like a locked wallet. Without
 it, a wallet locked, re-provisioned (`CMD:WALLETPROVISION force`) and unlocked
