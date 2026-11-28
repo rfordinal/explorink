@@ -112,7 +112,9 @@ class KeyCopy {
 
   explicit operator bool() const { return ok_; }
   // nullptr when there was no key, so a caller that forgets to test still cannot
-  // run a cipher over 32 zero bytes: every primitive here refuses a null key.
+  // run a cipher over 32 zero bytes: the crypto primitives refuse a null key
+  // (WalletCryptoDevice.cpp). readPlaneWindow() does NOT -- there null means
+  // "cleartext asset" -- so a read-path caller must test before passing it.
   const uint8_t* bytes() const { return ok_ ? bytes_ : nullptr; }
 
  private:
