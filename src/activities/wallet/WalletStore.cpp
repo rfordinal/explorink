@@ -56,10 +56,9 @@ bool feedEncryptedManifestAt(const char* path, ManifestParser& parser, Error& er
     return false;
   }
 
-  // Borrowed for this one decrypt and wiped on every return below
-  // (WalletKeySlot.h).
-  const KeyCopy key(Session::instance());
-  if (!key) {
+  // A hint only, so a locked wallet costs no 32 KB allocation and no read. The
+  // key itself is borrowed below, after the read, right before the decrypt.
+  if (!Session::instance().hasKey()) {
     file.close();
     error = Error::Locked;
     return false;
@@ -89,9 +88,22 @@ bool feedEncryptedManifestAt(const char* path, ManifestParser& parser, Error& er
     return false;
   }
   uint8_t* cipher = buffer.get() + envelope.ciphertextOffset;
-  const GcmResult decrypted =
-      gcmDecryptInPlace(key.bytes(), envelope.nonce, kGcmNonceLen, buffer.get() + envelope.tagOffset, kGcmTagLen,
-                        cipher, envelope.ciphertextLen);
+  // **Borrowed here, after the SD read, and for nothing but the decrypt.** On a
+  // C3 a panic copies 1 KB of the faulting task's stack into
+  // /crash_report.txt on the card (lib/hal/HalSystem.cpp,
+  // __wrap_panic_print_backtrace and checkPanic), and a destructor does not run
+  // on a panic. A copy held across a card read is a copy a card fault can write
+  // to the card in the clear (security review, 2026-11-28).
+  GcmResult decrypted = GcmResult::Failed;
+  {
+    const KeyCopy key(Session::instance());
+    if (!key) {
+      error = Error::Locked;
+      return false;
+    }
+    decrypted = gcmDecryptInPlace(key.bytes(), envelope.nonce, kGcmNonceLen, buffer.get() + envelope.tagOffset,
+                                  kGcmTagLen, cipher, envelope.ciphertextLen);
+  }
   if (decrypted != GcmResult::Ok) {
     // **Two different messages, because these are two different facts.** A tag
     // mismatch is wrong key or an altered file, and GCM cannot tell those apart.
@@ -487,7 +499,7 @@ bool Store::lookupCode(const int itemIndex, const int codeIndex, CodeLookup& out
   return true;
 }
 
-bool readPlaneWindow(HalFile& file, const uint8_t* const key, const uint8_t iv[kAssetIvLen], const uint32_t planeBase,
+bool readPlaneWindow(HalFile& file, const bool encrypted, const uint8_t iv[kAssetIvLen], const uint32_t planeBase,
                      const uint32_t srcRowBytes, const uint32_t xByte, const uint32_t y, const uint32_t rows,
                      uint8_t* const dest, const uint32_t destRowBytes, Error& error) {
   error = Error::None;
@@ -503,9 +515,20 @@ bool readPlaneWindow(HalFile& file, const uint8_t* const key, const uint8_t iv[k
       error = Error::ShortRead;
       return false;
     }
-    if (key != nullptr && !ctrDecryptInPlace(key, iv, payloadOffset, row, destRowBytes)) {
-      error = Error::AssetDecrypt;
-      return false;
+    if (encrypted) {
+      // Borrowed per row, after that row's card read and for nothing but its
+      // decrypt: a copy held across the read is one a C3 panic can write to
+      // /crash_report.txt on the card (feedEncryptedManifestAt() has the
+      // mechanism). A wallet locked between two rows ends the window here.
+      const KeyCopy key(Session::instance());
+      if (!key) {
+        error = Error::Locked;
+        return false;
+      }
+      if (!ctrDecryptInPlace(key.bytes(), iv, payloadOffset, row, destRowBytes)) {
+        error = Error::AssetDecrypt;
+        return false;
+      }
     }
   }
   // This is the whole reason the format uses CTR. Every one of those rows starts at
@@ -631,11 +654,10 @@ bool PageReader::readWindow(const uint32_t x, const uint32_t y, GfxRenderer& ren
     return false;
   }
 
-  // Borrowed for this one window. A cleartext asset needs none, and a locked
-  // wallet must not stop one from drawing.
-  const KeyCopy borrowed(Session::instance());
-  const uint8_t* const key = encrypted_ ? borrowed.bytes() : nullptr;
-  if (encrypted_ && key == nullptr) {
+  // A hint, so a locked wallet is refused before the first seek. The key is
+  // borrowed per row inside readPlaneWindow(); a cleartext asset borrows none, and
+  // a locked wallet does not stop one from drawing.
+  if (encrypted_ && !Session::instance().hasKey()) {
     error = Error::Locked;
     return false;
   }
@@ -646,8 +668,8 @@ bool PageReader::readWindow(const uint32_t x, const uint32_t y, GfxRenderer& ren
   // No plaintext hash check here: a window is a fraction of the payload, so there is
   // nothing to check it against. A wrong key cannot get this far anyway -- the
   // manifest that named this asset would not have authenticated.
-  return readPlaneWindow(file_, key, iv_, /*planeBase=*/0, spec_.rowBytes, xByte, y, rows, renderer.getFrameBuffer(),
-                         rowBytes, error);
+  return readPlaneWindow(file_, encrypted_, iv_, /*planeBase=*/0, spec_.rowBytes, xByte, y, rows,
+                         renderer.getFrameBuffer(), rowBytes, error);
 }
 
 namespace {
@@ -763,15 +785,23 @@ bool readWholeScreen(const char* assetId, const Gate gate, GfxRenderer& renderer
     // (../../../docs/map-memory.md:57), so CTR runs over those bytes in place --
     // one screen, offset 0, one pass.
     uint8_t iv[kAssetIvLen];
-    const KeyCopy key(Session::instance());
-    if (!key || !buildAssetIvForAsset(header.flags, assetId, header.sha256Prefix, sizeof(header.sha256Prefix),
-                                      header.version, iv)) {
+    if (!buildAssetIvForAsset(header.flags, assetId, header.sha256Prefix, sizeof(header.sha256Prefix), header.version,
+                              iv)) {
       error = Error::Locked;
       return false;
     }
-    if (!ctrDecryptInPlace(key.bytes(), iv, 0, renderer.getFrameBuffer(), want)) {
-      error = Error::AssetDecrypt;
-      return false;
+    // Borrowed for the decrypt alone and wiped before the hash check below
+    // (WalletKeySlot.h: never held longer than the crypto call).
+    {
+      const KeyCopy key(Session::instance());
+      if (!key) {
+        error = Error::Locked;
+        return false;
+      }
+      if (!ctrDecryptInPlace(key.bytes(), iv, 0, renderer.getFrameBuffer(), want)) {
+        error = Error::AssetDecrypt;
+        return false;
+      }
     }
     // The header's sha256 prefix covers the PLAINTEXT, so it is checked here and
     // nowhere earlier -- and on an encrypted asset it earns its keep twice: it

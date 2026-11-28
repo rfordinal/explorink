@@ -885,14 +885,32 @@ There are two ways in and no third:
   critical section `clear()` takes, so the copy is the whole key or a refusal,
   never part of one. Wiped by the destructor when it leaves scope.
 
-The unit is one sealer block of a transfer, at most 512 B (`walletCipher()`).
-The largest BLE chunk at any MTU is 509 B (`WalletAssetIngest.h`), so in
-practice that is one borrow per chunk. Then one manifest seal
-(`walletSealManifest()`), one manifest decrypt (`feedEncryptedManifestAt()`,
-`WalletStore.cpp`), one window or
-grey band (`PageReader`, `GreyPageReader`). The next unit borrows again. A
-`KeyCopy` held across a whole transfer would bring back the bug it replaced, one
-level up.
+**One copy, one crypto call.** The copy is taken right before the call and dies
+right after it: one sealer block of a transfer, at most 512 B (`walletCipher()`;
+the largest BLE chunk at any MTU is 509 B, `WalletAssetIngest.h`, so one borrow
+per chunk), one manifest seal (`walletSealManifest()`), one manifest decrypt
+(`feedEncryptedManifestAt()`, after the card read), one row of a page window or
+grey band (`readPlaneWindow()`, after that row's card read), one whole-screen
+decrypt (`readWholeScreen()`, before the hash check). The next call borrows
+again.
+
+Two reasons for that tightness:
+
+- **Never across a transfer.** A `KeyCopy` held across a whole transfer would
+  bring back the bug it replaced, one level up: a key that survives a lock.
+- **Never across a card read or write.** On a C3 a panic copies 1 KB of the
+  faulting task's stack into RTC memory, and the next boot writes it as hex to
+  `/crash_report.txt` on the card (`lib/hal/HalSystem.cpp`,
+  `__wrap_panic_print_backtrace` and `checkPanic()`). A destructor does not run on
+  a panic. A copy alive while a card fault panics is a key written to the card in
+  the clear, which is the one thing the wallet promises the card never holds.
+  Security review, 2026-11-28. The window cannot be zero: mbedtls's own AES
+  context holds the key on the stack for the length of the call, as it did before
+  T-2104. The S3 writes no stack (`#if !__riscv`).
+
+Gates that only decide whether to start use `hasKey()`, which reads no bytes.
+The sealer remembers which key it started under with `keyGeneration()`, which
+reads a number and no bytes.
 
 **Why not a pointer.** Until T-2104, `Session::key()` returned a pointer into
 the session's own array, and `clear()` wiped that array in place. On a dual-core

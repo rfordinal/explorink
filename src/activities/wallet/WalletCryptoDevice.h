@@ -108,6 +108,8 @@ class Session {
   // The only way to the bytes. Take a `wallet::KeyCopy` rather than calling this
   // with a buffer of your own: it wipes the copy when it goes out of scope
   // (WalletKeySlot.h has why there is no pointer accessor any more).
+  // Which key is held, never the key (WalletKeySlot.h, generation()).
+  uint32_t keyGeneration() const { return slot_.generation(); }
   bool copyKey(uint8_t out[kWalletKeyLen], uint32_t* generation = nullptr) const {
     return slot_.copyKey(out, generation);
   }

@@ -130,9 +130,11 @@ bool walletSink(void* ctx, const uint8_t* data, size_t len) {
 // key with one nonce over two different plaintexts breaks GCM outright.
 void walletRandom(void*, uint8_t* out, size_t len) { wallet::randomBytes(out, len); }
 
-// The key is borrowed here, at the end of the transfer, for the same reasons
-// walletCipher() borrows it per chunk: a wallet locked while the manifest was
-// arriving must end the transfer, not seal the list under a wiped key.
+// The key is borrowed here, at the end of the transfer: a wallet locked while
+// the manifest was arriving must end the transfer, not seal the list under a
+// wiped key. Unlike walletCipher() there is no generation check, on purpose: the
+// list is sealed once, whole, so a key that changed while it arrived seals all of
+// it under the new key, which is the key the device then reads it with.
 bool walletSealManifest(void*, const uint8_t* nonce, uint8_t* data, size_t len, uint8_t* tag) {
   const wallet::KeyCopy key(wallet::Session::instance());
   if (!key) return false;
@@ -620,17 +622,12 @@ void MapTransferReceiver::handleBegin(const uint8_t* body, size_t len) {
     // call, so a wallet locked mid-transfer ends the transfer instead of sealing
     // the rest of it under a wiped key. The `hasKey()` gate above is the "do not
     // even start" half of the same rule. What is carried is *which* key the
-    // transfer starts under, so a different key later is refused as well. The
-    // borrow here is only for its generation and is wiped at the end of the block;
-    // a lock between the gate and this line is refused with the gate's words.
-    {
-      const wallet::KeyCopy startKey(wallet::Session::instance());
-      if (!startKey) {
-        refuse("wallet locked");
-        return;
-      }
-      walletKeyGeneration_ = startKey.generation();
-    }
+    // transfer starts under, so a different key later is refused as well. Read
+    // as a number, not as a borrowed copy: a copy here would be key bytes on this
+    // task's stack for nothing. A lock between the gate and this line needs no
+    // test here either -- the first chunk's borrow refuses, because clear() moves
+    // the generation and empties the slot.
+    walletKeyGeneration_ = wallet::Session::instance().keyGeneration();
     cb.cipherCtx = &walletKeyGeneration_;
     cb.crc32 = walletCrc32;
     cb.write = walletSink;

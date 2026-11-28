@@ -616,11 +616,8 @@ TEST(WalletIngest, ADifferentKeyMidTransferEndsWithCipherFailed) {
   slot.set(kKey);
   GenCipher cipher;
   cipher.slot = &slot;
-  {
-    const wallet::KeyCopy start(slot);
-    ASSERT_TRUE(start);
-    cipher.begunUnder = start.generation();
-  }
+  // Read the way the receiver reads it at begin: the number, not a copy.
+  cipher.begunUnder = slot.generation();
   cipher.swapBefore = 20;
   cipher.otherKey = other;
   std::vector<uint8_t> sink;
