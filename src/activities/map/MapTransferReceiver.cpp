@@ -101,8 +101,9 @@ portMUX_TYPE g_mux = portMUX_INITIALIZER_UNLOCKED;
 // measured; a claim of "free" would need a timing.
 //
 // `ctx` is the generation the transfer began under, a uint32_t owned by the
-// receiver. The host tests pass their own struct (a host KeySlot plus the
-// starting generation) and repeat this check in the test.
+// receiver. The host tests pass their own struct holding a host KeySlot; the one
+// that covers a changed key (ADifferentKeyMidTransferEndsWithCipherFailed) also
+// carries the starting generation and repeats this check.
 bool walletCipher(void* ctx, const uint8_t* iv, uint32_t payloadOffset, uint8_t* data, size_t len) {
   const wallet::KeyCopy key(wallet::Session::instance());
   if (!key) return false;
@@ -841,8 +842,22 @@ void MapTransferReceiver::handleChunk(const uint8_t* body, size_t len) {
   // asserts on a handle that was never opened (HalStorage.cpp,
   // HAL_FILE_WRAPPED_CALL) -- isOpen() is the one accessor that tolerates it,
   // which is why abandon() has used this exact shape all along.
-  if (file_.isOpen()) file_.close();
+  const bool closedClean = !file_.isOpen() || file_.close();
   if (!active_) return;
+#if defined(ENABLE_WALLET) && ENABLE_WALLET
+  // **A wallet asset's close is checked; a tile's is not.** A tile is read back
+  // off the card and CRC-checked below, which catches a close that failed to
+  // flush. A wallet asset is not: its OK is computed over the plaintext, so a
+  // truncated ciphertext would pass and be renamed over the good document
+  // (T-2104 security review, 2026-11-28).
+  if (walletIngest_ && !closedClean) {
+    LOG_ERR(kLogTag, "close failed on %s; not renaming", partPath_);
+    abandon("write failed");
+    return;
+  }
+#else
+  (void)closedClean;
+#endif
 
   uint32_t actualCrc = 0;
 #if defined(ENABLE_WALLET) && ENABLE_WALLET
