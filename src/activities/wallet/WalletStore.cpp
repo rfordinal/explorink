@@ -56,8 +56,10 @@ bool feedEncryptedManifestAt(const char* path, ManifestParser& parser, Error& er
     return false;
   }
 
-  const uint8_t* key = Session::instance().key();
-  if (key == nullptr) {
+  // Borrowed for this one decrypt and wiped on every return below
+  // (WalletKeySlot.h).
+  const KeyCopy key(Session::instance());
+  if (!key) {
     file.close();
     error = Error::Locked;
     return false;
@@ -87,8 +89,9 @@ bool feedEncryptedManifestAt(const char* path, ManifestParser& parser, Error& er
     return false;
   }
   uint8_t* cipher = buffer.get() + envelope.ciphertextOffset;
-  const GcmResult decrypted = gcmDecryptInPlace(key, envelope.nonce, kGcmNonceLen, buffer.get() + envelope.tagOffset,
-                                                kGcmTagLen, cipher, envelope.ciphertextLen);
+  const GcmResult decrypted =
+      gcmDecryptInPlace(key.bytes(), envelope.nonce, kGcmNonceLen, buffer.get() + envelope.tagOffset, kGcmTagLen,
+                        cipher, envelope.ciphertextLen);
   if (decrypted != GcmResult::Ok) {
     // **Two different messages, because these are two different facts.** A tag
     // mismatch is wrong key or an altered file, and GCM cannot tell those apart.
@@ -546,7 +549,7 @@ bool PageReader::open(const PageImageSpec& page, const GfxRenderer& renderer, Er
   }
 
   const PanelGeometry live = livePanel(renderer);
-  const bool haveKey = Session::instance().key() != nullptr;
+  const bool haveKey = Session::instance().hasKey();
   switch (checkPageImage(raw, sizeof(raw), page, live, header_, haveKey)) {
     case AssetCheck::Ok:
       break;
@@ -628,7 +631,10 @@ bool PageReader::readWindow(const uint32_t x, const uint32_t y, GfxRenderer& ren
     return false;
   }
 
-  const uint8_t* const key = encrypted_ ? Session::instance().key() : nullptr;
+  // Borrowed for this one window. A cleartext asset needs none, and a locked
+  // wallet must not stop one from drawing.
+  const KeyCopy borrowed(Session::instance());
+  const uint8_t* const key = encrypted_ ? borrowed.bytes() : nullptr;
   if (encrypted_ && key == nullptr) {
     error = Error::Locked;
     return false;
@@ -690,7 +696,7 @@ bool readWholeScreen(const char* assetId, const Gate gate, GfxRenderer& renderer
   const PanelGeometry live = livePanel(renderer);
   // A key in hand is what lets an encrypted asset through the gate at all; without
   // one it is refused rather than drawn as noise.
-  const bool haveKey = Session::instance().key() != nullptr;
+  const bool haveKey = Session::instance().hasKey();
   const AssetCheck check = gate == Gate::Code ? checkCodeAsset(raw, sizeof(raw), live, header, haveKey)
                                               : checkAssetForPanel(raw, sizeof(raw), live, header, haveKey);
   switch (check) {
@@ -757,13 +763,13 @@ bool readWholeScreen(const char* assetId, const Gate gate, GfxRenderer& renderer
     // (../../../docs/map-memory.md:57), so CTR runs over those bytes in place --
     // one screen, offset 0, one pass.
     uint8_t iv[kAssetIvLen];
-    const uint8_t* key = Session::instance().key();
-    if (key == nullptr || !buildAssetIvForAsset(header.flags, assetId, header.sha256Prefix, sizeof(header.sha256Prefix),
-                                                header.version, iv)) {
+    const KeyCopy key(Session::instance());
+    if (!key || !buildAssetIvForAsset(header.flags, assetId, header.sha256Prefix, sizeof(header.sha256Prefix),
+                                      header.version, iv)) {
       error = Error::Locked;
       return false;
     }
-    if (!ctrDecryptInPlace(key, iv, 0, renderer.getFrameBuffer(), want)) {
+    if (!ctrDecryptInPlace(key.bytes(), iv, 0, renderer.getFrameBuffer(), want)) {
       error = Error::AssetDecrypt;
       return false;
     }

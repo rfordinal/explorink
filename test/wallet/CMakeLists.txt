@@ -12,6 +12,9 @@ add_executable(WalletTest
   # Which screen Home > Wallet opens (T-2109). The screen-level branch is not
   # host testable; the predicate beside it is.
   WalletEntryTest.cpp
+  # The key's holder: a copy under the lock clear() takes, never a pointer into
+  # it (T-2104). Header-only; the device binds the lock to a portMUX.
+  WalletKeySlotTest.cpp
   ${REPO_ROOT}/src/activities/wallet/WalletManifestParser.cpp
   ${REPO_ROOT}/lib/JsonParser/StreamingJsonParser.cpp
   # The hint-label width check measures with the firmware's own font table

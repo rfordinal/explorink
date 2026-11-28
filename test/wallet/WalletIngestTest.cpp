@@ -13,12 +13,15 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cstring>
+#include <mutex>
 #include <string>
 #include <vector>
 
 #include "WalletAssetIngest.h"
 #include "WalletCryptoHost.h"
+#include "WalletKeySlot.h"
 
 namespace {
 
@@ -516,6 +519,66 @@ TEST(WalletIngest, ACipherThatFailsMidTransferEndsIt) {
     at += take;
   }
   EXPECT_EQ(status, wallet::IngestStatus::CipherFailed);
+}
+
+TEST(WalletIngest, AWalletLockedMidTransferAbandonsInsteadOfSealingWrong) {
+  // T-2104, item 1, with the device's own shape: the cipher borrows the key
+  // from a KeySlot per chunk, exactly as walletCipher() in
+  // MapTransferReceiver.cpp does, and the slot is cleared part-way through.
+  // The transfer must end with CipherFailed -- which the receiver turns into
+  // abandon(), deleting the part file -- and every byte written before that
+  // must have been enciphered under the whole key, never a partly wiped one.
+  struct SlotCipher {
+    wallet::KeySlot<std::mutex>* slot = nullptr;
+    size_t chunks = 0;
+    size_t clearBefore = 0;
+  };
+  auto slotCipher = [](void* ctx, const uint8_t* iv, uint32_t payloadOffset, uint8_t* data, size_t len) {
+    auto* c = static_cast<SlotCipher*>(ctx);
+    if (c->chunks++ == c->clearBefore) c->slot->clear();
+    const wallet::KeyCopy key(*c->slot);
+    if (!key) return false;
+    wallet::host::ctrXor(key.bytes(), iv, payloadOffset, data, len);
+    return true;
+  };
+
+  const std::vector<uint8_t> file = buildX4Tile();
+  wallet::KeySlot<std::mutex> slot;
+  slot.set(kKey);
+  SlotCipher cipher;
+  cipher.slot = &slot;
+  cipher.clearBefore = 20;
+  std::vector<uint8_t> sink;
+  wallet::AssetIngest ingest;
+  wallet::AssetIngest::Callbacks cb;
+  cb.cipher = slotCipher;
+  cb.cipherCtx = &cipher;
+  cb.crc32 = crc32Bitwise;
+  cb.write = hostSink;
+  cb.writeCtx = &sink;
+  ASSERT_TRUE(ingest.begin(static_cast<uint32_t>(file.size()), crc32Of(file), wallet::kPanelX4, cb));
+  size_t at = 0;
+  wallet::IngestStatus status = wallet::IngestStatus::Ok;
+  while (at < file.size() && status == wallet::IngestStatus::Ok) {
+    const size_t take = std::min<size_t>(180, file.size() - at);
+    status = ingest.feed(file.data() + at, take);
+    at += take;
+  }
+  EXPECT_EQ(status, wallet::IngestStatus::CipherFailed);
+  // It got far enough for the lock to land mid-payload, not at begin.
+  EXPECT_EQ(cipher.chunks, cipher.clearBefore + 1);
+  ASSERT_GT(sink.size(), wallet::kAssetHeaderBytes);
+  ASSERT_LT(sink.size(), file.size());
+
+  // What did reach the sink decrypts back to the sender's bytes under the real
+  // key: nothing was enciphered under a wiped one before the refusal.
+  uint8_t iv[wallet::kAssetIvLen];
+  wallet::AssetHeader header;
+  ASSERT_TRUE(wallet::parseAssetHeader(sink.data(), sink.size(), header));
+  ASSERT_TRUE(wallet::buildAssetIvFromHash(header.sha256Prefix, sizeof(header.sha256Prefix), header.version, iv));
+  std::vector<uint8_t> payload(sink.begin() + wallet::kAssetHeaderBytes, sink.end());
+  wallet::host::ctrXor(kKey, iv, 0, payload.data(), payload.size());
+  EXPECT_TRUE(std::equal(payload.begin(), payload.end(), file.begin() + wallet::kAssetHeaderBytes));
 }
 
 // --- which files get sealed at all -----------------------------------------

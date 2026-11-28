@@ -178,17 +178,16 @@ Session& Session::instance() {
 
 void Session::setKey(const uint8_t key[kWalletKeyLen]) {
   if (key == nullptr) return;
-  std::memcpy(key_, key, kWalletKeyLen);
-  hasKey_ = true;
+  slot_.set(key);
   lastTouchMs_ = millis();
   LOG_INF(kLogTag, "wallet unlocked; key held for %u s of idle", static_cast<unsigned>(kIdleTimeoutMs / 1000));
 }
 
 void Session::clear(const char* reason) {
-  if (hasKey_) LOG_INF(kLogTag, "wallet locked (%s)", reason != nullptr ? reason : "?");
-  secureWipe(key_, sizeof(key_));
-  hasKey_ = false;
+  // Logged after the wipe, not before: the log is slow and the wipe is the point.
+  const bool had = slot_.clear();
   lastTouchMs_ = 0;
+  if (had) LOG_INF(kLogTag, "wallet locked (%s)", reason != nullptr ? reason : "?");
   // The retry gate is deliberately NOT reset: locking must not be a way to clear a
   // delay the rate limiter is enforcing.
 }
@@ -198,7 +197,7 @@ void Session::touch() { lastTouchMs_ = millis(); }
 uint32_t Session::retryWaitMs() const { return retry_.waitMs(millis()); }
 
 uint32_t Session::idleLeftMs() const {
-  if (!hasKey_) return 0;
+  if (!hasKey()) return 0;
   const uint32_t gone = millis() - lastTouchMs_;
   return gone >= kIdleTimeoutMs ? 0 : kIdleTimeoutMs - gone;
 }
@@ -222,7 +221,7 @@ void Session::armRetryDelay(const uint8_t failures) {
 }
 
 bool Session::expireIfIdle() {
-  if (!hasKey_) return false;
+  if (!hasKey()) return false;
   // millis() wraps after 49 days; the subtraction is unsigned, so a wrap makes the
   // difference large and the key dies early. Erring towards locked is the right
   // direction for this particular bug.

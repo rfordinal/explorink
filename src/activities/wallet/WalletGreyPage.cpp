@@ -83,7 +83,7 @@ GreyOutcome GreyPageReader::open(const PageImageSpec& page, const GfxRenderer& r
   // A key in hand is what lets an encrypted asset through the gate. Exactly the
   // same rule as every other asset: grey is not a second crypto path, it is more
   // rows of the same one (docs/wallet-crypto.md).
-  const bool haveKey = Session::instance().key() != nullptr;
+  const bool haveKey = Session::instance().hasKey();
   const AssetCheck check = checkGreyPlanes(raw, sizeof(raw), page, live, header_, haveKey);
   if (check != AssetCheck::Ok) {
     LOG_ERR(kLogTag, "grey asset %s refused: type %u depth %u %ux%u rawLen %lu vs manifest %ux%u/%u B row, rawLen %lu",
@@ -159,7 +159,10 @@ bool GreyPageReader::fillPlaneBand(const bool lsbPlane, uint8_t* const rows, con
 
 GreyOutcome GreyPageReader::readPlaneRows(const GreyPlane plane, const uint32_t xByte, const uint32_t y,
                                           const uint32_t rows, uint8_t* const dest, const uint32_t destRowBytes) {
-  const uint8_t* const key = encrypted_ ? Session::instance().key() : nullptr;
+  // Borrowed per band and wiped when it returns (WalletKeySlot.h). A wallet
+  // locked between two bands ends the page on the next one.
+  const KeyCopy borrowed(Session::instance());
+  const uint8_t* const key = encrypted_ ? borrowed.bytes() : nullptr;
   if (encrypted_ && key == nullptr) return GreyOutcome::Locked;
   Error error = Error::None;
   if (!readPlaneWindow(file_, key, iv_, greyPlaneOffset(spec_, plane), spec_.rowBytes, xByte, y, rows, dest,

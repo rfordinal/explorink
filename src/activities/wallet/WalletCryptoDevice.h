@@ -1,9 +1,12 @@
 #pragma once
 
+#include <freertos/FreeRTOS.h>
+
 #include <cstddef>
 #include <cstdint>
 
 #include "WalletCrypto.h"
+#include "WalletKeySlot.h"
 
 // The device half of wallet crypto v1: mbedtls, and the session key.
 //
@@ -99,9 +102,13 @@ class Session {
  public:
   static Session& instance();
 
-  bool hasKey() const { return hasKey_; }
-  // The key, for the read path. nullptr when locked.
-  const uint8_t* key() const { return hasKey_ ? key_ : nullptr; }
+  // A hint for gates that decide whether to start; can be stale by the time it
+  // is acted on. Anything that needs the bytes borrows them -- `KeyCopy`.
+  bool hasKey() const { return slot_.has(); }
+  // The only way to the bytes. Take a `wallet::KeyCopy` rather than calling this
+  // with a buffer of your own: it wipes the copy when it goes out of scope
+  // (WalletKeySlot.h has why there is no pointer accessor any more).
+  bool copyKey(uint8_t out[kWalletKeyLen]) const { return slot_.copyKey(out); }
 
   void setKey(const uint8_t key[kWalletKeyLen]);
   // Explicit wipe: overwrites the bytes through a volatile pointer so the write
@@ -127,8 +134,18 @@ class Session {
 
  private:
   Session() = default;
-  uint8_t key_[kWalletKeyLen] = {0};
-  bool hasKey_ = false;
+
+  // portMUX rather than a FreeRTOS mutex: the critical section is a 32-byte
+  // memcpy, and a spinlock is what makes it exclusive across both cores of an S3.
+  // On the C3 the pinned ESP-IDF ignores the mux and masks interrupts instead
+  // (framework-espidf 5.5.2, riscv portmacro.h, `portENTER_CRITICAL(mux)` under
+  // CONFIG_FREERTOS_UNICORE), which is just as exclusive on one core.
+  struct MuxLock {
+    portMUX_TYPE mux = portMUX_INITIALIZER_UNLOCKED;
+    void lock() { portENTER_CRITICAL(&mux); }
+    void unlock() { portEXIT_CRITICAL(&mux); }
+  };
+  KeySlot<MuxLock> slot_;
   uint32_t lastTouchMs_ = 0;
   // When the next unlock attempt may run, and what it was armed for. RAM only:
   // the *count* is persisted, and the deadline is armed from it when an unlock

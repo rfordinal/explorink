@@ -85,29 +85,38 @@ struct FrameGuard {
 // AES-256-CTR, which is symmetric -- the same call the read path decrypts with
 // encrypts here.
 //
-// **The key is fetched here, every chunk, and never captured at begin.** A
-// pointer taken once would still be a valid, non-null pointer after the wallet
-// locked: `Session::clear()` wipes `key_` in place and drops a flag, it does not
-// move or free anything (`WalletCryptoDevice.cpp`). So a lock part-way through a
-// transfer -- the rider pressing power, which calls `clear("sleep")` several
-// hundred milliseconds before the chip actually resets (`main.cpp`), or
-// `CMD:WALLETLOCK` -- would have silently enciphered the rest of the asset under
-// 32 zero bytes.
+// **The key is borrowed here, every chunk, and never captured at begin.** Two
+// ways to get this wrong, both found in review:
 //
-// That failure had no error in it anywhere, which is what made it worth a
-// re-read per chunk rather than a comment: both end-of-transfer checks are over
-// the **plaintext**, so the hash and the CRC would both still have passed, and
-// the half-good file would have been renamed over the previous good one.
-// Permanently undecryptable, and the asset it replaced gone. Found in review,
-// 2026-11-27.
+// 1. A key taken once at begin outlives a lock. A rider pressing power calls
+//    `clear("sleep")` several hundred milliseconds before the chip resets
+//    (`main.cpp`), and `CMD:WALLETLOCK` clears it outright; the rest of the asset
+//    would be enciphered under a key that no longer exists. 2026-11-27.
+// 2. A pointer into the session, re-read per chunk, still raced the wipe. On a
+//    dual-core board `clear()` runs on the other core and can land between the
+//    null check and `mbedtls_aes_setkey_enc()`, or inside it, giving a
+//    half-zeroed key. T-2104, item 1.
 //
-// Cost is a flag test and a pointer load per chunk, against AES over the same
-// bytes. `ctx` is unused and stays in the signature because the sealer's
-// callback contract is shared with the host tests, which do bind a key to it.
+// Either way there is no error anywhere: both end-of-transfer checks are over the
+// **plaintext**, so the hash and the CRC pass, and the half-good file is renamed
+// over the previous good one. Permanently undecryptable, and the asset it
+// replaced gone.
+//
+// `KeyCopy` takes the whole key or nothing under the lock `clear()` takes, and
+// wipes it when this returns (WalletKeySlot.h). A lock that lands mid-transfer
+// makes the *next* chunk refuse, the sealer ends with CipherFailed, and the
+// receiver abandons without the rename (WalletAssetIngest.h). The host test
+// `WalletKeySlot.LockMidTransferAbandons` drives exactly that.
+//
+// Cost is a 32-byte copy and a 32-byte wipe per chunk, against AES over the same
+// chunk. Not measured; a claim of "free" would need a timing.
+//
+// `ctx` is unused and stays in the signature because the sealer's callback
+// contract is shared with the host tests, which do bind a key to it.
 bool walletCipher(void*, const uint8_t* iv, uint32_t payloadOffset, uint8_t* data, size_t len) {
-  const uint8_t* key = wallet::Session::instance().key();
-  if (key == nullptr) return false;
-  return wallet::ctrDecryptInPlace(key, iv, payloadOffset, data, len);
+  const wallet::KeyCopy key(wallet::Session::instance());
+  if (!key) return false;
+  return wallet::ctrDecryptInPlace(key.bytes(), iv, payloadOffset, data, len);
 }
 
 // The ROM's CRC-32, which is the one that has to produce the number the phone
@@ -126,13 +135,13 @@ bool walletSink(void* ctx, const uint8_t* data, size_t len) {
 // key with one nonce over two different plaintexts breaks GCM outright.
 void walletRandom(void*, uint8_t* out, size_t len) { wallet::randomBytes(out, len); }
 
-// The key is read here, at the end of the transfer, for the same reason
-// walletCipher() reads it per chunk: a wallet locked while the manifest was
-// arriving must end the transfer, not seal the list under 32 zero bytes.
+// The key is borrowed here, at the end of the transfer, for the same reasons
+// walletCipher() borrows it per chunk: a wallet locked while the manifest was
+// arriving must end the transfer, not seal the list under a wiped key.
 bool walletSealManifest(void*, const uint8_t* nonce, uint8_t* data, size_t len, uint8_t* tag) {
-  const uint8_t* key = wallet::Session::instance().key();
-  if (key == nullptr) return false;
-  return wallet::gcmEncryptInPlace(key, nonce, wallet::kGcmNonceLen, data, len, tag, wallet::kGcmTagLen);
+  const wallet::KeyCopy key(wallet::Session::instance());
+  if (!key) return false;
+  return wallet::gcmEncryptInPlace(key.bytes(), nonce, wallet::kGcmNonceLen, data, len, tag, wallet::kGcmTagLen);
 }
 
 // "Is this a wallet manifest, and which version does it say it is?" -- asked
@@ -534,7 +543,7 @@ void MapTransferReceiver::handleBegin(const uint8_t* body, size_t len) {
   // `/explorink`).
   const maptransfer::WalletGateDecision walletGate = maptransfer::decideWalletGates({
       target,
-      wallet::Session::instance().key() != nullptr,
+      wallet::Session::instance().hasKey(),
       renderer_ != nullptr,
       total,
       static_cast<uint32_t>(wallet::kMaxManifestPlaintextBytes),

@@ -21,11 +21,13 @@
 
 #include <cstring>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <vector>
 
 #include "../../src/activities/map/MapTransferPath.h"
 #include "WalletCryptoHost.h"
+#include "WalletKeySlot.h"
 #include "WalletManifestIngest.h"
 #include "WalletManifestParser.h"
 
@@ -98,7 +100,8 @@ struct SealRun {
 // Pushes `json` through the sealer in `chunkBytes` bites, exactly as the BLE
 // transfer does. `declaredCrc` is what the sender claimed.
 SealRun sealManifest(const std::string& json, size_t chunkBytes, uint32_t declaredCrc,
-                     wallet::ManifestInspect inspect = hostInspect) {
+                     wallet::ManifestInspect inspect = hostInspect, wallet::ManifestSeal seal = hostSeal,
+                     void* sealCtx = const_cast<uint8_t*>(kKey)) {
   SealRun run;
   NonceSource nonces;
   wallet::ManifestIngest ingest;
@@ -107,8 +110,8 @@ SealRun sealManifest(const std::string& json, size_t chunkBytes, uint32_t declar
   cb.inspect = inspect;
   cb.random = countingRandom;
   cb.randomCtx = &nonces;
-  cb.seal = hostSeal;
-  cb.sealCtx = const_cast<uint8_t*>(kKey);
+  cb.seal = seal;
+  cb.sealCtx = sealCtx;
 
   const size_t want = wallet::sealedManifestLen(json.size());
   auto buffer = std::unique_ptr<uint8_t[]>(new uint8_t[want]);
@@ -164,6 +167,32 @@ TEST(WalletManifestSeal, Crc32KnownAnswer) {
 }
 
 // The round trip: what the device seals, the read path opens, byte for byte.
+// The device's walletSealManifest() shape: the key is borrowed from the slot at
+// seal time, never held from begin (MapTransferReceiver.cpp).
+bool slotSeal(void* ctx, const uint8_t* nonce, uint8_t* data, size_t len, uint8_t* tag) {
+  const wallet::KeyCopy key(*static_cast<wallet::KeySlot<std::mutex>*>(ctx));
+  if (!key) return false;
+  return wallet::host::gcmEncrypt(key.bytes(), nonce, wallet::kGcmNonceLen, data, len, data, tag, wallet::kGcmTagLen);
+}
+
+TEST(WalletManifestSeal, AWalletLockedBeforeTheSealSealsNothing) {
+  // T-2104, item 1. The list arrives with the wallet unlocked and the lock lands
+  // before the last chunk seals it. The seal must refuse -- SealFailed, which
+  // the receiver turns into abandon() -- rather than seal under a wiped key.
+  wallet::KeySlot<std::mutex> slot;
+  slot.set(kKey);
+  const std::string json = kManifest;
+  // Unlocked: the same callback seals a list the read path opens.
+  const SealRun good = sealManifest(json, 40, crcOf(json), hostInspect, slotSeal, &slot);
+  ASSERT_EQ(good.last, wallet::ManifestIngestStatus::Complete);
+  EXPECT_EQ(openSealed(good.sealed), json);
+
+  slot.clear();
+  const SealRun locked = sealManifest(json, 40, crcOf(json), hostInspect, slotSeal, &slot);
+  EXPECT_EQ(locked.last, wallet::ManifestIngestStatus::SealFailed);
+  EXPECT_TRUE(locked.sealed.empty());
+}
+
 TEST(WalletManifestSeal, SealedManifestOpensWithTheReadPath) {
   const std::string json = kManifest;
   const SealRun run = sealManifest(json, 180, crcOf(json));
