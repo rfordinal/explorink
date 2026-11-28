@@ -124,93 +124,73 @@ TEST(MapTransferGate, CloseGivesUpAfterItsBound) {
 }
 
 TEST(MapTransferGate, ConcurrentCloseNeverOverlapsAFrame) {
-  // The plan's second done test, and item 2's race. The host thread runs
-  // "frames" and "disconnects" back to back, each of which tears the transfer
-  // down if it gets in. The activity thread closes the gate and then tears down
-  // itself, as detach() does. Two teardowns at once is a failure; so is a frame
-  // that gets in after close() returned true.
+  // The plan's second done test, and item 2's race. A host thread runs frames
+  // back to back; each one that gets in occupies "the transfer" for a moment.
+  // The activity thread opens the gate, lets frames in, closes it, and then
+  // occupies the transfer itself, as detach()'s abandon() does. Both inside at
+  // once is a failure.
   //
-  // `occupancy` counts who is in a teardown right now. Every round reopens the
-  // gate, so the close lands at a different point in the host's loop each time.
+  // **One host thread for the whole run, many open/close cycles.** The first
+  // version started a thread per round, so a run held only a few thousand
+  // closes, and on a two-CPU host a release/acquire gate survived it
+  // (mutation run, 2026-11-28, `scripts/mutation_check.py`). The
+  // window that ordering opens is a store overtaken by a load, nanoseconds
+  // wide; it needs closes by the million to be hit every run.
   //
-  // **Needs two CPUs.** A memory-ordering bug shows only when the two threads
-  // really run at once; on one CPU they interleave, nothing reorders, and a
-  // release/acquire mutant passes. Worse, the host thread busy-spins, so on one
-  // CPU every yield below hands it a whole timeslice and the test took over 90 s
-  // (review, 2026-11-28, `taskset -c 0`). Skipped there rather than passed.
-  // Measured 2026-11-28 on a 14-core laptop at varying load, six runs each: 0
-  // overlaps here; an acq/rel mutant 56-308, the old read-then-publish order
-  // 129-465. Both mutants fail every run; the count swings with load.
+  // **Needs two CPUs, and two physical cores to be a strong check.** On one CPU
+  // the threads interleave and nothing reorders, so a broken ordering passes;
+  // skipped there rather than passed. Two hyperthreads of one core reorder far
+  // less: measured 2026-11-28 on this laptop, the release/acquire mutant failed
+  // 0 of 10 runs pinned to CPUs 0,1 (one core) and 5 of 5 on 0,2 or unpinned.
   if (usableCpus() < 2) GTEST_SKIP() << "needs two CPUs to race";
-  // Up to 20,000 rounds or 10 s, whichever first. The budget always wins, so a
-  // loaded CI host ends it in bounded time (review, 2026-11-28: with a
-  // minimum-rounds floor overriding the budget, two busy CPUs ran it for over
-  // 200 s). Fewer than 2,000 rounds in the budget is too little to be evidence,
-  // and the test skips rather than passes.
-  constexpr int kRounds = 20000;
-  constexpr uint32_t kBudgetMs = 10000;
-  constexpr int kMinRounds = 2000;
+
+  constexpr uint32_t kBudgetMs = 4000;
+  constexpr long kMinCycles = 200000;
+  maptransfer::FrameGate gate;
+  std::atomic<bool> stop{false};
+  std::atomic<int> occupancy{0};
+  std::atomic<long> overlaps{0};
+  std::atomic<long> framesIn{0};
+
+  // Holds "inside" for a few dozen instructions, so an overlap has a window
+  // wider than one atomic op to land in.
+  const auto occupy = [&] {
+    if (occupancy.fetch_add(1) != 0) overlaps.fetch_add(1);
+    for (int spin = 0; spin < 16; ++spin) std::atomic_signal_fence(std::memory_order_seq_cst);
+    occupancy.fetch_sub(1);
+  };
+
+  std::thread host([&] {
+    while (!stop.load(std::memory_order_relaxed)) {
+      const maptransfer::FrameGate::Ticket t(gate);
+      if (!t) continue;
+      framesIn.fetch_add(1, std::memory_order_relaxed);
+      occupy();
+    }
+  });
+
   const uint32_t started = nowMs();
-  int rounds = 0;
+  long cycles = 0;
   bool closeTimedOut = false;
-  int overlaps = 0;
-  int lateFrames = 0;
-  int framesIn = 0;
-  for (int round = 0; round < kRounds && nowMs() - started < kBudgetMs; ++round) {
-    ++rounds;
-    maptransfer::FrameGate gate;
+  while (nowMs() - started < kBudgetMs) {
     gate.open();
-    std::atomic<int> occupancy{0};
-    std::atomic<bool> closed{false};
-    std::atomic<bool> stop{false};
-    std::atomic<int> hostOverlaps{0};
-    std::atomic<int> hostLate{0};
-    std::atomic<int> hostIn{0};
-
-    std::thread host([&] {
-      while (!stop.load(std::memory_order_relaxed)) {
-        const maptransfer::FrameGate::Ticket t(gate);
-        if (!t) {
-          // Turned away: the close has landed. Give a time-shared CPU back so
-          // the activity thread finishes its round. Not on the success path,
-          // which is where the race lives -- yielding there cut the acq/rel
-          // mutant's overlaps from 45-72 to 3-5 per run.
-          yieldNow();
-          continue;
-        }
-        hostIn.fetch_add(1, std::memory_order_relaxed);
-        if (closed.load()) hostLate.fetch_add(1, std::memory_order_relaxed);
-        if (occupancy.fetch_add(1) != 0) hostOverlaps.fetch_add(1, std::memory_order_relaxed);
-        occupancy.fetch_sub(1);
-      }
-    });
-
-    // Let the host get going for a variable moment, then close.
-    for (int spin = 0; spin < (round % 64); ++spin) yieldNow();
+    for (long spin = 0; spin < cycles % 64; ++spin) std::atomic_signal_fence(std::memory_order_seq_cst);
     if (!gate.close(5000, nowMs, yieldNow)) {
-      // Recorded, not ASSERTed: an ASSERT returns with `host` still joinable,
+      // Recorded, not ASSERTed: an ASSERT here returns with `host` joinable,
       // which is std::terminate rather than a failure.
       closeTimedOut = true;
-      stop.store(true);
-      host.join();
       break;
     }
-    closed.store(true);
-    if (occupancy.fetch_add(1) != 0) ++overlaps;  // detach()'s abandon()
-    for (int spin = 0; spin < 50; ++spin) yieldNow();
-    occupancy.fetch_sub(1);
-    stop.store(true);
-    host.join();
-    overlaps += hostOverlaps.load();
-    lateFrames += hostLate.load();
-    framesIn += hostIn.load();
+    occupy();  // detach()'s abandon(), with the gate closed
+    ++cycles;
   }
+  stop.store(true);
+  host.join();
+
   EXPECT_FALSE(closeTimedOut);
-  EXPECT_EQ(overlaps, 0);
-  EXPECT_EQ(lateFrames, 0);
-  if (!closeTimedOut && rounds < kMinRounds) {
-    GTEST_SKIP() << "only " << rounds << " rounds in " << kBudgetMs << " ms; host too loaded to race";
+  EXPECT_EQ(overlaps.load(), 0);
+  EXPECT_GT(framesIn.load(), 0);  // the race has to have run at all
+  if (!closeTimedOut && cycles < kMinCycles) {
+    GTEST_SKIP() << "only " << cycles << " cycles in " << kBudgetMs << " ms; host too loaded to race";
   }
-  // The race has to have actually run: frames got in before the close.
-  EXPECT_GT(framesIn, 0);
 }

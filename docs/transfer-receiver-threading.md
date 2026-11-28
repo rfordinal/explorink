@@ -27,14 +27,16 @@ a store being overtaken by a later load of a different variable (C++20
 while `detach()` abandons under it.
 
 Host-tested with two threads, `test/map_transfer/MapTransferGateTest.cpp`,
-`ConcurrentCloseNeverOverlapsAFrame`. Measured 2026-11-28 on a 14-core laptop,
-six runs each across two review passes at varying load: the shipped gate 0
-overlapping teardowns every run; a release/acquire mutant 56-308; the old order
-(check "attached", then mark "inside") 129-465. Both mutants fail every run; the
-count swings with host load. The
-test **skips on fewer than two usable CPUs**, and when fewer than 2,000 rounds
-fit in its 10 s budget: a one-CPU host cannot reorder, so a mutant passes there,
-and a busy-spinning host thread on a contended host ran it for minutes.
+`ConcurrentCloseNeverOverlapsAFrame`: one host thread for the whole run against
+open/close cycles for 4 s. Both broken orderings are mutants in
+`test/mutation/t2104.json`, run by `scripts/mutation_check.py`. Measured
+2026-11-28 on this 14-core laptop: the shipped gate passes; the release/acquire
+mutant and the old order (check "attached", then mark "inside") fail every run
+unpinned and pinned to two physical cores (`--cpus 0,2`). Pinned to two
+hyperthreads of one core (`0,1`) the release/acquire mutant failed 0 of 10 runs,
+so a two-CPU check must use two cores. The test **skips on fewer than two usable
+CPUs**, where nothing can reorder, and when fewer than 200,000 cycles fit in its
+budget on a loaded host.
 
 ## `active_` is atomic
 

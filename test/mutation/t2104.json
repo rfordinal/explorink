@@ -1,0 +1,173 @@
+[
+  {
+    "id": "slot-copy-outside-lock",
+    "file": "src/activities/wallet/WalletKeySlot.h",
+    "targets": [
+      "WalletTest"
+    ],
+    "old": "    if (ok) std::memcpy(out, key_, kWalletKeyLen);\n    const uint32_t gen = generation_;\n    lock_.unlock();",
+    "new": "    const uint32_t gen = generation_;\n    lock_.unlock();\n    if (ok) std::memcpy(out, key_, kWalletKeyLen);",
+    "why": "a borrow can see a half-wiped key (item 1)"
+  },
+  {
+    "id": "slot-wipe-outside-lock",
+    "file": "src/activities/wallet/WalletKeySlot.h",
+    "targets": [
+      "WalletTest"
+    ],
+    "old": "    secureWipe(key_, sizeof(key_));\n    ++generation_;\n    has_.store(false, std::memory_order_release);\n    lock_.unlock();",
+    "new": "    ++generation_;\n    has_.store(false, std::memory_order_release);\n    lock_.unlock();\n    secureWipe(key_, sizeof(key_));",
+    "why": "clear() wipes while a copy is in progress"
+  },
+  {
+    "id": "slot-clear-no-wipe",
+    "file": "src/activities/wallet/WalletKeySlot.h",
+    "targets": [
+      "WalletTest"
+    ],
+    "old": "    secureWipe(key_, sizeof(key_));\n    ++generation_;",
+    "new": "    ++generation_;",
+    "why": "a lock leaves the key in RAM"
+  },
+  {
+    "id": "slot-clear-keeps-flag",
+    "file": "src/activities/wallet/WalletKeySlot.h",
+    "targets": [
+      "WalletTest"
+    ],
+    "old": "    has_.store(false, std::memory_order_release);",
+    "new": "    has_.store(true, std::memory_order_release);",
+    "why": "a borrow after a lock succeeds"
+  },
+  {
+    "id": "slot-set-no-generation",
+    "file": "src/activities/wallet/WalletKeySlot.h",
+    "targets": [
+      "WalletTest"
+    ],
+    "old": "    std::memcpy(key_, key, kWalletKeyLen);\n    ++generation_;",
+    "new": "    std::memcpy(key_, key, kWalletKeyLen);",
+    "why": "a key set over a held one is not seen as new"
+  },
+  {
+    "id": "slot-clear-no-generation",
+    "file": "src/activities/wallet/WalletKeySlot.h",
+    "targets": [
+      "WalletTest"
+    ],
+    "old": "    secureWipe(key_, sizeof(key_));\n    ++generation_;",
+    "new": "    secureWipe(key_, sizeof(key_));",
+    "why": "a wiped key keeps its generation"
+  },
+  {
+    "id": "slot-refusal-no-zero",
+    "file": "src/activities/wallet/WalletKeySlot.h",
+    "targets": [
+      "WalletTest"
+    ],
+    "old": "    if (!ok) secureWipe(out, kWalletKeyLen);",
+    "new": "",
+    "why": "a refused borrow leaves the caller's stale bytes"
+  },
+  {
+    "id": "keycopy-no-wipe",
+    "file": "src/activities/wallet/WalletKeySlot.h",
+    "targets": [
+      "WalletTest"
+    ],
+    "old": "  ~KeyCopy() { secureWipe(bytes_, sizeof(bytes_)); }",
+    "new": "  ~KeyCopy() {}",
+    "why": "a borrowed copy outlives its use"
+  },
+  {
+    "id": "keycopy-bytes-on-refusal",
+    "file": "src/activities/wallet/WalletKeySlot.h",
+    "targets": [
+      "WalletTest"
+    ],
+    "old": "  const uint8_t* bytes() const { return ok_ ? bytes_ : nullptr; }",
+    "new": "  const uint8_t* bytes() const { return bytes_; }",
+    "why": "a caller that forgets to test runs AES over zeros"
+  },
+  {
+    "id": "ctr-ignores-failed-block",
+    "file": "src/activities/wallet/WalletCrypto.h",
+    "targets": [
+      "WalletTest"
+    ],
+    "old": "    if (!encrypt(ctx, counter, keystream)) {\n      ok = false;\n      break;\n    }",
+    "new": "    (void)encrypt(ctx, counter, keystream);",
+    "why": "a failed AES block leaves plaintext (DMA driver zeroises)"
+  },
+  {
+    "id": "ctr-stops-but-says-ok",
+    "file": "src/activities/wallet/WalletCrypto.h",
+    "targets": [
+      "WalletTest"
+    ],
+    "old": "      ok = false;\n      break;",
+    "new": "      break;",
+    "why": "a failed block is reported as success"
+  },
+  {
+    "id": "sealer-ignores-cipher-failure",
+    "file": "src/activities/wallet/WalletAssetIngest.h",
+    "targets": [
+      "WalletTest"
+    ],
+    "old": "      if (!cb_.cipher(cb_.cipherCtx, iv_, payloadOffset_, scratch_, take)) return endWith(IngestStatus::CipherFailed);",
+    "new": "      (void)cb_.cipher(cb_.cipherCtx, iv_, payloadOffset_, scratch_, take);",
+    "why": "a locked/changed key or AES failure still writes the block"
+  },
+  {
+    "id": "gate-acq-rel",
+    "file": "src/activities/map/MapTransferGate.h",
+    "targets": [
+      "MapTransferTest"
+    ],
+    "filter": "*Concurrent*",
+    "old": "    inFrame_.store(true, std::memory_order_seq_cst);\n    if (attached_.load(std::memory_order_seq_cst)) return true;",
+    "new": "    inFrame_.store(true, std::memory_order_release);\n    if (attached_.load(std::memory_order_acquire)) return true;",
+    "why": "Dekker under release/acquire: frame and detach miss each other"
+  },
+  {
+    "id": "gate-old-order",
+    "file": "src/activities/map/MapTransferGate.h",
+    "targets": [
+      "MapTransferTest"
+    ],
+    "old": "    inFrame_.store(true, std::memory_order_seq_cst);\n    if (attached_.load(std::memory_order_seq_cst)) return true;\n    // Release, not seq_cst: nothing was touched, and the only reader is close()'s\n    // wait loop, which needs to see the false eventually, not in any order.\n    inFrame_.store(false, std::memory_order_release);\n    return false;",
+    "new": "    if (!attached_.load(std::memory_order_seq_cst)) return false;\n    inFrame_.store(true, std::memory_order_seq_cst);\n    return true;",
+    "why": "check-then-publish: the pre-T-2104 order (item 2)"
+  },
+  {
+    "id": "gate-refusal-keeps-mark",
+    "file": "src/activities/map/MapTransferGate.h",
+    "targets": [
+      "MapTransferTest"
+    ],
+    "old": "    inFrame_.store(false, std::memory_order_release);\n    return false;",
+    "new": "    return false;",
+    "why": "a turned-away frame holds every later detach() for the full bound"
+  },
+  {
+    "id": "gate-close-no-wait",
+    "file": "src/activities/map/MapTransferGate.h",
+    "targets": [
+      "MapTransferTest"
+    ],
+    "old": "    while (inFrame_.load(std::memory_order_seq_cst)) {",
+    "new": "    while (false && inFrame_.load(std::memory_order_seq_cst)) {",
+    "why": "detach() abandons under a frame"
+  },
+  {
+    "id": "gate-close-no-bound",
+    "file": "src/activities/map/MapTransferGate.h",
+    "targets": [
+      "MapTransferTest"
+    ],
+    "old": "      if (nowMs() - start >= waitMs) return false;",
+    "new": "      (void)start;",
+    "why": "a wedged card holds detach() for ever"
+  }
+]
