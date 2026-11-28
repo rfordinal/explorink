@@ -792,6 +792,16 @@ void MapTransferReceiver::handleChunk(const uint8_t* body, size_t len) {
       abandon(wallet::ingestStatusReason(fed));
       return;
     }
+    // The commit below is keyed on the receiver's own byte count. Asked of the
+    // sealer too, so "verified before rename" holds here rather than by an
+    // argument that two counters fed the same total always agree: on the last
+    // chunk only Complete -- hash and CRC checked -- may go on to the rename
+    // (T-2104 security review, 2026-11-28).
+    if (chunk.completesTransfer && fed != wallet::IngestStatus::Complete) {
+      LOG_ERR(kLogTag, "wallet ingest not complete at the last chunk of %s", finalPath_);
+      abandon("asset length");
+      return;
+    }
   } else
 #endif
   {
@@ -845,11 +855,13 @@ void MapTransferReceiver::handleChunk(const uint8_t* body, size_t len) {
   const bool closedClean = !file_.isOpen() || file_.close();
   if (!active_) return;
 #if defined(ENABLE_WALLET) && ENABLE_WALLET
-  // **A wallet asset's close is checked; a tile's is not.** A tile is read back
-  // off the card and CRC-checked below, which catches a close that failed to
-  // flush. A wallet asset is not: its OK is computed over the plaintext, so a
+  // **A wallet asset's close is checked; a tile's is left as it was.** A wallet
+  // asset gets no read-back: its OK is computed over the plaintext, so a
   // truncated ciphertext would pass and be renamed over the good document
-  // (T-2104 security review, 2026-11-28).
+  // (T-2104 security review, 2026-11-28). A tile is read back and CRC-checked
+  // below, but through SdFat's volume cache, so whether that catches a close
+  // whose flush failed is not established (review round 11). Not changed here,
+  // because T-2104 does not change tile behaviour.
   if (walletIngest_ && !closedClean) {
     LOG_ERR(kLogTag, "close failed on %s; not renaming", partPath_);
     abandon("write failed");

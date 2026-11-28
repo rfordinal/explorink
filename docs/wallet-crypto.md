@@ -887,7 +887,8 @@ There are two ways in and no third:
   never part of one. Wiped by the destructor when it leaves scope.
 
 **One copy, one crypto call.** The copy is taken right before the call and dies
-right after it: one sealer block of a transfer, at most 512 B (`walletCipher()`;
+right after it (a failing primitive's own `LOG_ERR` runs inside that window; logs
+go to serial and the RAM ring, never to the card as bytes of the key): one sealer block of a transfer, at most 512 B (`walletCipher()`;
 the largest BLE chunk at any MTU is 509 B, `WalletAssetIngest.h`, so one borrow
 per chunk), one manifest seal (`walletSealManifest()`), one manifest decrypt
 (`feedEncryptedManifestAt()`, after the card read), one row of a page window or
@@ -909,8 +910,10 @@ Two reasons for that tightness, and one place it does not reach:
   context holds the key on the stack for the length of the call, as it did before
   T-2104. The S3 writes no stack to the card (`#if !__riscv`).
 - **The flash core dump is a different place, and it is inside the boundary.**
-  `CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH=y` in ELF format (`sdkconfig.defaults`,
-  partition `coredump` at `0xFF0000`; boards write it, `crash-reporting.md`)
+  `CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH=y` in ELF format (the framework's prebuilt
+  `framework-arduinoespressif32-libs/<chip>/sdkconfig`, both `esp32c3` and
+  `esp32s3`, read 2026-11-28; partition `coredump` at `0xFF0000`,
+  `partitions.csv`; boards write it, `crash-reporting.md`)
   saves task stacks on both chips on any panic, so a `KeyCopy`, an mbedtls context or plaintext alive at that moment
   lands in flash. Flash is already declared readable with a cable in hand ("The
   threat boundary, first"), so this widens nothing the wallet promises; it is

@@ -88,7 +88,8 @@ bool feedEncryptedManifestAt(const char* path, ManifestParser& parser, Error& er
     return false;
   }
   uint8_t* cipher = buffer.get() + envelope.ciphertextOffset;
-  // **Borrowed here, after the SD read, and for nothing but the decrypt.** On a
+  // **Borrowed here, after the SD read, and for the decrypt alone** (plus the
+  // primitive's own failure log, which goes to serial and RAM, not the card). On a
   // C3 a panic copies 1 KB of the faulting task's stack into
   // /crash_report.txt on the card (lib/hal/HalSystem.cpp,
   // __wrap_panic_print_backtrace and checkPanic), and a destructor does not run
@@ -792,7 +793,10 @@ bool readWholeScreen(const char* assetId, const Gate gate, GfxRenderer& renderer
     uint8_t iv[kAssetIvLen];
     if (!buildAssetIvForAsset(header.flags, assetId, header.sha256Prefix, sizeof(header.sha256Prefix), header.version,
                               iv)) {
-      error = Error::Locked;
+      // Not Locked, which this said before T-2104: the wallet is unlocked and the
+      // IV could not be built from the header, which is a decrypt that cannot
+      // start (security review round 4, 2026-11-28).
+      error = Error::AssetDecrypt;
       return false;
     }
     // Borrowed for the decrypt alone and wiped before the hash check below

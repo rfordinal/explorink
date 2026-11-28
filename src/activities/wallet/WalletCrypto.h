@@ -174,8 +174,10 @@ inline void secureWipe(void* data, size_t len);
 // undefined behaviour. Read off the code.
 inline bool ctrXorInPlace(BlockEncrypt encrypt, void* ctx, const uint8_t iv[kAssetIvLen], uint32_t offset,
                           uint8_t* data, size_t len) {
-  if (encrypt == nullptr || data == nullptr) return false;
+  // Nothing to do is success, whatever the pointer: an empty buffer's data() may
+  // be null, and that must not read as a failed block.
   if (len == 0) return true;
+  if (encrypt == nullptr || data == nullptr) return false;
   const CtrStart start = ctrStartForOffset(offset);
   uint8_t counter[kAesBlockLen];
   advanceCounter(iv, start.block, counter);
