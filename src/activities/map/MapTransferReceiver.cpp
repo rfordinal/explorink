@@ -855,7 +855,12 @@ void MapTransferReceiver::handleChunk(const uint8_t* body, size_t len) {
   // asserts on a handle that was never opened (HalStorage.cpp,
   // HAL_FILE_WRAPPED_CALL) -- isOpen() is the one accessor that tolerates it,
   // which is why abandon() has used this exact shape all along.
-  const bool closedClean = !file_.isOpen() || file_.close();
+  // `closedHere` is true only when this task closed the file and the close
+  // reported success. A handle already closed by someone else -- abandon() on
+  // the activity task, past detach()'s bound (T-2112) -- is not a clean close
+  // and must not open the way to the rename below (closing review, 2026-11-28).
+  const bool wasOpen = file_.isOpen();
+  const bool closedHere = wasOpen && file_.close();
   if (!active_) return;
 #if defined(ENABLE_WALLET) && ENABLE_WALLET
   // **A wallet asset's close is checked; a tile's is left as it was.** A wallet
@@ -865,13 +870,13 @@ void MapTransferReceiver::handleChunk(const uint8_t* body, size_t len) {
   // below, but through SdFat's volume cache, so whether that catches a close
   // whose flush failed is not established (review round 11). Not changed here,
   // because T-2104 does not change tile behaviour.
-  if (walletIngest_ && !closedClean) {
+  if (walletIngest_ && !closedHere) {
     LOG_ERR(kLogTag, "close failed on %s; not renaming", partPath_);
     abandon("write failed");
     return;
   }
 #else
-  (void)closedClean;
+  (void)closedHere;
 #endif
 
   uint32_t actualCrc = 0;
