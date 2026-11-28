@@ -885,7 +885,8 @@ There are two ways in and no third:
   critical section `clear()` takes, so the copy is the whole key or a refusal,
   never part of one. Wiped by the destructor when it leaves scope.
 
-The unit is one chunk of a transfer (`walletCipher()`), one manifest seal
+The unit is one sealer block of a transfer, at most 512 B (`walletCipher()`;
+a BLE chunk larger than that borrows more than once), one manifest seal
 (`walletSealManifest()`), one manifest decrypt (`ManifestReader`), one window or
 grey band (`PageReader`, `GreyPageReader`). The next unit borrows again. A
 `KeyCopy` held across a whole transfer would bring back the bug it replaced, one
@@ -909,21 +910,24 @@ the cores. On the C3 the pinned ESP-IDF ignores the mux and masks interrupts
 (framework-espidf 5.5.2, riscv `portmacro.h`, `portENTER_CRITICAL(mux)` under
 `CONFIG_FREERTOS_UNICORE`), which is as exclusive on one core.
 
-**What a lock mid-transfer does now.** The next chunk's borrow fails,
+**What a lock mid-transfer does now.** The next block's borrow fails,
 `AssetIngest` ends with `CipherFailed`, and the receiver calls `abandon()`, which
 deletes the `.part` file and never renames. The previous good asset stays. A
 manifest ends with `SealFailed` the same way.
 
 **Verified on the host, not on a board** (`test/wallet/WalletKeySlotTest.cpp`,
 and the slot-bound tests in `WalletIngestTest.cpp` and
-`WalletManifestSealTest.cpp`). The race test runs two threads against a
+`WalletManifestSealTest.cpp`). The slot-bound tests drive the sealers with the
+same borrow the device binds; they do not run `walletCipher()` itself or the
+receiver's `abandon()`, which are read off the code. The race test runs two threads against a
 `std::mutex`-bound slot and sees zero torn copies in at least 200,000 borrows;
 the same loop with a no-op lock gave 1.2 to 1.4 million torn copies out of 2
 million (measured 2026-11-28, laptop, `-O2`). It proves `KeySlot` takes its lock
 around every touch of the bytes. It does not prove `portENTER_CRITICAL` is
 exclusive across an S3's cores; that is ESP-IDF's claim.
 
-**Cost per chunk: a 32-byte copy and a 32-byte wipe.** Not measured on a board.
+**Cost per block: a 32-byte copy and a 32-byte wipe, against AES over up to
+512 B.** Not measured on a board.
 
 The walked pattern is wiped by the gate after every attempt
 (`PatternLockActivity::submit()`), the normalised copy is wiped by
