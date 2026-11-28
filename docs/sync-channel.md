@@ -198,6 +198,52 @@ brute-force offline. Plan invariant 3 changes from "the number is compared on bo
 ends" to "**the code is only on the panel, and only a phone that read it can
 pair**". The rider's yes on the device is opening the pairing screen.
 
+### Three conditions on the QR, added by the supervisor 2026-11-28
+
+Accepted, with these, because without them the pairing rests on a value that is
+easier to take than it looks:
+
+1. **The QR is a secret while it is on the panel, and `CMD:SCREENSHOT` is
+   ungated in every build** (T-2081). A cable, or a radio in range, reads the
+   framebuffer and gets the code with no camera and no line of sight. So: one
+   attempt, one code, dead when the pairing screen closes, and dead after a
+   short timeout even if it stays open. Never redrawn with the same secret.
+   Write that in the screen's code as the reason, not just in this doc.
+2. **The phone cannot scan today.** `wallet/CodeReader.kt` on `feat/wallet`
+   decodes an image with zxing, and the app holds **no `CAMERA` permission** at
+   all (checked 2026-11-28 against `app/src/main/AndroidManifest.xml`). A camera
+   intent returns a still and needs no permission, which is the cheap path, but
+   it is still new phone work and a new iOS question. Price it in T-174 rather
+   than discovering it there.
+3. **Say what happens when scanning fails.** Glare on e-ink, a cracked lens, a
+   phone the rider will not grant the camera to. Either the J-PAKE fallback below
+   is built, or the device says plainly that a camera is required to pair. One of
+   the two, decided, not left open.
+
+### Phase 1 is the QR, not a typed PIN
+
+The maintainer asked whether a PIN could come first and the QR second
+(2026-11-28). **It is the other way round, and the reason is arithmetic rather
+than taste.**
+
+- **A typed short code is not a psk.** In `Noise_IKpsk2` the psk is mixed into
+  the transcript, so somebody who records one handshake can test psk guesses
+  **offline**. Eight digits is 10^8 tries on a laptop. The one-attempt rule above
+  limits *online* guessing and does nothing about that.
+- **A short typed secret is exactly what a PAKE is for** -- SPAKE2+ or EC
+  J-PAKE, named above. That is the bigger build, not the smaller one: the device
+  half exists (`CONFIG_MBEDTLS_ECJPAKE_C=y`) and the phone half is an untested
+  interop against mbedtls's TLS-extension encoding.
+- **A 256-bit secret needs no PAKE**, which is what makes the QR the *cheap*
+  first phase.
+- **And the device half of the QR already ships.** `QrUtils::drawQrCode()` draws
+  the Wi-Fi join code on the AP screen today
+  (`src/activities/network/CrossPointWebServerActivity.cpp`, the `WIFI:T:nopass`
+  payload). The panel work is a layout, not a feature.
+
+So: **QR first.** A typed code is a later phase and arrives with a PAKE, if the
+camera turns out to be a problem in the field.
+
 ### Where the keys live
 
 - **Device static key and pairing table: NVS.** NVS is plaintext flash and
