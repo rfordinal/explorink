@@ -18,16 +18,21 @@ report says "W7 failed" and that has to mean the same thing next month.
 - **Two chip families, not one board.** `ENABLE_WALLET` is in `base`, so every
   wallet change reaches every environment. One C3 (`env:default`, X3) and one S3
   (`env:t5s3pro` or `env:x4pro`).
-- **But only the C3 can be driven into an unlocked wallet from the host.**
-  `ENABLE_WALLET_TEST_CMDS` is set in `env:default` and in **no** other
-  environment, and the whole block it guards goes with it -- `WALLETPROVISION`,
-  `WALLETUNLOCK`, `WALLETLOCK`, `WALLETSTATUS`, `WALLETBENCH` and `GOTO_WALLET`
-  (`src/main.cpp`, the `#if` above `WALLETBENCH`). On an S3 those commands
-  answer nothing at all, so **every scenario below that needs an unlocked
-  wallet needs a thumb on the panel there**, and a session that cannot supply
-  one runs the locked half and says so. Measured 2026-11-28 on an X4 Pro during
-  the T-2106 pass: `CMD:WALLETSTATUS` and `CMD:GOTO_WALLET` both silent.
-  **Do not guess the board's pattern to get around it** -- ten wrong walks
+- **Only the C3 can be unlocked by a wallet command. An S3 is unlocked by
+  walking its pattern.** `ENABLE_WALLET_TEST_CMDS` is set in `env:default` and
+  in **no** other environment, and the whole block goes with it --
+  `WALLETPROVISION`, `WALLETUNLOCK`, `WALLETLOCK`, `WALLETSTATUS`,
+  `WALLETBENCH` and `GOTO_WALLET` (`src/main.cpp`, the `#if` above
+  `WALLETBENCH`). Measured 2026-11-28 on an X4 Pro: `CMD:WALLETSTATUS` and
+  `CMD:GOTO_WALLET` both silent.
+  **That does not mean a thumb is required.** `ENABLE_BUTTON_CMD` is set in
+  `env:x4pro` and `env:t5s3pro`, so `tools/press.py` walks the gate from the
+  host exactly as a thumb does -- which is how T-2094's enrollment ran on an
+  X4 Pro (`wallet-crypto.md`). What a host needs on an S3 is the **board's
+  pattern**, not a finger.
+  **So pick the board by what its wallet is.** A board whose wallet predates
+  the pattern gate cannot be opened by anything, and a board nobody recorded a
+  pattern for is the same problem. **Do not guess one** -- ten wrong walks
   refuse the wrap and the board then needs a re-provision (W12).
 - **Take the device lock for the whole block of device work**, not per command
   (`../../../docs/synchro.md`). **Ask before every flash.** Archive the build
