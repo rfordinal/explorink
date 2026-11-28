@@ -318,26 +318,25 @@ void MapTransferReceiver::detach() {
   // (nimble_port_freertos.c:44). A busy spin would still be preempted, it
   // would just burn the CPU the frame needs to finish.
   //
-  // The completion pass reads a whole tile back off the card and can outlast
-  // the bound (MapTransferReceiver.h, kDetachWaitMs). Proceeding then was meant
-  // to keep a stuck card from holding the screen on a Back press. handleChunk
-  // re-checks active_ after every blocking call and usually bails, so the frame
-  // notices. **That case is still two tasks in one transfer at once** and is not
-  // closed by this gate.
-  //
-  // **The bound does not keep the screen free in practice.** Both owners call
-  // BlePositionServer::end() right after detach() (MapActivity, TileSyncActivity),
-  // and end() reaches nimble_port_stop(), which waits with BLE_NPL_TIME_FOREVER
-  // until the host task services the stop -- after the frame in flight returns
-  // (NimBLE-Arduino src/nimble/porting/nimble/src/nimble_port.c,
-  // nimble_port_stop). So a wedged card still holds the screen exit, inside
-  // end(), and the overlap past the bound buys nothing. Kept as is pending a
-  // decision (T-2112); read off the code, not measured.
+  // **No bound (T-2112).** This used to give up after 500 ms and abandon with
+  // the frame still inside -- two tasks in one transfer, which could remove the
+  // previous good document while the frame was renaming over it. The bound was
+  // meant to keep a stuck card from holding the screen, and it never did: both
+  // owners call BlePositionServer::end() right after detach() (MapActivity,
+  // TileSyncActivity), and end() reaches nimble_port_stop(), which waits with
+  // BLE_NPL_TIME_FOREVER until the host task returns from that same frame
+  // (NimBLE-Arduino src/nimble/porting/nimble/src/nimble_port.c). So waiting here
+  // costs nothing end() did not already cost. A long wait is logged once.
   freeink::BlePositionServer::getInstance().setTransferHooks(freeink::BlePositionServer::TransferHooks{});
-  const bool alone = gate_.close(kDetachWaitMs, [] { return static_cast<uint32_t>(millis()); }, [] { vTaskDelay(1); });
-  if (!alone) {
-    LOG_ERR(kLogTag, "detach: frame still in flight after %lu ms, proceeding",
-            static_cast<unsigned long>(kDetachWaitMs));
+  const auto nowMs = [] { return static_cast<uint32_t>(millis()); };
+  const auto yield = [] { vTaskDelay(1); };
+  if (!gate_.close(kDetachLogAfterMs, nowMs, yield)) {
+    LOG_ERR(kLogTag, "detach: frame still in flight after %lu ms, waiting it out",
+            static_cast<unsigned long>(kDetachLogAfterMs));
+    const uint32_t waitStart = nowMs();
+    while (!gate_.close(kDetachLogAfterMs, nowMs, yield)) {
+    }
+    LOG_INF(kLogTag, "detach: frame left after a further %lu ms", static_cast<unsigned long>(nowMs() - waitStart));
   }
 
   if (active_) abandon("screen closed");
@@ -353,8 +352,7 @@ void MapTransferReceiver::disconnectTrampoline(void* ctx) {
   // a frame; it does overlap detach() on the activity task, and without the
   // gate both could run abandon() on one object at once -- two closes of one
   // file_, two removes of one .part, failed_ counted twice (T-2104, item 4).
-  // Within kDetachWaitMs the gate excludes that. Past it -- this abandon()
-  // stuck behind a wedged card -- detach() proceeds and both still can.
+  // detach() waits for this call to leave the gate before it abandons.
   const maptransfer::FrameGate::Ticket ticket(self->gate_);
   if (!ticket) return;
   if (self->active_) {
@@ -381,8 +379,9 @@ void MapTransferReceiver::onFrame(const uint8_t* data, size_t len) {
   // MapTransferGate.h has the orderings (T-2104, item 2).
   //
   // A Ticket, not a set/clear pair: a clear left behind by a later early
-  // `return` would leave the gate stuck closed-with-a-frame-inside, and every
-  // later detach() would burn its whole kDetachWaitMs bound.
+  // `return` would leave the gate marked "inside" for good, and since T-2112
+  // detach() waits for that mark without a bound -- the screen would never
+  // close.
   const maptransfer::FrameGate::Ticket ticket(gate_);
   const maptransfer::FrameAction action = maptransfer::decideFrame(static_cast<bool>(ticket), data, len);
   if (action == maptransfer::FrameAction::Ignore) return;
@@ -787,8 +786,7 @@ void MapTransferReceiver::handleChunk(const uint8_t* body, size_t len) {
     // counters below are unchanged, because the file is the same length sealed
     // as it was in the clear.
     const wallet::IngestStatus fed = walletIngest_->feed(payload, payloadLen);
-    // feed() writes to the card, so detach() can have abandoned this transfer
-    // underneath it -- same re-check, same reason as the plain path below.
+    // Same re-check, same reason as the plain path below.
     if (!active_) return;
     if (fed != wallet::IngestStatus::Ok && fed != wallet::IngestStatus::Complete) {
       LOG_ERR(kLogTag, "wallet ingest refused %s: %s", finalPath_, wallet::ingestStatusReason(fed));
@@ -818,15 +816,11 @@ void MapTransferReceiver::handleChunk(const uint8_t* body, size_t len) {
       return;
     }
   }
-  // Every blocking call below is a place detach() can have run its full wait,
-  // given up, and abandoned this transfer underneath us -- file closed, .part
-  // deleted, counters zeroed. Re-checking active_ after each one turns that
-  // from a bogus completion pass (spurious ERR to the phone, double-counted
-  // failed_) into a silent bail, which is the correct answer: the screen this
-  // transfer belonged to is gone.
-  //
-  // An atomic load, so the re-check reads what the other core wrote and not a
-  // value the compiler kept in a register across the call (T-2104, item 3).
+  // These active_ re-checks after blocking calls guarded a detach() that gave
+  // up waiting and abandoned under the frame. Since T-2112 it does not give up,
+  // so they guard no reachable interleaving; they stay because a frame that
+  // somehow resumed into an abandoned transfer must bail rather than run a
+  // completion pass on a closed, deleted file.
   if (!active_) return;
   received_ += payloadLen;
 
@@ -856,9 +850,10 @@ void MapTransferReceiver::handleChunk(const uint8_t* body, size_t len) {
   // HAL_FILE_WRAPPED_CALL) -- isOpen() is the one accessor that tolerates it,
   // which is why abandon() has used this exact shape all along.
   // `closedHere` is true only when this task closed the file and the close
-  // reported success. A handle already closed by someone else -- abandon() on
-  // the activity task, past detach()'s bound (T-2112) -- is not a clean close
-  // and must not open the way to the rename below (closing review, 2026-11-28).
+  // reported success. A handle closed by someone else is not a clean close and
+  // must not open the way to the rename below (closing review, 2026-11-28).
+  // Since T-2112 detach() cannot close it under a frame; the check does not
+  // lean on that.
   const bool wasOpen = file_.isOpen();
   const bool closedHere = wasOpen && file_.close();
   if (!active_) return;
@@ -1059,12 +1054,9 @@ void MapTransferReceiver::abandon(const char* reason) {
   activeTileValid_ = false;
 #if defined(ENABLE_WALLET) && ENABLE_WALLET
   // Wiped, **not freed**. This is the one place a transfer ends on the activity
-  // task (detach(), past its kDetachWaitMs bound), and the host task can be
-  // inside feed() right now -- deleting the object under it would be a
-  // use-after-free, where overwriting its buffers is the same kind of data race
-  // the file_ close/remove above already is, and ends the same way: a failed
-  // write and a transfer that is already being abandoned. The memory goes back
-  // at the next begin, which is host-task only.
+  // task (detach()). Since T-2112 detach() waits for every frame to leave first,
+  // so the host task is not inside feed() here; the memory still goes back only
+  // at the next begin, which is host-task only, so freeing stays single-task.
   //
   // **The manifest's buffer is taken rather than wiped in place**, because the
   // host task may be giving the same buffer back right now (the install hands

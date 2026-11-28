@@ -99,13 +99,11 @@ class GfxRenderer;
 // it waits the host task out first through gate_ (MapTransferGate.h): a frame
 // publishes that it is inside before it checks that the receiver is attached,
 // and detach() withdraws the receiver before it checks for a frame inside, so
-// one of the two always sees the other (see detach() below for the bound and
-// what happens if it is exceeded). The disconnect hook goes through the same
-// gate, so within that bound it and detach() cannot both run abandon(). Past
-// the bound -- a card stuck longer than kDetachWaitMs -- detach() proceeds and
-// both can. The bound was meant to keep a wedged card from holding the screen;
-// it does not, because both owners call BlePositionServer::end() next, which
-// waits for the host task without a bound (detach() in the .cpp, T-2112).
+// one of the two always sees the other. detach() waits without a bound (T-2112):
+// a timed-out wait used to let it abandon under a frame, and a bound bought
+// nothing because both owners call BlePositionServer::end() next, which waits
+// for the host task without one. The disconnect hook goes through the same
+// gate, so it and detach() never both run abandon().
 // Without that wait, a frame that already passed the gate and is
 // blocked in file_.write() resumes into state abandon() has already reset,
 // and runs a completion pass on a file that is closed and deleted.
@@ -152,10 +150,10 @@ class MapTransferReceiver {
   // file. Call **before** BlePositionServer::end(): a hook still registered
   // when the activity is deleted is a callback that outlives its owner.
   //
-  // Blocks for up to kDetachWaitMs waiting for a frame already inside the
-  // callback to leave it, because that frame and this call would otherwise
-  // mutate the same state from two tasks. A normal Back press mid-transfer
-  // hits this, so it is the common case and not an error path.
+  // Blocks until a frame already inside the callback leaves it, because that
+  // frame and this call would otherwise mutate the same state from two tasks.
+  // No bound (T-2112). A normal Back press mid-transfer hits this, so it is the
+  // common case and not an error path.
   void detach();
 
   // Counters for the map screen's debug readout. Activity task.
@@ -227,20 +225,12 @@ class MapTransferReceiver {
   // not mistaken for a dead sender.
   static constexpr uint32_t kStaleTransferMs = 30000;
 
-  // How long detach() waits for the host task to leave the frame callback.
-  // Covers a single chunk's SD write with room for a card doing an internal
-  // erase cycle; it does **not** cover the completion pass, which reads the
-  // whole .part back to check the CRC and takes seconds on a 75 KB tile. The
-  // bound is a bound, not a guarantee -- exceeding it is handled rather than
-  // waited out, meant so a wedged card does not wedge the UI. It does not achieve
-  // that while owners call BlePositionServer::end() right after detach(): end()
-  // waits for the host task without a bound (T-2112). handleChunk's
-  // active_ re-checks make a frame bail in most of that case; they do not make
-  // it safe. Each is a load followed by an action, so abandon() can still land
-  // between a re-check and the next file_ call, and a disconnect's abandon()
-  // can overlap detach()'s (docs/transfer-receiver-threading.md, "What is not
-  // closed").
-  static constexpr uint32_t kDetachWaitMs = 500;
+  // After this long detach() logs that a frame is still inside, then keeps
+  // waiting. Not a bound: a wait that gave up let detach() abandon a transfer
+  // under the frame still writing it (T-2112). A wedged card therefore holds
+  // the screen exit -- as BlePositionServer::end(), called right after, already
+  // did -- and the log line is how that shows.
+  static constexpr uint32_t kDetachLogAfterMs = 500;
 
   // True if `path` is a safe relative path under the root: no leading slash,
   // no `..` component, no empty component, printable ASCII only. This is what
@@ -285,12 +275,10 @@ class MapTransferReceiver {
   HalFile file_;
   // True while a transfer is in flight. Written by the host task and by
   // detach()'s abandon() on the activity task, and read by both, which is why
-  // it alone of this block is atomic. Every blocking call in handleChunk is
-  // followed by a re-check of it: detach() can time out its wait and abandon
-  // the transfer underneath a frame (kDetachWaitMs), and the re-check is how the
-  // frame notices. A plain bool made that a bet that the compiler reloads the
-  // member after a call into another translation unit. seq_cst by default; the
-  // cost of its fences next to an SD write has not been measured.
+  // it alone of this block is atomic. A plain bool written by two tasks is a
+  // data race even when, as since T-2112, the gate orders the writes. seq_cst
+  // by default; the cost of its fences next to an SD write has not been
+  // measured.
   std::atomic<bool> active_{false};
   uint32_t declaredTotal_ = 0;
   uint32_t declaredCrc_ = 0;

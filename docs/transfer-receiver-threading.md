@@ -17,7 +17,8 @@ first written for the C3, and comments that justified unsynchronised state with
 - A frame or a disconnect takes a `FrameGate::Ticket` first. The ticket marks
   "inside", then asks "attached?", and backs out if not.
 - `detach()` clears the hooks, then `close()`s the gate: "not attached", then
-  waits while anything is "inside", up to `kDetachWaitMs` (500 ms).
+  waits while anything is "inside", **without a bound** (T-2112). After
+  `kDetachLogAfterMs` (500 ms) it logs once that a frame is still inside.
 - The destructor calls `detach()` while still attached.
 
 **Both store-then-load pairs are `seq_cst`, and must stay so.** Each side writes
@@ -54,22 +55,17 @@ The sealers' key comes from `wallet::KeyCopy`, a copy taken under the lock
 
 ## What is not closed
 
-Both predate the gate.
+The second predates the gate.
 
-- **The wait has a bound.** On a wedged card `detach()` gives up after
-  `kDetachWaitMs` and abandons with a frame or a disconnect still inside. The
-  `active_` re-checks make a frame bail in most of that case, not all of it: an
-  `abandon()` that lands between a re-check and the next `file_` call leaves the
-  frame writing to a closed file. A disconnect's `abandon()` stuck behind
-  the card can still run at the same time as `detach()`'s: two closes of one
-  file, `failed_` counted twice. The bound was meant to keep a stuck card from
-  holding the screen. **It does not**: both owners call `BlePositionServer::end()`
-  right after `detach()`, and `end()` reaches `nimble_port_stop()`, which waits
-  with `BLE_NPL_TIME_FOREVER` until the host task services the stop -- after the
-  frame in flight returns (NimBLE-Arduino,
-  `src/nimble/porting/nimble/src/nimble_port.c`). So the screen exit is held
-  anyway, and the overlap past the bound buys nothing. Read off the code, not
-  measured. Whether to drop the bound is T-2112 in the parent repo's TODO.
+- **A wedged card holds the screen exit.** `detach()` waits for the frame
+  without a bound. Until T-2112 it gave up after 500 ms and abandoned under the
+  frame, which could remove the previous good document while the frame renamed
+  over it. The bound never kept the screen free: both owners call
+  `BlePositionServer::end()` right after `detach()`, and `end()` reaches
+  `nimble_port_stop()`, which waits with `BLE_NPL_TIME_FOREVER` until the host
+  task returns from the same frame (NimBLE-Arduino,
+  `src/nimble/porting/nimble/src/nimble_port.c`). So the wait moved, it did not
+  grow. The log line after 500 ms is how a stuck card shows.
 - **A hook can arrive after `detach()` returned.** `BlePositionServer` copies the
   hooks under its lock and calls them after releasing it
   (`lib/BlePositionServer/src/BlePositionServer.cpp`, `onCentralDisconnect` and

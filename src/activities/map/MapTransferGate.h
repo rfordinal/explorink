@@ -80,7 +80,8 @@ class FrameGate {
 
   // Holds the gate for one callback. A destructor rather than a set/clear pair:
   // a clear left behind by a later early `return` would leave inFrame_ stuck
-  // true, and every later close() would burn its whole bound.
+  // true, and every later close() would wait out its whole bound -- for ever in
+  // MapTransferReceiver::detach(), which waits without one.
   class Ticket {
    public:
     explicit Ticket(FrameGate& gate) : gate_(gate), in_(gate.enter()) {}
