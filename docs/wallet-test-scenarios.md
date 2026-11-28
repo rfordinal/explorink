@@ -232,10 +232,11 @@ run here, so this is the board where the gate and the key borrow can race.
 | W23 / W16 | after a reboot and unlock, the list off the device-sealed manifest, then the W14 page drawn: FIT, 960x540, 1,581 ms |
 
 **C3: X3, `env:default`.** Its wallet is locked and **nobody recorded its pattern**
-(see W9a), so only the scenarios that need no key ran. The X3 drops its USB link on
-the map when the CPU falls to its 10 MHz idle clock; a `CMD:` every 2 s keeps it
-up (each handler leaves power saving), and opening the port resets it, so one
-process holds the port for the whole run.
+(see W9a), so only the scenarios that need no key ran. The X3 dropped its USB link
+once on the map, about 3 s after the frame was drawn, and a `CMD:` every 2 s kept
+it up for the whole next run. The 10 MHz idle clock (every `CMD:` handler leaves
+power saving) is the suspected cause, not a measured one. Opening the port resets
+it, so one process holds the port for the whole run.
 
 | # | Result |
 |---|---|
