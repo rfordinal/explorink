@@ -887,7 +887,8 @@ There are two ways in and no third:
   never part of one. Wiped by the destructor when it leaves scope.
 
 **One copy, one crypto call.** The copy is taken right before the call and dies
-right after it: one sealer block of a transfer, at most 512 B (`walletCipher()`;
+right after it (a failing primitive's own `LOG_ERR` runs inside that window; logs
+go to serial and the RAM ring, never to the card as bytes of the key): one sealer block of a transfer, at most 512 B (`walletCipher()`;
 the largest BLE chunk at any MTU is 509 B, `WalletAssetIngest.h`, so one borrow
 per chunk), one manifest seal (`walletSealManifest()`), one manifest decrypt
 (`feedEncryptedManifestAt()`, after the card read), one row of a page window or

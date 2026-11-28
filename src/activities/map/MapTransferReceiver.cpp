@@ -782,6 +782,16 @@ void MapTransferReceiver::handleChunk(const uint8_t* body, size_t len) {
       abandon(wallet::ingestStatusReason(fed));
       return;
     }
+    // The commit below is keyed on the receiver's own byte count. Asked of the
+    // sealer too, so "verified before rename" holds here rather than by an
+    // argument that two counters fed the same total always agree: on the last
+    // chunk only Complete -- hash and CRC checked -- may go on to the rename
+    // (T-2104 security review, 2026-11-28).
+    if (chunk.completesTransfer && fed != wallet::IngestStatus::Complete) {
+      LOG_ERR(kLogTag, "wallet ingest not complete at the last chunk of %s", finalPath_);
+      abandon("asset length");
+      return;
+    }
   } else
 #endif
   {
