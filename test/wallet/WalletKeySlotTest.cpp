@@ -207,12 +207,18 @@ TEST(WalletKeySlot, ACopyIsNeverTornByAConcurrentClear) {
   uint8_t key[wallet::kWalletKeyLen];
   fillKey(key, 7);
   std::atomic<bool> stop{false};
-  std::thread locker([&] {
+  // Two lockers, not one. With one, a set() never runs while its own clear() is
+  // still wiping, so a wipe moved outside the lock passed this test (mutation
+  // run, 2026-11-28, `scripts/mutation_check.py`): a set() landing before that
+  // late wipe leaves zeros in the slot with the flag up.
+  const auto lockLoop = [&] {
     while (!stop.load()) {
       slot.set(key);
       slot.clear();
     }
-  });
+  };
+  std::thread locker(lockLoop);
+  std::thread locker2(lockLoop);
 
   size_t whole = 0;
   size_t refused = 0;
@@ -237,6 +243,7 @@ TEST(WalletKeySlot, ACopyIsNeverTornByAConcurrentClear) {
   }
   stop.store(true);
   locker.join();
+  locker2.join();
 
   EXPECT_EQ(torn, 0u);
   // Both outcomes have to have actually happened, or the test proved nothing
