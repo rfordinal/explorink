@@ -9,6 +9,9 @@ add_executable(WalletTest
   # never holds the file, the other holds it whole because the read path cannot
   # stream (WalletManifestIngest.h).
   WalletManifestSealTest.cpp
+  # Which screen Home > Wallet opens (T-2109). The screen-level branch is not
+  # host testable; the predicate beside it is.
+  WalletEntryTest.cpp
   ${REPO_ROOT}/src/activities/wallet/WalletManifestParser.cpp
   ${REPO_ROOT}/lib/JsonParser/StreamingJsonParser.cpp
   # The hint-label width check measures with the firmware's own font table

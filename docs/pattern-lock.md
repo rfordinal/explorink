@@ -533,10 +533,15 @@ itself was proved on an X3 three days earlier with a laptop-made wallet.
 second NVS-wipe enrollment (start cell 5). Once a sealed
 manifest was on its card, a reboot and `CMD:GOTO_WALLET` drew the gate, and
 `tools/press.py` walked it -- seven direction presses and confirm --
-to `unlocked=1 attempts=0` and the browse list. On an **empty** card it is still
-"No wallet on the card" and no gate, measured the same day: a rider who reboots
-between setup and the first sync cannot unlock, and a locked board refuses the
-sync. T-2109. `wallet-test-scenarios.md`, "Runs on hardware".
+to `unlocked=1 attempts=0` and the browse list. On an **empty** card it was
+still "No wallet on the card" and no gate, measured the same day: a rider who
+reboots between setup and the first sync could not unlock, and a locked board
+refuses the sync. T-2109 moves the decision to the wrap
+(`walletEntryDecide()`, `src/activities/wallet/WalletEntryDecide.h`): a
+provisioned board shows the gate whatever the card holds. **Measured
+2026-11-28 on `t5s3pro-b` and an X3**: reboot, empty card, Home > Wallet by
+buttons, the gate on both; the S3 then unlocked by its pattern to "No wallet on
+the card". `wallet-test-scenarios.md`, "W9a on both chip families".
 
 ## The first real caller: the wallet
 
