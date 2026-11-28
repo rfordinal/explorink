@@ -207,6 +207,46 @@ arrived under.
 One line per scenario per chip family, newest run only. A scenario with no S3
 row and no C3 row has not run on that family.
 
+### T-2104 on both chip families, 2026-11-28
+
+Firmware `t2104-frame-gate` `4c9c9159` (contains `t2104-key-copy`). Archived in the
+parent repo as `docs/firmware-builds/2026-11-28-t5s3pro-b-t2104-frame-gate-testcmds-4-good`
+and `...-x3-t2104-frame-gate-4-good`. Trees from `walletgen.py --demo` (the
+`wallet-cardroot` copy, for `--panel t5s3`), cleartext, pushed with
+`blepush.py --chunk 180 --address <board>`. Card read back over the web server
+(`GET /api/files`).
+
+**S3: `t5s3pro-b`, `env:t5s3pro` plus `-DENABLE_WALLET_TEST_CMDS=1`.** Unlocked with
+`CMD:WALLETUNLOCK` and the board's pattern (parent repo, T-2108 entry). Both cores
+run here, so this is the board where the gate and the key borrow can race.
+
+| # | Result |
+|---|---|
+| W27 | `OK 2656 6913015b`, `sealed manifest installed` |
+| W14 | `OK 64832 65814f29` |
+| W17 | `ERR hash mismatch`; `wallet/51/` empty afterwards |
+| W22 | plain file `test/t2104-w22.tib`: `OK 74812 37a63be3` |
+| W44 | 585,750 B asset, `CMD:WALLETLOCK` 5 s into the push: `ERR encrypt failed`; `wallet/83/` empty afterwards, no `.part` |
+| W20 / W34 | `ERR wallet locked` for an asset and for the manifest |
+| gate | 585,750 B asset, `CMD:GOTO_WALLET` 5 s into the push: `transfer failed: screen closed`, no reset; `wallet/83/` empty afterwards |
+| W23 / W16 | after a reboot and unlock, the list off the device-sealed manifest, then the W14 page drawn: FIT, 960x540, 1,581 ms |
+
+**C3: X3, `env:default`.** Its wallet is locked and **nobody recorded its pattern**
+(see W9a), so only the scenarios that need no key ran. The X3 drops its USB link on
+the map when the CPU falls to its 10 MHz idle clock; a `CMD:` every 2 s keeps it
+up (each handler leaves power saving), and opening the port resets it, so one
+process holds the port for the whole run.
+
+| # | Result |
+|---|---|
+| W20 / W34 | `ERR wallet locked` for an asset and for the manifest |
+| W22 | `OK 74812 37a63be3` |
+| gate | 74,812 B push, `CMD:BUTTON back` 5 s in: `transfer failed: screen closed`, no reset; no `.part` and no file afterwards |
+
+**Not run:** W44, W14 and W16 on the C3, which need its key. Getting one means
+re-provisioning the X3 (`CMD:WALLETPROVISION force`), which destroys its current
+wallet -- the maintainer's call.
+
 ### S3: `t5s3pro-b`, 2026-11-28 (T-2108)
 
 `wallet-viewer` `46725470`, `env:t5s3pro` plus `-DENABLE_WALLET_TEST_CMDS=1`,
