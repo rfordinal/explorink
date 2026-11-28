@@ -110,7 +110,10 @@ TEST(MapTransferGate, CloseGivesUpAfterItsBound) {
   std::thread host([&] {
     const maptransfer::FrameGate::Ticket t(gate);
     entered.store(true);
-    while (!release.load()) yieldNow();
+    // Leaves on its own after 2 s, so a close() that never gives up returns
+    // true and fails the EXPECT_FALSE below instead of hanging the suite.
+    const uint32_t heldFrom = nowMs();
+    while (!release.load() && nowMs() - heldFrom < 2000) yieldNow();
   });
   while (!entered.load()) yieldNow();
   const uint32_t start = nowMs();
