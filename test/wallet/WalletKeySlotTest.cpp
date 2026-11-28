@@ -14,6 +14,7 @@
 #include <gtest/gtest.h>
 
 #include <atomic>
+#include <chrono>
 #include <cstring>
 #include <mutex>
 #include <thread>
@@ -128,12 +129,19 @@ TEST(WalletKeySlot, TheGenerationSaysWhichKeyItWas) {
   ASSERT_TRUE(later);
   EXPECT_NE(later.generation(), first.generation());
 
+  // A set() over a key still held moves it too, with no clear() between --
+  // each check above has a clear() in front of its set(), and clear() alone
+  // would move the counter (review round 7, 2026-11-28).
+  slot.set(a);
+  const wallet::KeyCopy overHeld(slot);
+  ASSERT_TRUE(overHeld);
+  EXPECT_NE(overHeld.generation(), later.generation());
+
   // Even the same bytes set again count as a new key: the slot cannot tell a
   // re-unlock from a re-provision, and the sealer must not have to.
-  slot.clear();
-  slot.set(b);
+  slot.set(a);
   const wallet::KeyCopy same(slot);
-  EXPECT_NE(same.generation(), later.generation());
+  EXPECT_NE(same.generation(), overHeld.generation());
 }
 
 TEST(WalletKeySlot, AKeyCopyWipesItselfOnScopeExit) {
@@ -177,9 +185,15 @@ TEST(WalletKeySlot, ACopyIsNeverTornByAConcurrentClear) {
   size_t whole = 0;
   size_t refused = 0;
   size_t torn = 0;
-  // At least 200,000 borrows, and on until both outcomes were seen -- a host
-  // that schedules the locker late must not turn this into a vacuous pass.
-  for (long i = 0; i < 20000000 && (i < 200000 || whole == 0 || refused == 0); ++i) {
+  // At least one second and 200,000 borrows, and on until both outcomes were
+  // seen -- a host that schedules the locker late must not turn this into a
+  // vacuous pass. A count alone was not enough: a copy moved out of the lock
+  // (the has_ check still inside it) survived 5 of 30 runs on a loaded 14-core
+  // host at 200,000 borrows (review, 2026-11-28). The cap keeps it bounded.
+  const auto started = std::chrono::steady_clock::now();
+  const auto elapsed = [&] { return std::chrono::steady_clock::now() - started; };
+  for (long i = 0; i < 50000000 && (i < 200000 || elapsed() < std::chrono::seconds(1) || whole == 0 || refused == 0);
+       ++i) {
     const wallet::KeyCopy borrowed(slot);
     if (!borrowed) {
       ++refused;

@@ -897,7 +897,9 @@ level up.
 **Why not a pointer.** Until T-2104, `Session::key()` returned a pointer into
 the session's own array, and `clear()` wiped that array in place. On a dual-core
 board (`env:x4pro`, `env:t5s3pro`: NimBLE on core 0, the Arduino task on core 1,
-`CONFIG_FREERTOS_UNICORE` unset) a sleep or `CMD:WALLETLOCK` could land between
+`CONFIG_FREERTOS_UNICORE` unset) a sleep -- `clear("sleep")`, the only lock those
+builds have, because `CMD:WALLETLOCK` sits behind `ENABLE_WALLET_TEST_CMDS`, which
+only the single-core `env:default` sets -- could land between
 the null check and `mbedtls_aes_setkey_enc()`, or inside it. The asset sealer then
 enciphered the rest of the file under a half-zeroed key, the hash and the CRC
 passed because both are over the plaintext, and the file was renamed over the
@@ -941,12 +943,19 @@ and the slot-bound tests in `WalletIngestTest.cpp` and
 same borrow the device binds and show the sealer ends with `CipherFailed` /
 `SealFailed`; they do not run `walletCipher()` itself or the receiver's
 `abandon()`, which are read off the code. The race test runs two threads against a
-`std::mutex`-bound slot and sees zero torn copies in at least 200,000 borrows.
-The same 200,000-borrow loop with a no-op lock fails every run on a multi-core
-host: 5,700 to 182,000 torn copies across the runs of four review passes on a
-14-core laptop at varying load, 2026-11-28, `-O2`. On one CPU it passed 4 of 5
-runs, so the test skips with fewer than two usable CPUs. It proves `KeySlot` takes its lock
-around every touch of the bytes. It does not prove `portENTER_CRITICAL` is
+`std::mutex`-bound slot for at least one second and 200,000 borrows and sees zero
+torn copies. Two broken slots it catches, measured 2026-11-28 on a 14-core laptop,
+`-O2`:
+
+- **a no-op lock**: fails every run on a multi-core host, 5,700 to 182,000 torn
+  copies across four review passes at varying load;
+- **the copy moved out of the lock, the `has_` check still inside**: 0 of 20 runs
+  passed with every core busy-looped. A count-only loop (200,000 borrows, no time
+  floor) passed it 4 of 20 under the same load, which is why the floor exists.
+
+On one CPU a torn copy needs preemption mid-copy and the no-op lock passed 4 of 5
+runs, so the test skips with fewer than two usable CPUs. It shows `KeySlot` takes
+its lock around the copy and the wipe. It does not prove `portENTER_CRITICAL` is
 exclusive across an S3's cores; that is ESP-IDF's claim.
 
 **Cost per block: a 32-byte copy and a 32-byte wipe, against AES over up to
