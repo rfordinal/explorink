@@ -34,6 +34,37 @@ report says "W7 failed" and that has to mean the same thing next month.
   the pattern gate cannot be opened by anything, and a board nobody recorded a
   pattern for is the same problem. **Do not guess one** -- ten wrong walks
   refuse the wrap and the board then needs a re-provision (W12).
+- **A board whose card holds no wallet shows no gate at all**, so `press.py`
+  has nothing to walk. `goToWallet()` sends a key-less board to the gate only
+  when `treeIsEncrypted()` (`src/activities/ActivityManager.cpp`, the
+  `treeIsEncrypted() && !hasKey()` branch), and that reads the card, not NVS.
+  A provisioned board with an empty card draws "No wallet on the card"
+  instead -- measured on `t5s3pro-b`, 2026-11-28. So the **first** unlock on
+  such a board is `CMD:WALLETUNLOCK` (a dev build, `ENABLE_WALLET_TEST_CMDS`)
+  or nothing; push a manifest (W27) under that key, reboot, and from then on
+  the gate is there and the buttons open it. T-2109 is the rider's half of this.
+- **Traps the S3 run of 2026-11-28 paid for**, in the order they bite:
+  1. **A T5 S3 Pro with `mapGnssPosition=1` never starts BLE on the map**, so
+     every push finds no board (`ble-advertising.md`, "When it advertises").
+     `CMD:SETTING mapGnssPosition 0` for the run, back to `1` after.
+  2. **On the map, a `CMD:` line can be eaten by the map console.**
+     `CMD:SETTING` and `CMD:GOTO_WEBSERVER` both vanished there, with
+     `[MAPCON] rx:` logging a line of log text glued to the command.
+     `CMD:GOTO_WALLET` first, then the command, then `CMD:GOTO_MAP` again.
+  3. **The session key's idle clock runs off the wallet screens too.** Only a
+     wallet screen *checks* it (`Session::expireIfIdle()`), so the key lives on
+     the map for as long as the pushes take -- and dies the moment a wallet
+     screen opens more than 120 s after the unlock. Unlock, go to the map, push;
+     do not detour through the wallet in between.
+  4. **Name the board: `blepush.py --address`.** Several boards advertise the
+     same service. Read the address off a scan (`--address 00:00:00:00:00:00`
+     prints who is advertising); `t5s3pro-b` is `30:ED:A0:A8:37:75`.
+     And `--chunk 180`, or the first write fails with
+     `Invalid Attribute Value Length`.
+  5. **`walletgen.py --panel t5s3` exists only on the parent's
+     `wallet-cardroot` branch** (2026-11-28). An `x4` asset on a T5 S3 Pro is
+     refused `ERR wrong panel`, correctly; a manifest is not, because it names
+     a panel and is sealed without being drawn.
 - **Take the device lock for the whole block of device work**, not per command
   (`../../../docs/synchro.md`). **Ask before every flash.** Archive the build
   after the upload.
@@ -169,6 +200,46 @@ arrived under.
 - **`POST /upload` bypasses the sealer** (T-2103), so a wallet asset over Wi-Fi
   lands in the clear and the viewer refuses it. Expected today. When T-2103
   closes, it becomes a scenario here.
+
+## Runs on hardware
+
+One line per scenario per chip family, newest run only. A scenario with no S3
+row and no C3 row has not run on that family.
+
+### S3: `t5s3pro-b`, 2026-11-28 (T-2108)
+
+`wallet-viewer` `46725470`, `env:t5s3pro` plus `-DENABLE_WALLET_TEST_CMDS=1`,
+archived `docs/firmware-builds/2026-11-28-t5s3pro-b-t2108-s3-wallet-testcmds-4-good`
+(parent repo). Wallet born on the device in T-2094, start cell 5. Tree from
+`walletgen.py --demo --panel t5s3`. The card was read back over the web server
+(`GET /api/files`, `GET /download`).
+
+The first unlock was `CMD:WALLETUNLOCK`, because the card was empty (see
+"Before you start"). After W27 put a `manifest.enc` on it, the board was
+rebooted, `CMD:GOTO_WALLET` drew the gate, and **`press.py` walked the
+board's pattern, seven presses plus confirm**: `unlocked=1`, `attempts=0`.
+The pattern itself is in the parent repo's `docs/TODO.md`, T-2108 -- **never
+in this repo**, which is public: a bench pattern is still a working unlock for
+the board that carries it. W14, W17 and W43 ran under that key.
+
+| # | Result |
+|---|---|
+| W27 | `OK 2653 0aad1c1b`, `WALLETSTATUS manifest=enc`. Card: `manifest.enc` (`EWM1`, container v2, no title in the clear) and `manifest.bak`, **no** `manifest.json`. Pushed a second time with the `t5s3` list; that is the `.bak` |
+| W14 | `OK 64832 65814f29` -- the CRC of the plaintext sent. File on the card is the same length, header identical except `flags` `0b00` -> `0b11` (encrypted, IV from the content), 64,520 of 64,800 payload bytes differ (the rest is the 1-in-256 chance match) |
+| W17 | One payload byte flipped (offset 1032, `ff` -> `fe`), CRC computed over the flipped file: `ERR hash mismatch`. Nothing at that name afterwards, no `.part` |
+| W43 | Pushed as `wallet/EE/EE02ECE2653441F4.DAT`: `OK 259232 be0f85ae`. The wallet directory holds one `ee`, which holds exactly one file, `ee02ece2653441f4.dat`, 259,232 B, `flags` `0b11` |
+| W16 | After the reboot and the button unlock, Select drew the device-sealed page: FIT, 960x540, 1,582 ms |
+| W23 | The browse list off the device-sealed manifest: "T2108 bench, 1 page" |
+
+**Seen on the way, not a scenario yet:** a push refused by the asset header
+(`ERR wrong panel`, an `x4` asset) left an **empty shard directory** `6a/` on
+the card. The begin ladder runs every refusal before
+`ensureDirectoryExists()` (`src/activities/map/MapTransferReceiver.cpp`,
+"Below every refusal"), but the header is checked on the first data chunk
+(`src/activities/wallet/WalletAssetIngest.h`, `checkAssetForIngest`), after the
+directory exists. Needs a key in the session to reach. T-2110.
+
+Shots, 1:1, parent `docs/device-shots/2026-11-28-t5s3prob-wallet-*`.
 
 ## What no scenario here reaches
 

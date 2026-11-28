@@ -529,6 +529,15 @@ empty -- so the unlock here was driven through `CMD:WALLETUNLOCK`, which is the
 same `KeyStore::tryUnlock()` the gate's verifier calls, and the gate screen
 itself was proved on an X3 three days earlier with a laptop-made wallet.
 
+**Closed for an S3 on 2026-11-28, half closed for the rider.** Same board,
+second NVS-wipe enrollment (start cell 5). Once a sealed
+manifest was on its card, a reboot and `CMD:GOTO_WALLET` drew the gate, and
+`tools/press.py` walked it -- seven direction presses and confirm --
+to `unlocked=1 attempts=0` and the browse list. On an **empty** card it is still
+"No wallet on the card" and no gate, measured the same day: a rider who reboots
+between setup and the first sync cannot unlock, and a locked board refuses the
+sync. T-2109. `wallet-test-scenarios.md`, "Runs on hardware".
+
 ## The first real caller: the wallet
 
 Until 2026-11-26 the only thing that pushed this screen was the bench harness.
