@@ -231,7 +231,11 @@ class MapTransferReceiver {
   // whole .part back to check the CRC and takes seconds on a 75 KB tile. The
   // bound is a bound, not a guarantee -- exceeding it is handled rather than
   // waited out, because a wedged card must not wedge the UI. handleChunk's
-  // active_ re-checks are what make the exceeded case safe.
+  // active_ re-checks make a frame bail in most of that case; they do not make
+  // it safe. Each is a load followed by an action, so abandon() can still land
+  // between a re-check and the next file_ call, and a disconnect's abandon()
+  // can overlap detach()'s (docs/transfer-receiver-threading.md, "What is not
+  // closed").
   static constexpr uint32_t kDetachWaitMs = 500;
 
   // True if `path` is a safe relative path under the root: no leading slash,
