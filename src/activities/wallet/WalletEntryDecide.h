@@ -19,6 +19,9 @@
 //   - a wrap and no key in the session: the gate, whatever the card holds. A
 //     cleartext tree on such a board is gated too -- a locked board cannot take
 //     a sync onto it either, and the same rule has to hold for both cards.
+//     **Maintainer's call, 2026-11-28**, and it costs a rider with a cleartext
+//     card an unlock that no cryptography needs. Its own hardware path (W9b)
+//     is host-tested and has never run on a board.
 //   - no wrap, nothing on the card: the setup offer.
 //   - no wrap, a cleartext tree: browse with no key, because such a card exists
 //     in the field and reading it needs none (docs/wallet-crypto.md).
