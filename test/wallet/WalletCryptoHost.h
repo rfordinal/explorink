@@ -17,6 +17,7 @@
 #include <openssl/evp.h>
 
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <vector>
 
@@ -46,9 +47,11 @@ inline bool encryptBlock(void* ctx, const uint8_t in[16], uint8_t out[16]) {
 inline void ctrXor(const uint8_t key[kWalletKeyLen], const uint8_t iv[kAssetIvLen], uint32_t offset, uint8_t* data,
                    size_t len) {
   AesCtx ctx{key};
-  // Host OpenSSL does not fail here in practice; a failure would show as a
-  // round-trip mismatch in every test that uses this.
-  (void)ctrXorInPlace(encryptBlock, &ctx, iv, offset, data, len);
+  // Loud, not ignored. A failing block leaves the data as it was, so ctrXor
+  // would become the identity in both directions and every seal-then-open
+  // round trip would still pass (review round 10, 2026-11-28: 177 of 184 tests
+  // passed with encryptBlock forced to fail). Aborting fails whatever test hit it.
+  if (!ctrXorInPlace(encryptBlock, &ctx, iv, offset, data, len)) std::abort();
 }
 
 // AES-256-GCM decrypt with the tag verified. False means the tag failed, and the

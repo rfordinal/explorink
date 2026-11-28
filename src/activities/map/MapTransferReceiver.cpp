@@ -117,8 +117,9 @@ struct FrameGuard {
 // measured; a claim of "free" would need a timing.
 //
 // `ctx` is the generation the transfer began under, a uint32_t owned by the
-// receiver. The host tests pass their own struct (a host KeySlot plus the
-// starting generation) and repeat this check in the test.
+// receiver. The host tests pass their own struct holding a host KeySlot; the one
+// that covers a changed key (ADifferentKeyMidTransferEndsWithCipherFailed) also
+// carries the starting generation and repeats this check.
 bool walletCipher(void* ctx, const uint8_t* iv, uint32_t payloadOffset, uint8_t* data, size_t len) {
   const wallet::KeyCopy key(wallet::Session::instance());
   if (!key) return false;

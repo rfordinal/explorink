@@ -499,13 +499,14 @@ of an uppercase path was done on the C3 above, and the arithmetic is chip
 independent; the S3 evidence after the fix is the plaintext-CRC reply and the
 refusals, not a decrypt.
 
-**And one thing nothing on the bench can reach**: the wallet locking *during* a
+**And one thing this run could not reach**: the wallet locking *during* a
 transfer, which is what `walletCipher()` re-reading the key per chunk protects
-against. Locking needs the serial console, opening the serial port resets the
-board, and a reset ends the transfer -- so there is no way to lock mid-push from
-here. It is covered by the host test (`ACipherThatFailsMidTransferEndsIt`) and
-by reading `Session::clear()`, and that is all it is covered by. A second control
-channel would settle it.
+against. Locking needs the serial console, and the tool used here reset the board
+when it opened the port, which ends the transfer. Since T-2104 it is covered by
+host tests (`WalletKeySlot.*`, `WalletIngest.AWalletLockedMidTransferEndsWithCipherFailed`,
+`WalletIngest.ADifferentKeyMidTransferEndsWithCipherFailed`) and by W44, a C3-only
+regression check not yet run (`wallet-test-scenarios.md`, which says what is open
+about reaching the console mid-push).
 
 **An incidental confirmation.** The T5's gate accepted the walk and the wallet
 screen then said "Wrong key, or the wallet list was altered" -- its card still
@@ -894,7 +895,7 @@ grey band (`readPlaneWindow()`, after that row's card read), one whole-screen
 decrypt (`readWholeScreen()`, before the hash check). The next call borrows
 again.
 
-Two reasons for that tightness:
+Two reasons for that tightness, and one place it does not reach:
 
 - **Never across a transfer.** A `KeyCopy` held across a whole transfer would
   bring back the bug it replaced, one level up: a key that survives a lock.
@@ -906,7 +907,14 @@ Two reasons for that tightness:
   the clear, which is the one thing the wallet promises the card never holds.
   Security review, 2026-11-28. The window cannot be zero: mbedtls's own AES
   context holds the key on the stack for the length of the call, as it did before
-  T-2104. The S3 writes no stack (`#if !__riscv`).
+  T-2104. The S3 writes no stack to the card (`#if !__riscv`).
+- **The flash core dump is a different place, and it is inside the boundary.**
+  `CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH=y` in ELF format (`sdkconfig.defaults`,
+  partition `coredump` at `0xFF0000`; boards write it, `crash-reporting.md`)
+  saves task stacks on both chips on any panic, so a `KeyCopy`, an mbedtls context or plaintext alive at that moment
+  lands in flash. Flash is already declared readable with a cable in hand ("The
+  threat boundary, first"), so this widens nothing the wallet promises; it is
+  written here so nobody reads "never across a card read" as "never in a dump".
 
 Gates that only decide whether to start use `hasKey()`, which reads no bytes.
 The sealer remembers which key it started under with `keyGeneration()`, which
