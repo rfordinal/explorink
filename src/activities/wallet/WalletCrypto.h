@@ -168,7 +168,8 @@ inline void secureWipe(void* data, size_t len);
 // False when a block failed to encrypt. `data` is then partly XORed and must be
 // treated as nothing: the caller refuses the whole unit (walletCipher() ends the
 // transfer, the read path reports a decrypt failure). The keystream and counter
-// are wiped on every return, so no keystream outlives the call on the stack.
+// are wiped on every return, so no keystream this loop holds outlives the call.
+// (What mbedtls or the ESP-IDF driver keep inside their own frames is theirs.)
 inline bool ctrXorInPlace(BlockEncrypt encrypt, void* ctx, const uint8_t iv[kAssetIvLen], uint32_t offset,
                           uint8_t* data, size_t len) {
   if (encrypt == nullptr || data == nullptr) return false;

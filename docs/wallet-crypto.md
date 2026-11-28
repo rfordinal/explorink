@@ -970,8 +970,12 @@ to the card in the clear under an `OK`, since both end-of-transfer checks are ov
 the plaintext. Older than T-2104; found by its security review. Now
 `BlockEncrypt` returns whether it worked, `ctrXorInPlace()` stops and answers
 false, `ctrDecryptInPlace()` passes that up, and `walletCipher()` ends the
-transfer with `CipherFailed`. GCM was never affected: mbedtls checks the block
-cipher's return there. Host-tested (`WalletCryptoCtr.AFailedBlockIsReportedNotLeftAsPlaintext`);
+transfer with `CipherFailed`. GCM was never affected: with
+`CONFIG_MBEDTLS_HARDWARE_AES=y` the build uses ESP-IDF's own GCM
+(`MBEDTLS_GCM_ALT`, `components/mbedtls/port/aes/esp_aes_gcm.c`), which checks
+the AES return at every step. A wallet asset's `close()` is checked too now: it
+gets no read-back, so a close that failed to flush would otherwise let a
+truncated ciphertext be renamed over a good document. Host-tested (`WalletCryptoCtr.AFailedBlockIsReportedNotLeftAsPlaintext`);
 whether DMA memory runs out during a push on a board is not measured.
 
 **Verified on the host, not on a board** (`test/wallet/WalletKeySlotTest.cpp`,
