@@ -107,6 +107,35 @@ TEST(WalletKeySlot, ACopyTakenBeforeClearSurvivesIt) {
   EXPECT_EQ(next.bytes(), nullptr);
 }
 
+TEST(WalletKeySlot, TheGenerationSaysWhichKeyItWas) {
+  // A borrow that succeeds is not the same key as the last one. Locked,
+  // re-provisioned and unlocked between two chunks, the sealer must see the
+  // difference (MapTransferReceiver.cpp, walletCipher).
+  HostSlot slot;
+  uint8_t a[wallet::kWalletKeyLen];
+  uint8_t b[wallet::kWalletKeyLen];
+  fillKey(a, 7);
+  fillKey(b, 40);
+  slot.set(a);
+  const wallet::KeyCopy first(slot);
+  const wallet::KeyCopy again(slot);
+  ASSERT_TRUE(first);
+  EXPECT_EQ(first.generation(), again.generation());
+
+  slot.clear();
+  slot.set(b);
+  const wallet::KeyCopy later(slot);
+  ASSERT_TRUE(later);
+  EXPECT_NE(later.generation(), first.generation());
+
+  // Even the same bytes set again count as a new key: the slot cannot tell a
+  // re-unlock from a re-provision, and the sealer must not have to.
+  slot.clear();
+  slot.set(b);
+  const wallet::KeyCopy same(slot);
+  EXPECT_NE(same.generation(), later.generation());
+}
+
 TEST(WalletKeySlot, AKeyCopyWipesItselfOnScopeExit) {
   // Read through placement storage, so the bytes are inspected after the
   // destructor without touching an object whose lifetime ended.

@@ -585,6 +585,64 @@ TEST(WalletIngest, AWalletLockedMidTransferEndsWithCipherFailed) {
   EXPECT_TRUE(std::equal(payload.begin(), payload.end(), file.begin() + wallet::kAssetHeaderBytes));
 }
 
+TEST(WalletIngest, ADifferentKeyMidTransferEndsWithCipherFailed) {
+  // The other half of T-2104 item 1: the key is present at the next borrow but
+  // it is not the key the transfer began under -- locked, re-provisioned and
+  // unlocked between two chunks. Same shape as walletCipher(): the generation
+  // the transfer began under is the cipher's ctx.
+  struct GenCipher {
+    wallet::KeySlot<std::mutex>* slot = nullptr;
+    uint32_t begunUnder = 0;
+    size_t chunks = 0;
+    size_t swapBefore = 0;
+    const uint8_t* otherKey = nullptr;
+  };
+  auto genCipher = [](void* ctx, const uint8_t* iv, uint32_t payloadOffset, uint8_t* data, size_t len) {
+    auto* c = static_cast<GenCipher*>(ctx);
+    if (c->chunks++ == c->swapBefore) {
+      c->slot->clear();
+      c->slot->set(c->otherKey);
+    }
+    const wallet::KeyCopy key(*c->slot);
+    if (!key || key.generation() != c->begunUnder) return false;
+    wallet::host::ctrXor(key.bytes(), iv, payloadOffset, data, len);
+    return true;
+  };
+
+  uint8_t other[wallet::kWalletKeyLen];
+  for (size_t i = 0; i < sizeof(other); ++i) other[i] = static_cast<uint8_t>(0xA5 ^ i);
+  const std::vector<uint8_t> file = buildX4Tile();
+  wallet::KeySlot<std::mutex> slot;
+  slot.set(kKey);
+  GenCipher cipher;
+  cipher.slot = &slot;
+  {
+    const wallet::KeyCopy start(slot);
+    ASSERT_TRUE(start);
+    cipher.begunUnder = start.generation();
+  }
+  cipher.swapBefore = 20;
+  cipher.otherKey = other;
+  std::vector<uint8_t> sink;
+  wallet::AssetIngest ingest;
+  wallet::AssetIngest::Callbacks cb;
+  cb.cipher = genCipher;
+  cb.cipherCtx = &cipher;
+  cb.crc32 = crc32Bitwise;
+  cb.write = hostSink;
+  cb.writeCtx = &sink;
+  ASSERT_TRUE(ingest.begin(static_cast<uint32_t>(file.size()), crc32Of(file), wallet::kPanelX4, cb));
+  size_t at = 0;
+  wallet::IngestStatus status = wallet::IngestStatus::Ok;
+  while (at < file.size() && status == wallet::IngestStatus::Ok) {
+    const size_t take = std::min<size_t>(180, file.size() - at);
+    status = ingest.feed(file.data() + at, take);
+    at += take;
+  }
+  EXPECT_EQ(status, wallet::IngestStatus::CipherFailed);
+  EXPECT_EQ(cipher.chunks, cipher.swapBefore + 1);
+}
+
 // --- which files get sealed at all -----------------------------------------
 
 TEST(WalletIngest, OnlyWalletDatFilesAreSealed) {

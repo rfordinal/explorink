@@ -116,11 +116,17 @@ struct FrameGuard {
 // call is a 32-byte copy and a 32-byte wipe against AES over the same block. Not
 // measured; a claim of "free" would need a timing.
 //
-// `ctx` is unused and stays in the signature because the sealer's callback
-// contract is shared with the host tests, which do bind a key to it.
-bool walletCipher(void*, const uint8_t* iv, uint32_t payloadOffset, uint8_t* data, size_t len) {
+// `ctx` is the generation the transfer began under, a uint32_t owned by the
+// receiver. The host tests bind a key to the same slot instead.
+bool walletCipher(void* ctx, const uint8_t* iv, uint32_t payloadOffset, uint8_t* data, size_t len) {
   const wallet::KeyCopy key(wallet::Session::instance());
   if (!key) return false;
+  // `ctx` is the key generation the transfer began under (handleBegin). A key
+  // that is present but different -- locked, re-provisioned and unlocked between
+  // two chunks -- ends the transfer too: half a file under each of two keys is
+  // the same loss as half under a wiped one.
+  const uint32_t* const begunUnder = static_cast<const uint32_t*>(ctx);
+  if (begunUnder == nullptr || key.generation() != *begunUnder) return false;
   return wallet::ctrDecryptInPlace(key.bytes(), iv, payloadOffset, data, len);
 }
 
@@ -613,8 +619,19 @@ void MapTransferReceiver::handleBegin(const uint8_t* body, size_t len) {
     // No key is carried: walletCipher() borrows a copy from the session on every
     // call, so a wallet locked mid-transfer ends the transfer instead of sealing
     // the rest of it under a wiped key. The `hasKey()` gate above is the "do not
-    // even start" half of the same rule.
-    cb.cipherCtx = nullptr;
+    // even start" half of the same rule. What is carried is *which* key the
+    // transfer starts under, so a different key later is refused as well. The
+    // borrow here is only for its generation and is wiped at the end of the block;
+    // a lock between the gate and this line is refused with the gate's words.
+    {
+      const wallet::KeyCopy startKey(wallet::Session::instance());
+      if (!startKey) {
+        refuse("wallet locked");
+        return;
+      }
+      walletKeyGeneration_ = startKey.generation();
+    }
+    cb.cipherCtx = &walletKeyGeneration_;
     cb.crc32 = walletCrc32;
     cb.write = walletSink;
     // Stable for the life of this object, and nothing is written through it
