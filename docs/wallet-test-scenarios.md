@@ -247,7 +247,7 @@ it, so one process holds the port for the whole run.
 | W22 | `OK 74812 37a63be3` |
 | gate | 74,812 B push, `CMD:BUTTON back` 5 s in: `transfer failed: screen closed`, no reset; no `.part` and no file afterwards |
 
-**Then with a key, on `fe69ac89` plus T-2112 (`detach()` waits without a bound).**
+**Then with a key, on `4b82ed08` (T-2112: `detach()` waits without a bound).**
 The X3 was re-provisioned with `CMD:WALLETPROVISION ... force` (maintainer's call,
 2026-11-28) and unlocked with `CMD:WALLETUNLOCK`.
 
