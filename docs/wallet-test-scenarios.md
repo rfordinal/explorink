@@ -241,6 +241,34 @@ directory exists. Needs a key in the session to reach. T-2110.
 
 Shots, 1:1, parent `docs/device-shots/2026-11-28-t5s3prob-wallet-*`.
 
+### W9a on both chip families, 2026-11-28 (T-2109)
+
+Branch `t2109-empty-card-gate` off `wallet-viewer`, firmware `8e519d10`.
+`t5s3pro-b` on `env:t5s3pro` (no test commands), the X3 (`7c:e8:b1:6f:c2:9c`)
+on `env:default`. Archived in the parent repo as
+`docs/firmware-builds/2026-11-28-{t5s3pro-b,x3}-t2109-empty-card-gate-5-good-gate-on-empty-card`.
+
+**How the card was emptied without deleting anything:** every file under
+`/explorink/wallet` moved into a sibling `/explorink/wallet.t2109` over the web
+server (`POST /mkdir`, `POST /move`; `/rename` takes files only), shard
+directories left behind empty. SHA-256 of every file taken first
+(`GET /api/hash`) and compared after the move back: all equal on both boards,
+the sibling directory then deleted. `t5s3pro-b` reached the web server through
+Home > File Transfer with `press.py`, because `CMD:GOTO_WEBSERVER` is a test
+command.
+
+| # | Board | Result |
+|---|---|---|
+| W9a | `t5s3pro-b` (S3) | Reboot, Home > Wallet by `press.py` (`down down down confirm`): **the gate**, cursor on the stored start cell 5. The board's pattern, seven presses plus confirm: unlocked, and the list says "No wallet on the card" |
+| W9a | X3 (C3) | `WALLETSTATUS provisioned=1 manifest=none` after the reboot. Home > Wallet by `press.py` (`down down confirm`): **the gate**, cursor on cell 5. Not walked: nobody recorded this board's pattern, and a guess counts against the limiter (W12) |
+| -- | `t5s3pro-b` | Files moved back, reboot, Home > Wallet: the gate again, over the restored `manifest.enc` |
+
+**Not run:** the push half of W9a (a push accepted after the button unlock),
+and W9b. The push path itself is the one W27 already ran under a key from
+`CMD:WALLETUNLOCK`; the session key is the same object either way
+(`KeyStore::tryUnlock()`). W9b needs a cleartext `manifest.json` written to a
+provisioned board's card.
+
 ## What no scenario here reaches
 
 Say so in a report rather than implying coverage:

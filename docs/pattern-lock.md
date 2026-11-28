@@ -538,8 +538,10 @@ still "No wallet on the card" and no gate, measured the same day: a rider who
 reboots between setup and the first sync could not unlock, and a locked board
 refuses the sync. T-2109 moves the decision to the wrap
 (`walletEntryDecide()`, `src/activities/wallet/WalletEntryDecide.h`): a
-provisioned board shows the gate whatever the card holds. **Unverified on
-hardware** until W9a runs (`wallet-test-scenarios.md`).
+provisioned board shows the gate whatever the card holds. **Measured
+2026-11-28 on `t5s3pro-b` and an X3**: reboot, empty card, Home > Wallet by
+buttons, the gate on both; the S3 then unlocked by its pattern to "No wallet on
+the card". `wallet-test-scenarios.md`, "W9a on both chip families".
 
 ## The first real caller: the wallet
 
