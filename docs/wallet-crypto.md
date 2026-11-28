@@ -928,9 +928,10 @@ same borrow the device binds and show the sealer ends with `CipherFailed` /
 `SealFailed`; they do not run `walletCipher()` itself or the receiver's
 `abandon()`, which are read off the code. The race test runs two threads against a
 `std::mutex`-bound slot and sees zero torn copies in at least 200,000 borrows.
-The same 200,000-borrow loop with a no-op lock fails every run: 28,000 to
-182,000 torn copies across six runs on a 14-core laptop at varying load,
-2026-11-28, `-O2`. The count swings with host load; the failure does not. It proves `KeySlot` takes its lock
+The same 200,000-borrow loop with a no-op lock fails every run on a multi-core
+host: 5,700 to 182,000 torn copies across the runs of four review passes on a
+14-core laptop at varying load, 2026-11-28, `-O2`. On one CPU it passed 4 of 5
+runs, so the test skips with fewer than two usable CPUs. It proves `KeySlot` takes its lock
 around every touch of the bytes. It does not prove `portENTER_CRITICAL` is
 exclusive across an S3's cores; that is ESP-IDF's claim.
 
