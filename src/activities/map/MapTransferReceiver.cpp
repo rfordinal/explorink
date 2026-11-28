@@ -250,6 +250,11 @@ MapTransferReceiver::~MapTransferReceiver() {
   //
   // Only when still attached: detach() clears the server's hooks, and once this
   // receiver is detached those may belong to another receiver.
+  //
+  // One behaviour differs from the old silent backstop: through detach(), a
+  // transfer still in flight ends with `ERR screen closed` and counts in failed_.
+  // Unreachable today -- both owners detach() first -- and the honest answer if
+  // a future owner forgets: the screen did close.
   if (gate_.attached()) {
     detach();
   } else if (active_) {

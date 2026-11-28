@@ -39,7 +39,9 @@ and a busy-spinning host thread on a contended host ran it for minutes.
 ## `active_` is atomic
 
 Every blocking call in `handleChunk` is followed by a re-check of `active_`. That
-is how a frame notices a timed-out `detach()` abandoned the transfer under it. A
+is how a frame usually notices a timed-out `detach()` abandoned the transfer under
+it -- usually, because each re-check is a load followed by an action, and
+`abandon()` can land between them. A
 plain `bool` there was a bet that the compiler reloads the member after a call
 into another translation unit.
 
@@ -54,7 +56,9 @@ Both predate the gate.
 
 - **The wait has a bound.** On a wedged card `detach()` gives up after
   `kDetachWaitMs` and abandons with a frame or a disconnect still inside. The
-  `active_` re-checks make a frame bail. A disconnect's `abandon()` stuck behind
+  `active_` re-checks make a frame bail in most of that case, not all of it: an
+  `abandon()` that lands between a re-check and the next `file_` call leaves the
+  frame writing to a closed file. A disconnect's `abandon()` stuck behind
   the card can still run at the same time as `detach()`'s: two closes of one
   file, `failed_` counted twice. That is the price of not holding the screen on a
   stuck card.
