@@ -255,7 +255,10 @@ MapTransferReceiver::~MapTransferReceiver() {
   // (MapActivity, TileSyncActivity).
   //
   // Only when still attached: detach() clears the server's hooks, and once this
-  // receiver is detached those may belong to another receiver.
+  // receiver is detached those may belong to another receiver. "Attached" is
+  // this receiver's own gate, not proof the hooks are still its own: an owner
+  // that attached a second receiver without detaching the first would have this
+  // clear the second one's hooks. Both owners detach() first today.
   //
   // One behaviour differs from the old silent backstop: through detach(), a
   // transfer still in flight ends with `ERR screen closed` and counts in failed_.
