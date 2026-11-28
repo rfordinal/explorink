@@ -57,6 +57,7 @@ class KeySlot {
     if (key == nullptr) return;
     lock_.lock();
     std::memcpy(key_, key, kWalletKeyLen);
+    ++generation_;
     has_.store(true, std::memory_order_release);
     lock_.unlock();
   }
@@ -67,6 +68,7 @@ class KeySlot {
     lock_.lock();
     const bool had = has_.load(std::memory_order_relaxed);
     secureWipe(key_, sizeof(key_));
+    ++generation_;
     has_.store(false, std::memory_order_release);
     lock_.unlock();
     return had;
@@ -74,19 +76,30 @@ class KeySlot {
 
   // The key into `out`, or false and `out` zeroed. Never a partial copy: the copy
   // and the wipe hold the same lock, so one runs entirely before the other.
-  bool copyKey(uint8_t out[kWalletKeyLen]) const {
+  //
+  // `generation`, when asked for, is which key this was: it moves on every set()
+  // and every clear(). A caller that borrows across many calls -- the asset
+  // sealer, once per chunk -- compares it with the one it started under, because
+  // "there is a key" is not "it is the same key". Locked, re-provisioned and
+  // unlocked between two chunks, the next borrow would otherwise succeed under a
+  // different key and seal the rest of the file under it (review, 2026-11-28).
+  bool copyKey(uint8_t out[kWalletKeyLen], uint32_t* generation = nullptr) const {
     if (out == nullptr) return false;
     lock_.lock();
     const bool ok = has_.load(std::memory_order_relaxed);
     if (ok) std::memcpy(out, key_, kWalletKeyLen);
+    const uint32_t gen = generation_;
     lock_.unlock();
     if (!ok) secureWipe(out, kWalletKeyLen);
+    if (generation != nullptr) *generation = gen;
     return ok;
   }
 
  private:
   mutable Lock lock_;
   uint8_t key_[kWalletKeyLen] = {0};
+  // Lock only. Wraps after 2^32 lock/unlock cycles, which no device reaches.
+  uint32_t generation_ = 0;
   // Atomic so has() may be read off the lock from either core. Written only with
   // the lock held, so the lock orders it against key_.
   std::atomic<bool> has_{false};
@@ -104,7 +117,7 @@ class KeySlot {
 class KeyCopy {
  public:
   template <class Source>
-  explicit KeyCopy(const Source& source) : ok_(source.copyKey(bytes_)) {}
+  explicit KeyCopy(const Source& source) : ok_(source.copyKey(bytes_, &generation_)) {}
   ~KeyCopy() { secureWipe(bytes_, sizeof(bytes_)); }
 
   KeyCopy(const KeyCopy&) = delete;
@@ -116,9 +129,12 @@ class KeyCopy {
   // (WalletCryptoDevice.cpp). readPlaneWindow() does NOT -- there null means
   // "cleartext asset" -- so a read-path caller must test before passing it.
   const uint8_t* bytes() const { return ok_ ? bytes_ : nullptr; }
+  // Which key this was (KeySlot::copyKey). Compare, never interpret.
+  uint32_t generation() const { return generation_; }
 
  private:
   uint8_t bytes_[kWalletKeyLen];
+  uint32_t generation_ = 0;
   const bool ok_;
 };
 

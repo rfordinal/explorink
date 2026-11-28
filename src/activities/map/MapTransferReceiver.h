@@ -328,6 +328,10 @@ class MapTransferReceiver {
   // that a tile push has no use for -- and this object lives for as long as the
   // map screen is open (MapActivity, TileSyncActivity both hold one).
   std::unique_ptr<wallet::AssetIngest> walletIngest_;
+  // Which session key the asset in flight is being sealed under
+  // (wallet::KeySlot::copyKey). Host task only: set in handleBegin, read by
+  // walletCipher() through the sealer's ctx.
+  uint32_t walletKeyGeneration_ = 0;
   // The same, for the transfer that is the wallet's list of documents. A
   // separate machine rather than a mode on the one above, because the two are
   // opposites: an asset is encrypted chunk by chunk and never held, a manifest

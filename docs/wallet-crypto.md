@@ -921,6 +921,20 @@ the cores. On the C3 the pinned ESP-IDF ignores the mux and masks interrupts
 deletes the `.part` file and never renames. The previous good asset stays. A
 manifest ends with `SealFailed` the same way.
 
+**A different key mid-transfer ends it too.** "There is a key" is not "it is the
+same key". The slot counts generations: every `set()` and every `clear()` moves
+it, and `KeyCopy::generation()` says which one a borrow saw. The receiver takes
+the generation at begin and hands it to `walletCipher()` as the sealer's
+context; a borrow under any other generation refuses like a locked wallet. Without
+it, a wallet locked, re-provisioned (`CMD:WALLETPROVISION force`) and unlocked
+between two chunks sealed the rest of the asset under the new key, and the file
+was renamed over the good one. Reachable only from the devel console, because
+the unlock screen needs the map screen gone first. The manifest needs no such
+check: it is sealed once, at the end, under whichever key is there then.
+Host-tested: `WalletKeySlot.TheGenerationSaysWhichKeyItWas`,
+`WalletIngest.ADifferentKeyMidTransferEndsWithCipherFailed` (the sealer driven
+with the same check, not `walletCipher()` itself).
+
 **Verified on the host, not on a board** (`test/wallet/WalletKeySlotTest.cpp`,
 and the slot-bound tests in `WalletIngestTest.cpp` and
 `WalletManifestSealTest.cpp`). The slot-bound tests drive the sealers with the
