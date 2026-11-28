@@ -39,6 +39,9 @@ reach the card with no wallet gate).
 5. **The channel carries wallet transfers and their replies, nothing else.**
    Tiles, position and the `CMD:` grammar stay as they are. T-222 owns the
    grammar question.
+6. **It lives on the wallet screen, never the map.** Its state is created and
+   wiped there, and the map refuses a wallet path outright (T-2097). Pairing, the
+   gate and accepting a transfer stay three separate acts.
 
 ## Question 1: BLE pairing, or our own layer?
 
@@ -211,11 +214,52 @@ pair**". The rider's yes on the device is opening the pairing screen.
   device static key with it, so a device given away pairs with nobody (invariant
   5).
 
-### Pairing is not consent
+### Three acts, and they stay three
 
-A paired phone is a phone the rider trusts. It is not a rider saying "receiving
-now". The window of T-2097 still gates every sync: paired phone **and** open
-window, or refused. T-2097 stays the next task after this.
+T-2097's rules (`docs/tasks/T-2098.md` in the parent repo, "What T-2097's rules
+mean for this channel"):
+
+1. **Pairing a phone**: once per phone, this task.
+2. **Opening the gate**: the pattern, every time the wallet is used.
+3. **Accepting a transfer**: the rider says "receiving now" on the wallet
+   screen, T-2097.
+
+None implies another. A paired phone is not an unlocked wallet; an unlocked
+wallet is not an accepted transfer. The channel only answers "is this a phone the
+rider paired". A sync runs when all three hold, and is refused otherwise.
+
+## Where the channel lives: the wallet screen, not the map
+
+**Today BLE is up only on the map and the tile-sync screen**
+(`MapActivity.cpp`, `TileSyncActivity.cpp`, the two places that call
+`BlePositionServer::begin()` and attach the transfer receiver), and every bench
+recipe starts with `CMD:GOTO_MAP`. **The design does not depend on that.** T-2097
+moves wallet ingest to the wallet screen; this channel is built for that state:
+
+1. **The channel is bytes in, bytes out.** It does not know which screen started
+   the BLE server or whether the carrier is GATT or HTTP. It attaches to the
+   transfer `onFrame` hook (`BlePositionServer.cpp`) of whoever owns the server --
+   after T-2097, the wallet screen.
+2. **Its state is owned by the wallet screen and dies with it.** Device static
+   key, pairing table and any handshake or session state are loaded in the wallet
+   screen's `onEnter`, wiped in its `onExit`. Nothing of it exists on the map.
+   Reason: the map draws from a heap whose largest free block is about 43 KB with
+   BLE up (`map-memory.md`), and taking the wallet off that budget is half of why
+   it moves.
+3. **The QR for pairing is drawn on the wallet screen.** Not the map, not a sync
+   screen.
+4. **The map and the tile-sync screen refuse a wallet path outright** -- no
+   session, no handshake, no "paired phone may". That refusal is T-2097's removal;
+   this channel adds nothing to those screens.
+5. **The position channel stays unpaired.** Showing the rider where they are
+   never needs pairing.
+
+**Consequence for step 2 of the plan.** The device half is host-testable on its
+own (pure header in front of the receiver). On a board it needs a screen that owns
+the BLE server and the channel at once -- that is T-2097's wallet-screen move. So
+the on-board half of step 2 waits for that move, or for T-2097 to land its server
+lifecycle first. **Do not bench it by parking the channel on the map** to get
+around the wait: the instrument would then test a place the product refuses.
 
 ## Question 3: what the channel carries
 
@@ -223,13 +267,14 @@ window, or refused. T-2097 stays the next task after this.
 
 1. **Transfer frames to a wallet path** (`begin`/`chunk`/`abort` whose path is
    under the wallet tree) and **their status lines** (`RDY`/`OK`/`ERR`) travel as
-   Noise transport messages. A wallet-path `begin` outside a session is refused.
-   Today these frames arrive on their own characteristic
+   Noise transport messages, on the wallet screen only. There, a wallet-path
+   `begin` outside a session is refused; everywhere else it is refused anyway
+   (section above, item 4). The frames arrive on their own characteristic
    (`BlePositionServer.cpp`, the `onFrame` hook) and the receiver's decisions are
    a pure header since T-2106, so the channel layer sits in front of it and is
    host-testable.
-2. **Tile transfers stay open.** Tiles are public data, the receiver is shared,
-   and tile sync must keep working for a phone that never paired.
+2. **Tile transfers stay open, on the map and tile-sync screens.** Tiles are
+   public data, and tile sync must keep working for a phone that never paired.
 3. **The position channel and the `CMD:` grammar do not move.** What a stranger
    may still read or do through `CMD:` (position in `info`, `have`, `missing`) is
    T-222's audit. This task does not answer it by accident.
@@ -254,15 +299,19 @@ older or plainer mode. There is no unencrypted fallback (invariant 2).
 
 - **T-2114**: a stranger can no longer push. The format fix still lands, because a
   paired phone with a bug must not be able to do it either.
-- **T-2113 item 1**: a push while the map is open needs a paired phone now. The
-  idle-lock gap itself stays a T-2113 fix.
+- **T-2113 item 1**: a push while the map is open is refused outright once
+  T-2097 lands; until then this channel does not touch the map. The idle-lock gap
+  itself stays a T-2113 fix.
 - **T-2103**: closed by the wallet-path refusal in item 5 above.
 
 ## Costs and risks to measure before building
 
-1. **Heap on C3.** A C3 running the frame-gate build was seen near 27.5 KB free.
-   mbedtls X25519 and the Noise state cost heap during the handshake. Measure on
-   an X3, not by arithmetic (`CLAUDE.md`, "A flash or RAM cost is two builds").
+1. **Heap on C3, on the wallet screen.** A C3 running the frame-gate build was
+   seen near 27.5 KB free. The Noise state itself is a few hundred bytes (keys,
+   chaining key, hash, nonce -- from the spec, not measured); mbedtls X25519
+   scratch during the handshake is the unknown. Measure on an X3 with the wallet
+   screen owning BLE, not on the map and not by arithmetic (`CLAUDE.md`, "A flash
+   or RAM cost is two builds").
 2. **Handshake time on C3.** Two X25519 operations per side per sync. Measure.
 3. **Flash cost.** Small, since every primitive is linked already. Two builds.
 4. **The phone's Noise.** `noise-java` (MIT) exists but is old; a Kotlin port
