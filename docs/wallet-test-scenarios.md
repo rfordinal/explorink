@@ -18,6 +18,17 @@ report says "W7 failed" and that has to mean the same thing next month.
 - **Two chip families, not one board.** `ENABLE_WALLET` is in `base`, so every
   wallet change reaches every environment. One C3 (`env:default`, X3) and one S3
   (`env:t5s3pro` or `env:x4pro`).
+- **But only the C3 can be driven into an unlocked wallet from the host.**
+  `ENABLE_WALLET_TEST_CMDS` is set in `env:default` and in **no** other
+  environment, and the whole block it guards goes with it -- `WALLETPROVISION`,
+  `WALLETUNLOCK`, `WALLETLOCK`, `WALLETSTATUS`, `WALLETBENCH` and `GOTO_WALLET`
+  (`src/main.cpp`, the `#if` above `WALLETBENCH`). On an S3 those commands
+  answer nothing at all, so **every scenario below that needs an unlocked
+  wallet needs a thumb on the panel there**, and a session that cannot supply
+  one runs the locked half and says so. Measured 2026-11-28 on an X4 Pro during
+  the T-2106 pass: `CMD:WALLETSTATUS` and `CMD:GOTO_WALLET` both silent.
+  **Do not guess the board's pattern to get around it** -- ten wrong walks
+  refuse the wrap and the board then needs a re-provision (W12).
 - **Take the device lock for the whole block of device work**, not per command
   (`../../../docs/synchro.md`). **Ask before every flash.** Archive the build
   after the upload.
