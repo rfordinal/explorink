@@ -103,7 +103,9 @@ class GfxRenderer;
 // what happens if it is exceeded). The disconnect hook goes through the same
 // gate, so within that bound it and detach() cannot both run abandon(). Past
 // the bound -- a card stuck longer than kDetachWaitMs -- detach() proceeds and
-// both can; that is the price of not holding the screen on a wedged card.
+// both can. The bound was meant to keep a wedged card from holding the screen;
+// it does not, because both owners call BlePositionServer::end() next, which
+// waits for the host task without a bound (detach() in the .cpp, T-2112).
 // Without that wait, a frame that already passed the gate and is
 // blocked in file_.write() resumes into state abandon() has already reset,
 // and runs a completion pass on a file that is closed and deleted.
@@ -230,7 +232,9 @@ class MapTransferReceiver {
   // erase cycle; it does **not** cover the completion pass, which reads the
   // whole .part back to check the CRC and takes seconds on a 75 KB tile. The
   // bound is a bound, not a guarantee -- exceeding it is handled rather than
-  // waited out, because a wedged card must not wedge the UI. handleChunk's
+  // waited out, meant so a wedged card does not wedge the UI. It does not achieve
+  // that while owners call BlePositionServer::end() right after detach(): end()
+  // waits for the host task without a bound (T-2112). handleChunk's
   // active_ re-checks make a frame bail in most of that case; they do not make
   // it safe. Each is a load followed by an action, so abandon() can still land
   // between a re-check and the next file_ call, and a disconnect's abandon()

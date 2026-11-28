@@ -60,15 +60,23 @@ Both predate the gate.
   `abandon()` that lands between a re-check and the next `file_` call leaves the
   frame writing to a closed file. A disconnect's `abandon()` stuck behind
   the card can still run at the same time as `detach()`'s: two closes of one
-  file, `failed_` counted twice. That is the price of not holding the screen on a
-  stuck card.
+  file, `failed_` counted twice. The bound was meant to keep a stuck card from
+  holding the screen. **It does not**: both owners call `BlePositionServer::end()`
+  right after `detach()`, and `end()` reaches `nimble_port_stop()`, which waits
+  with `BLE_NPL_TIME_FOREVER` until the host task services the stop -- after the
+  frame in flight returns (NimBLE-Arduino,
+  `src/nimble/porting/nimble/src/nimble_port.c`). So the screen exit is held
+  anyway, and the overlap past the bound buys nothing. Read off the code, not
+  measured. Whether to drop the bound is T-2112 in the parent repo's TODO.
 - **A hook can arrive after `detach()` returned.** `BlePositionServer` copies the
   hooks under its lock and calls them after releasing it
   (`lib/BlePositionServer/src/BlePositionServer.cpp`, `onCentralDisconnect` and
   the frame path). A call copied before `setTransferHooks({})` but not yet inside
   the gate when `close()` looked reaches the receiver late, possibly after its
   owner freed it. Only the owner calling `BlePositionServer::end()` before the
-  receiver dies closes that window. `MapActivity` and `TileSyncActivity` both do.
+  receiver dies closes that window: `end()` waits for the host task without a
+  bound, so a dispatched hook has returned by the time it does.
+  `MapActivity` and `TileSyncActivity` both call it.
 
 **Verified on the host only.** No board has run a `detach()` against a frame in
 flight on purpose.

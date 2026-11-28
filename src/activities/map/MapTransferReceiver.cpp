@@ -248,7 +248,9 @@ MapTransferReceiver::~MapTransferReceiver() {
   // copied before detach() cleared the hooks, but not yet inside the gate when
   // close() looked, reaches this object after it is freed. Only the owner
   // stopping the host task (BlePositionServer::end()) before the receiver dies
-  // closes that window; both owners do today (MapActivity, TileSyncActivity).
+  // closes that window -- end() waits for the host task without a bound, so any
+  // dispatched hook has returned by then -- and both owners do today
+  // (MapActivity, TileSyncActivity).
   //
   // Only when still attached: detach() clears the server's hooks, and once this
   // receiver is detached those may belong to another receiver.
@@ -312,12 +314,20 @@ void MapTransferReceiver::detach() {
   // would just burn the CPU the frame needs to finish.
   //
   // The completion pass reads a whole tile back off the card and can outlast
-  // the bound (MapTransferReceiver.h, kDetachWaitMs). Proceeding then is
-  // deliberate: a stuck card would otherwise hold the screen on a Back press for
-  // as long as it stays stuck. handleChunk re-checks active_ after every
-  // blocking call and bails, so the frame notices. **That case is still two
-  // tasks in one transfer at once** and is not closed by this gate -- it is the
-  // price of the bound.
+  // the bound (MapTransferReceiver.h, kDetachWaitMs). Proceeding then was meant
+  // to keep a stuck card from holding the screen on a Back press. handleChunk
+  // re-checks active_ after every blocking call and usually bails, so the frame
+  // notices. **That case is still two tasks in one transfer at once** and is not
+  // closed by this gate.
+  //
+  // **The bound does not keep the screen free in practice.** Both owners call
+  // BlePositionServer::end() right after detach() (MapActivity, TileSyncActivity),
+  // and end() reaches nimble_port_stop(), which waits with BLE_NPL_TIME_FOREVER
+  // until the host task services the stop -- after the frame in flight returns
+  // (NimBLE-Arduino src/nimble/porting/nimble/src/nimble_port.c,
+  // nimble_port_stop). So a wedged card still holds the screen exit, inside
+  // end(), and the overlap past the bound buys nothing. Kept as is pending a
+  // decision (T-2112); read off the code, not measured.
   freeink::BlePositionServer::getInstance().setTransferHooks(freeink::BlePositionServer::TransferHooks{});
   const bool alone = gate_.close(kDetachWaitMs, [] { return static_cast<uint32_t>(millis()); }, [] { vTaskDelay(1); });
   if (!alone) {
