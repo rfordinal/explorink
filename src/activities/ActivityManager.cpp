@@ -32,6 +32,7 @@
 #if defined(ENABLE_WALLET) && ENABLE_WALLET
 #include "wallet/WalletActivity.h"
 #include "wallet/WalletCryptoDevice.h"
+#include "wallet/WalletEntryDecide.h"
 #include "wallet/WalletKeyStore.h"
 #include "wallet/WalletUnlockActivity.h"
 #endif
@@ -265,24 +266,26 @@ void ActivityManager::goToWebServerStation() {
 
 void ActivityManager::goToWallet(const int itemIndex, const int codeIndex) {
 #if defined(ENABLE_WALLET) && ENABLE_WALLET
-  // An encrypted tree with no key in the session cannot list anything -- the titles
-  // are inside the encrypted manifest -- so the gate comes first and carries the
-  // requested target through the unlock. A cleartext tree, and an already unlocked
-  // one, go straight to the list: a card in the field may be either
-  // (docs/wallet-crypto.md).
+  // The decision is walletEntryDecide() (WalletEntryDecide.h), which carries the
+  // why and is host tested. The short of it: a wrap in NVS means the gate,
+  // whatever the card holds -- the card used to decide, and a provisioned board
+  // with an empty card never showed the gate (T-2109).
+  //
+  // Setup, Refuse and Gate are one screen: WalletUnlockActivity re-reads the same
+  // facts in onEnter() and draws the right one, so this only picks the class.
   //
   // This is called twice per unlock and that is the design: the gate host replaces
-  // itself by calling back in here once the session has K, so the branch below
-  // picks the list the second time round (WalletUnlockActivity.h).
-  if (wallet::treeIsEncrypted() && !wallet::Session::instance().hasKey()) {
-    replaceActivity(std::make_unique<WalletUnlockActivity>(renderer, mappedInput, itemIndex, codeIndex));
-    return;
-  }
-  // A device with no wallet key and no wallet on the card: the setup offer, which
-  // is the same screen (T-2094). The card test is what keeps this narrow -- a
-  // cleartext tree still browses, because such a card exists in the field and
-  // reading it needs no key at all (docs/wallet-crypto.md).
-  if (!wallet::KeyStore::isProvisioned() && !Storage.exists(wallet::kManifestPath)) {
+  // itself by calling back in here once the session has K, so the decision picks
+  // Browse the second time round (WalletUnlockActivity.h). After that unlock an
+  // empty card draws "No wallet on the card", which is then the truth.
+  const WalletEntry entry = walletEntryDecide(wallet::KeyStore::isProvisioned(), wallet::Session::instance().hasKey(),
+                                              wallet::treeIsEncrypted(), Storage.exists(wallet::kManifestPath));
+  LOG_DBG("WALLET", "entry: %s",
+          entry == WalletEntry::Browse  ? "browse"
+          : entry == WalletEntry::Gate  ? "gate"
+          : entry == WalletEntry::Setup ? "setup"
+                                        : "refuse");
+  if (entry != WalletEntry::Browse) {
     replaceActivity(std::make_unique<WalletUnlockActivity>(renderer, mappedInput, itemIndex, codeIndex));
     return;
   }
