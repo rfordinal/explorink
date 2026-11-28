@@ -7,6 +7,7 @@
 
 #include "HalStorage.h"
 #include "MapTilePath.h"
+#include "MapTransferGate.h"
 #include "MapTransferPath.h"
 
 #if defined(ENABLE_WALLET) && ENABLE_WALLET
@@ -95,10 +96,13 @@ class GfxRenderer;
 //
 // detach() is the one exception -- it runs on the activity task and it *does*
 // write transfer state, because its whole job is to tear a transfer down. So
-// it waits the host task out first: inFrame_ says whether a frame is inside
-// the callback right now, and detach() spins on it before touching anything
-// (see detach() below for the bound and what happens if it is exceeded).
-// Without that wait, a frame that already passed the attached_ gate and is
+// it waits the host task out first through gate_ (MapTransferGate.h): a frame
+// publishes that it is inside before it checks that the receiver is attached,
+// and detach() withdraws the receiver before it checks for a frame inside, so
+// one of the two always sees the other (see detach() below for the bound and
+// what happens if it is exceeded). The disconnect hook goes through the same
+// gate, so it and detach() cannot both run abandon().
+// Without that wait, a frame that already passed the gate and is
 // blocked in file_.write() resumes into state abandon() has already reset,
 // and runs a completion pass on a file that is closed and deleted.
 //
@@ -267,9 +271,17 @@ class MapTransferReceiver {
   const char* rootDir_;
   const GfxRenderer* renderer_;
 
-  // Host task only, all of it.
+  // Host task only, all of it -- except active_, below.
   HalFile file_;
-  bool active_ = false;
+  // True while a transfer is in flight. Written by the host task and by
+  // detach()'s abandon() on the activity task, and read by both, which is why
+  // it alone of this block is atomic. Every blocking call in handleChunk is
+  // followed by a re-check of it: detach() can time out its wait and abandon
+  // the transfer underneath a frame (kDetachWaitMs), and the re-check is how the
+  // frame notices. A plain bool made that a bet that the compiler reloads the
+  // member after a call into another translation unit. seq_cst by default; it is
+  // a byte, and on neither chip is the fence measurable next to an SD write.
+  std::atomic<bool> active_{false};
   uint32_t declaredTotal_ = 0;
   uint32_t declaredCrc_ = 0;
   uint32_t received_ = 0;
@@ -335,18 +347,8 @@ class MapTransferReceiver {
   // The one thing both tasks touch. Written by publish(), read by status().
   Status snapshot_;
 
-  // Checked at the top of every frame so a frame that has not entered the
-  // callback yet when detach() ran cannot open a new file behind it. It says
-  // nothing about a frame already past that check -- inFrame_ below is for
-  // that one.
-  volatile bool attached_ = false;
-
-  // True for exactly as long as the host task is inside onFrame. Set by an
-  // RAII guard, so every return path clears it, including the ones added
-  // later by somebody who never read this comment.
-  //
-  // The handshake with detach(): release on the clear, acquire on detach()'s
-  // load, so seeing false also means every write the frame made to active_,
-  // received_, declaredTotal_ and file_ is visible to the activity task.
-  std::atomic<bool> inFrame_{false};
+  // Whether this receiver accepts work, and whether the host task is inside a
+  // callback right now. The handshake and why its orderings are seq_cst are in
+  // MapTransferGate.h, host-tested in test/map_transfer.
+  maptransfer::FrameGate gate_;
 };

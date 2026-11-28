@@ -58,22 +58,6 @@ constexpr size_t kCrcFallbackReadBufferBytes = 128;
 
 portMUX_TYPE g_mux = portMUX_INITIALIZER_UNLOCKED;
 
-// Holds MapTransferReceiver::inFrame_ true for the lifetime of the frame
-// callback, so detach() on the activity task can wait the frame out.
-//
-// A guard object rather than a set/clear pair, even though onFrame has a single
-// exit today: a clear left behind by a later early `return` would leave
-// inFrame_ stuck true, and a stuck-true flag makes every later detach() burn
-// its whole kDetachWaitMs bound and log a failure that did not happen. A
-// destructor cannot be skipped.
-struct FrameGuard {
-  std::atomic<bool>& flag;
-  explicit FrameGuard(std::atomic<bool>& f) : flag(f) { flag.store(true, std::memory_order_relaxed); }
-  ~FrameGuard() { flag.store(false, std::memory_order_release); }
-  FrameGuard(const FrameGuard&) = delete;
-  FrameGuard& operator=(const FrameGuard&) = delete;
-};
-
 #if defined(ENABLE_WALLET) && ENABLE_WALLET
 // --- The wallet's three primitives, bound to this device --------------------
 //
@@ -242,9 +226,19 @@ MapTransferReceiver::MapTransferReceiver(const char* rootDir, const GfxRenderer*
 }
 
 MapTransferReceiver::~MapTransferReceiver() {
-  // No status to send and nobody to send it to by now -- just don't leave a
-  // .part behind. detach() is the ordinary path; this is the backstop.
-  if (active_) abandon(nullptr);
+  // detach() is the ordinary path; this is the backstop, and it goes through
+  // detach() itself when the hooks are still ours. Abandoning directly from here
+  // would skip both the hook removal and the wait for a frame in flight -- safe
+  // only while every owner happens to call detach() and then
+  // BlePositionServer::end() first, which nothing here enforces (T-2104, item 4).
+  //
+  // Only when still attached: detach() clears the server's hooks, and once this
+  // receiver is detached those may belong to another receiver.
+  if (gate_.attached()) {
+    detach();
+  } else if (active_) {
+    abandon(nullptr);
+  }
 }
 
 bool MapTransferReceiver::resetCounters() {
@@ -269,41 +263,43 @@ void MapTransferReceiver::attach() {
   hooks.ctx = this;
   hooks.onFrame = &frameTrampoline;
   hooks.onDisconnect = &disconnectTrampoline;
-  attached_ = true;
+  // Open before the hooks go in, so the first frame they deliver is accepted.
+  gate_.open();
   freeink::BlePositionServer::getInstance().setTransferHooks(hooks);
 }
 
 void MapTransferReceiver::detach() {
-  // Flag first, hooks second: a frame that has not reached the attached_ check
-  // yet sees false and returns without opening anything, and clearing the
-  // hooks stops any further frame from arriving at all.
-  attached_ = false;
-  freeink::BlePositionServer::getInstance().setTransferHooks(freeink::BlePositionServer::TransferHooks{});
-
-  // A frame already *past* that check is the one that matters, and it is the
-  // normal case: a Back press mid-transfer lands here while the host task sits
-  // in file_.write() on the card. abandon() below closes file_, deletes the
-  // .part and zeroes active_/received_/declaredTotal_ -- all of it state that
-  // frame reads and writes when its write returns. Two tasks, no lock, so wait
-  // the frame out instead.
+  // Hooks off, then close the gate and wait. MapTransferGate.h has why the
+  // order inside the gate is what makes this exclusive on two cores.
+  //
+  // Clearing the hooks does not stop a call already dispatched:
+  // BlePositionServer copies the hooks under its lock and calls them after
+  // releasing it (BlePositionServer.cpp, onCentralDisconnect), so a frame or a
+  // disconnect can arrive after this line. The gate is what turns it away.
+  //
+  // A frame already *inside* is the one that matters, and it is the normal
+  // case: a Back press mid-transfer lands here while the host task sits in
+  // file_.write() on the card. abandon() below closes file_, deletes the .part
+  // and zeroes active_/received_/declaredTotal_ -- all of it state that frame
+  // reads and writes when its write returns. So wait the frame out.
   //
   // vTaskDelay, not a busy spin: this runs on the activity task, which is
   // priority 1 against the NimBLE host task's configMAX_PRIORITIES - 4
   // (nimble_port_freertos.c:44). A busy spin would still be preempted, it
   // would just burn the CPU the frame needs to finish.
-  const uint32_t waitStart = millis();
-  while (inFrame_.load(std::memory_order_acquire)) {
-    if (millis() - waitStart >= kDetachWaitMs) {
-      // The completion pass reads a whole tile back off the card and can
-      // outlast the bound (MapTransferReceiver.h, kDetachWaitMs). Proceeding
-      // is deliberate: a stuck card would otherwise hold the screen on a Back
-      // press for as long as it stays stuck. handleChunk re-checks active_
-      // after every blocking call and bails, so the frame notices.
-      LOG_ERR(kLogTag, "detach: frame still in flight after %lu ms, proceeding",
-              static_cast<unsigned long>(kDetachWaitMs));
-      break;
-    }
-    vTaskDelay(1);
+  //
+  // The completion pass reads a whole tile back off the card and can outlast
+  // the bound (MapTransferReceiver.h, kDetachWaitMs). Proceeding then is
+  // deliberate: a stuck card would otherwise hold the screen on a Back press for
+  // as long as it stays stuck. handleChunk re-checks active_ after every
+  // blocking call and bails, so the frame notices. **That case is still two
+  // tasks in one transfer at once** and is not closed by this gate -- it is the
+  // price of the bound.
+  freeink::BlePositionServer::getInstance().setTransferHooks(freeink::BlePositionServer::TransferHooks{});
+  const bool alone = gate_.close(kDetachWaitMs, [] { return static_cast<uint32_t>(millis()); }, [] { vTaskDelay(1); });
+  if (!alone) {
+    LOG_ERR(kLogTag, "detach: frame still in flight after %lu ms, proceeding",
+            static_cast<unsigned long>(kDetachWaitMs));
   }
 
   if (active_) abandon("screen closed");
@@ -315,6 +311,12 @@ void MapTransferReceiver::frameTrampoline(void* ctx, const uint8_t* data, size_t
 
 void MapTransferReceiver::disconnectTrampoline(void* ctx) {
   auto* self = static_cast<MapTransferReceiver*>(ctx);
+  // The same gate as a frame. This runs on the host task, so it never overlaps
+  // a frame; it does overlap detach() on the activity task, and without the
+  // gate both could run abandon() on one object at once -- two closes of one
+  // file_, two removes of one .part, failed_ counted twice (T-2104, item 4).
+  const maptransfer::FrameGate::Ticket ticket(self->gate_);
+  if (!ticket) return;
   if (self->active_) {
     LOG_ERR(kLogTag, "link dropped at %lu/%lu bytes, dropping %s", static_cast<unsigned long>(self->received_),
             static_cast<unsigned long>(self->declaredTotal_), self->partPath_);
@@ -328,36 +330,22 @@ void MapTransferReceiver::disconnectTrampoline(void* ctx) {
 void MapTransferReceiver::onFrame(const uint8_t* data, size_t len) {
   // What this frame is. The dispatch is arithmetic over one byte, so it lives
   // in MapTransferDecide.h with the rest of the decisions -- including the
-  // `Ignore` that returns here, before the guard below, rather than falling
-  // through to the shared tail (T-2106).
-  const maptransfer::FrameAction action = maptransfer::decideFrame(attached_, data, len);
+  // `Ignore` that returns here rather than falling through to the shared tail
+  // (T-2106).
+  //
+  // The gate comes first, before even the one-byte dispatch: a frame publishes
+  // that it is inside and only then asks whether the receiver is still
+  // attached. The old order -- read attached_, then publish inFrame_ -- let
+  // detach() on the other core of an S3 see "no frame inside" while this frame
+  // sat between the two lines, and abandon the transfer underneath it.
+  // MapTransferGate.h has the orderings (T-2104, item 2).
+  //
+  // A Ticket, not a set/clear pair: a clear left behind by a later early
+  // `return` would leave the gate stuck closed-with-a-frame-inside, and every
+  // later detach() would burn its whole kDetachWaitMs bound.
+  const maptransfer::FrameGate::Ticket ticket(gate_);
+  const maptransfer::FrameAction action = maptransfer::decideFrame(static_cast<bool>(ticket), data, len);
   if (action == maptransfer::FrameAction::Ignore) return;
-
-  // Everything below can touch transfer state, so from here on detach() must
-  // wait for this call to return. Declared before the dispatch and never
-  // cleared by hand.
-  //
-  // Today every switch case `break`s into the shared lastFrameMs_/publish()
-  // tail, so there is exactly one exit past this line -- falling off the end.
-  // The guard is still a guard and not a clear-at-the-bottom, because the next
-  // person to add an early `return` inside the switch will not come back up
-  // here to add the clear.
-  //
-  // **The gap between the attached_ read above and this store is a real hole on
-  // the S3 boards**, and this comment used to deny it. The old argument was
-  // "the ESP32-C3 is single core and the host task outranks the activity task,
-  // so the activity task cannot run between two adjacent instructions of this
-  // task". That holds on the C3 and not on `env:x4pro` or `env:t5s3pro`:
-  // `CONFIG_FREERTOS_UNICORE` is unset there and NimBLE is pinned to core 0
-  // against the Arduino task on core 1, so detach() can read `inFrame_` as
-  // false while this frame is between the two lines and proceed to abandon()
-  // underneath it.
-  //
-  // The order is also the losing one -- to exclude properly the frame would
-  // publish `inFrame_` first and re-check `attached_` after. Both belong to the
-  // transfer receiver's threading rather than to the wallet, so they are
-  // written down as T-2104 and not changed here (review, 2026-11-27).
-  FrameGuard guard(inFrame_);
 
   switch (action) {
     case maptransfer::FrameAction::Begin:
@@ -781,16 +769,8 @@ void MapTransferReceiver::handleChunk(const uint8_t* body, size_t len) {
   // failed_) into a silent bail, which is the correct answer: the screen this
   // transfer belonged to is gone.
   //
-  // A plain read of a plain bool, which is **not** as safe as this comment used
-  // to claim. "Single core" is true of the C3 and false of both S3
-  // environments: `sdkconfig.x4pro` leaves `CONFIG_FREERTOS_UNICORE` unset and
-  // pins NimBLE to core 0 against the Arduino task on core 1, so the two tasks
-  // genuinely run at once there. What the check still rests on is that each one
-  // sits directly after a call into another translation unit (HalStorage, no
-  // LTO in platformio.ini), so the compiler must reload the member -- a bet on
-  // codegen rather than a guarantee, and one build flag from not holding.
-  // `active_` should be std::atomic<bool>; that is T-2104, not this rung
-  // (review, 2026-11-27).
+  // An atomic load, so the re-check reads what the other core wrote and not a
+  // value the compiler kept in a register across the call (T-2104, item 3).
   if (!active_) return;
   received_ += payloadLen;
 
@@ -1096,7 +1076,7 @@ bool MapTransferReceiver::computePartCrc32(uint32_t& outCrc) const {
   // One-shot 4096 B heap buffer for this read loop only -- see the arithmetic
   // above kCrcReadBufferBytes. makeUniqueNoThrow, not bare new (firmware
   // CLAUDE.md, heap-discipline skill): this runs on the NimBLE host task,
-  // inside onFrame's inFrame_ window that detach() spins on, and an OOM here
+  // inside onFrame's gate_ window that detach() waits on, and an OOM here
   // must degrade, not abort() the firmware. `heapBuffer` frees itself at this
   // function's return, well before the caller sends the OK/ERR status line.
   auto heapBuffer = makeUniqueNoThrow<uint8_t[]>(kCrcReadBufferBytes);
