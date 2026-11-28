@@ -1,8 +1,10 @@
 # The sync channel: who may push a document to the device
 
-T-2098, step 1. **Status: proposed 2026-11-28, waiting for the maintainer's
-call.** Nothing here is built. The plan is `../../../docs/tasks/T-2098.md` in
-the parent repo; this file is where the decision lives once it is made.
+T-2098. **Step 1, the decision: accepted 2026-11-28** (QR in place of a compared
+number, with the three conditions below). **Step 2, the device half: built
+2026-11-28, host-verified, not yet run on a board** -- "Step 2: the device half,
+as built" at the end of this file. The plan is `../../../docs/tasks/T-2098.md`
+in the parent repo.
 
 ## The problem in one paragraph
 
@@ -370,6 +372,116 @@ older or plainer mode. There is no unencrypted fallback (invariant 2).
 
 ## Verification status
 
-Everything in this file is **read off the code or the sdkconfig**, 2026-11-28,
-or stated from protocol knowledge where marked. Nothing measured, nothing built.
-Platform claims marked `[open]` need a check before step 2 relies on them.
+Steps 1's sections are **read off the code or the sdkconfig**, 2026-11-28, or
+stated from protocol knowledge where marked. Step 2's section below is **built
+and host-tested** (vectors, a second implementation, mutants); nothing in it has
+run on a board yet. Platform claims marked `[open]` stay open.
+
+## Step 2: the device half, as built
+
+Branch `t2098-device-half`, off `wallet-viewer`, 2026-11-28.
+
+### The files
+
+| file | what |
+|---|---|
+| `src/activities/wallet/SyncNoise.h` | Noise IK and IKpsk2: the spec's CipherState, SymmetricState, HandshakeState, two token sequences. Primitives injected. |
+| `src/activities/wallet/SyncChannel.h` | The channel: frame dispatch, pairing code lifecycle, phone table, sealed in and out. Pure. The wire format is its header comment. |
+| `src/activities/wallet/SyncCryptoDevice.cpp` | The primitives on mbedtls. `CMD:SYNCSELFTEST`. |
+| `src/activities/wallet/SyncPairingStore.cpp` | NVS namespace `cpsync`: `dev_sk`, `phones`. |
+| `src/activities/wallet/WalletPairActivity.cpp` | The QR screen, opened from the last row of the wallet list. |
+| `src/activities/map/MapTransferDecide.h` | `decideWalletGates`: a wallet target outside a sealed session is refused `not paired`. |
+| `test/sync_channel/` | Host suite (OpenSSL), and `sync_channel_host` for the script below. |
+| `scripts/sync_channel_phone.py` | A phone on Python `noiseprotocol`, driving `sync_channel_host`. |
+
+### How the handshake was checked, since it is not a library
+
+The plan allowed "a named implementation or a transcript-checked one". noise-c is
+a framework (every pattern, three curves, its own crypto backends); we need two
+token sequences over primitives already linked. So `SyncNoise.h` is the
+transcript-checked option, and three independent things agree with it:
+
+1. **The published vectors.** cacophony's `vectors/cacophony.txt` (Haskell,
+   public domain) has exactly one vector each for `Noise_IK_25519_AESGCM_SHA256`
+   and `Noise_IKpsk2_25519_AESGCM_SHA256`. Both match byte for byte, both roles,
+   handshake hash and four transport messages
+   (`test/sync_channel/SyncNoiseTest.cpp`). snow's and noise-c's vector files have
+   no IKpsk2 over AESGCM/SHA256 (checked 2026-11-28).
+2. **A second implementation, live.** `scripts/sync_channel_phone.py` pairs and
+   syncs against the device's own `Channel` using Python `noiseprotocol` 0.3.1
+   (MIT). Five scenarios, all pass.
+3. **A mutant.** Dropping the psk-mode `MixKey(e)` -- the one line that makes
+   IKpsk2 differ from IK at message 1 -- fails the IKpsk2 vector and one
+   property test.
+
+### Decisions step 2 had to make
+
+1. **The pairing is stored on the first sealed frame, not on message 1.** In
+   IKpsk2 the psk enters at message 2, so a valid message 1 proves nothing about
+   the QR. The first transport message from the phone is the first thing keyed by
+   the psk. The phone sends one inner byte, `0x30 PAIRED`; the device stores the
+   key, answers `OK paired` sealed, and **closes the session** -- a sync is a
+   separate `OPEN`, so pairing never leaves a transfer-capable session behind
+   (three acts stay three).
+2. **The code is spent by the first PAIR frame, malformed or not.** Otherwise a
+   stranger could probe for free. It lives `kCodeLifetimeMs` = 90 s (a judgment;
+   revisit after the first pairing on a real phone), dies when the screen closes,
+   and `issueCode()` always draws a new secret.
+3. **A frame that does not open ends the session.** A forgery, a replay, a
+   desynchronised counter: on one ordered link with write-with-response there is
+   no benign cause.
+4. **`not paired` comes before `wallet locked`** in the receiver's ladder, so a
+   stranger cannot learn whether the wallet is open.
+5. **Four phones per device.** Full means no code is issued at all -- a code
+   that can only end in "table full" is a secret on the panel for nothing.
+6. **Forgetting.** On the pairing screen, LEFT twice forgets every phone, on the
+   device alone. `KeyStore::forgetWrap()` forgets the table and the static key
+   (invariant 5). Nothing calls `forgetWrap()` yet; T-2099 is the forget-the-wallet
+   flow that will.
+7. **When the phone cannot scan: refuse, plainly.** Phase 1 needs a camera. No
+   J-PAKE fallback is built, for the arithmetic in "Phase 1 is the QR, not a typed
+   PIN": a short typed code needs a PAKE, and the PAKE's phone half is an
+   untested interop. If the field shows glare or a refused camera permission to be
+   a real problem, the fallback is a later phase with its own plan. The app must
+   say "pairing needs the camera" rather than offer a typed code that would be
+   offline-guessable.
+8. **Status lines grew to 128 bytes** (`BlePositionServer`, `kPendingStatusBytes`):
+   a sealed line is `NXS ` plus base64 of up to 79 bytes, 112 characters.
+   +128 B DRAM, two parking slots.
+
+### What is wired and what is not
+
+- **Wired:** the receiver refuses every wallet transfer outside a session
+  (`MapTransferReceiver.cpp`, the `false` passed as `sealedSession`). Nothing
+  delivers sealed frames yet, so **every wallet push is refused `not paired`
+  today, on the map and on tile sync.** That is T-2097 rule 1 for those screens,
+  arriving early. Tiles are untouched. **The current phone app's wallet push
+  stops working on this branch** until T-2097 (the wallet screen owns BLE and
+  feeds `Channel::onFrame`) and T-174 (the phone speaks the channel).
+- **Not wired:** no BLE frame reaches a `Channel`. `WalletPairActivity` draws a
+  real code that times out unused. T-2097 attaches the transfer characteristic to
+  the wallet screen's `Channel`, and the receiver's `sealedSession` becomes "this
+  frame came out of `Channel::onFrame` as `DeliverInner`". Sealed status lines go
+  back through `Channel::sealLine()`, never plain.
+- **Parking the channel on the map to test it is forbidden** (above), so the
+  host is the whole evidence for the protocol until T-2097.
+
+### What the host cannot reach
+
+- **mbedtls.** The host binds OpenSSL. `CMD:SYNCSELFTEST` (bench builds only,
+  `ENABLE_WALLET_TEST_CMDS`) runs the IK vector's responder side through mbedtls
+  on the chip and prints `SYNCSELFTEST_OK handshake_us=... heap_free=...
+  heap_min=...`. That answers costs 1 and 2 above (heap and handshake time on a
+  C3) for the crypto alone. **Not yet run on a board.**
+- **The QR on glass.** Size, scan distance, glare. Needs a board and a phone.
+- **BLE.** MTU of at least 101 for the 98-byte PAIR/OPEN frames; indication of a
+  112-character line. Needs T-2097.
+
+### Running it
+
+```
+cmake -S test -B test/build && cmake --build test/build --target SyncChannelTest sync_channel_host
+test/build/sync_channel/SyncChannelTest
+pip install noiseprotocol
+python3 scripts/sync_channel_phone.py test/build/sync_channel/sync_channel_host
+```

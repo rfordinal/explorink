@@ -332,6 +332,8 @@ the screens, the pan design, the button map and the fullscreen machine codes.
 [`docs/wallet-crypto.md`](./docs/wallet-crypto.md) is its encryption -- the crypto
 path, the key's lifetime, and the threat boundary, which stops at "card removed" and
 explicitly does **not** cover a device in somebody's hand with a cable.
+[`docs/sync-channel.md`](./docs/sync-channel.md) is who may push a document to it:
+a phone paired once by a QR code, then a fresh Noise session per sync (T-2098).
 
 [`docs/eink-refresh-degradation.md`](./docs/eink-refresh-degradation.md) is why
 the panel refreshes badly in daylight. A refresh under a thumb came out white

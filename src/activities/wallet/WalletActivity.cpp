@@ -9,8 +9,10 @@
 #include <cstring>
 
 #include "MappedInputManager.h"
+#include "SyncPairingStore.h"
 #include "WalletCodeActivity.h"
 #include "WalletCryptoDevice.h"
+#include "WalletPairActivity.h"
 #include "WalletViewActivity.h"
 #include "activities/ActivityManager.h"
 #include "components/UITheme.h"
@@ -42,6 +44,11 @@ void WalletActivity::onEnter() {
     LOG_INF(kLogTag, "no list: error %u", static_cast<unsigned>(error_));
   }
   selected_ = 0;
+  {
+    syncchannel::PairedPhones table;
+    syncstore::loadTable(table);
+    pairedPhones_ = table.count;
+  }
   LOG_INF(kLogTag, "heap with the browse list up (%s manifest): %lu free, %lu largest block",
           wallet::treeIsEncrypted() ? "encrypted" : "cleartext", static_cast<unsigned long>(ESP.getFreeHeap()),
           static_cast<unsigned long>(ESP.getMaxAllocHeap()));
@@ -116,7 +123,21 @@ void WalletActivity::loop() {
   }
 }
 
+void WalletActivity::openPairing() {
+  LOG_INF(kLogTag, "open pairing");
+  startActivityForResult(std::make_unique<WalletPairActivity>(renderer, mappedInput), [this](const ActivityResult&) {
+    syncchannel::PairedPhones table;
+    syncstore::loadTable(table);
+    pairedPhones_ = table.count;
+    renderScreen(HalDisplay::HALF_REFRESH);
+  });
+}
+
 void WalletActivity::openSelected() {
+  if (pairRowSelected()) {
+    openPairing();
+    return;
+  }
   if (stored_ == 0) return;
   if (selected_ < 0 || selected_ >= static_cast<int>(stored_)) return;
 
@@ -342,6 +363,15 @@ void WalletActivity::drawRow(const int index, const int y, const int rowHeight) 
     renderer.fillRect(lx, y - 2, lw, rowHeight - kRowGap + 4, true);
   }
   const bool ink = !highlighted;
+
+  if (index == static_cast<int>(stored_)) {
+    char paired[48];
+    snprintf(paired, sizeof(paired), tr(STR_SYNC_PAIRED_COUNT), static_cast<int>(pairedPhones_));
+    renderer.drawText(UI_10_FONT_ID, lx + metrics.contentSidePadding / 2, y, tr(STR_SYNC_PAIR_ROW), ink,
+                      EpdFontFamily::BOLD);
+    renderer.drawText(UI_10_FONT_ID, lx + metrics.contentSidePadding / 2, y + lineHeight, paired, ink);
+    return;
+  }
 
   const wallet::ItemEntry& entry = entries_[index];
   char detail[96];

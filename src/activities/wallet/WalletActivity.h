@@ -46,7 +46,12 @@ class WalletActivity final : public Activity {
   void listRect(int& x, int& y, int& w, int& h) const;
   int visibleRowCount() const;
   int firstVisibleRow() const;
-  int rowCount() const { return static_cast<int>(stored_); }
+  // The documents, then one more row: "Pair a phone" (T-2098). Last, so a
+  // CMD:GOTO_WALLET item index still names the same document it always did, and
+  // present even with no documents -- pairing needs no manifest.
+  int rowCount() const { return static_cast<int>(stored_) + 1; }
+  bool pairRowSelected() const { return selected_ == static_cast<int>(stored_); }
+  void openPairing();
   void openSelected();
   // Steps the code ring from the browse list: `delta` +1 opens the selected item's
   // first code, -1 its last. wallet::walkCodeIndex() decides where that lands.
@@ -65,6 +70,9 @@ class WalletActivity final : public Activity {
   // refused for being built for another panel, where the message names both.
   wallet::DeclaredPanel declared_;
   uint16_t stored_ = 0;
+  // Shown on the pairing row. Read once per entry, and again after the pairing
+  // screen closes, since that is the only place the count changes.
+  uint8_t pairedPhones_ = 0;
   uint32_t seen_ = 0;
   wallet::Error error_ = wallet::Error::None;
   int selected_ = 0;

@@ -19,3 +19,12 @@ target_link_libraries(SyncChannelTest PRIVATE
 )
 
 gtest_discover_tests(SyncChannelTest)
+
+# The device half on stdin/stdout, for scripts/sync_channel_phone.py -- a phone
+# on an independent Noise implementation. A host tool, not a ctest.
+add_executable(sync_channel_host SyncChannelHost.cpp)
+target_include_directories(sync_channel_host PRIVATE
+  ${REPO_ROOT}/src/activities/wallet
+  ${CMAKE_CURRENT_SOURCE_DIR}
+)
+target_link_libraries(sync_channel_host PRIVATE OpenSSL::Crypto)

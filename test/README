@@ -14,6 +14,11 @@ Run a single suite directly:
 Google Test is fetched via CMake FetchContent on first configure; the pinned
 version lives in test/CMakeLists.txt.
 
+sync_channel covers the wallet's sync channel (T-2098): SyncNoise.h against the
+published cacophony vectors, and every refusal SyncChannel.h makes. Its
+sync_channel_host target is the device half on stdin/stdout, for
+scripts/sync_channel_phone.py -- docs/sync-channel.md, "Running it".
+
 map_transfer covers the BLE transfer receiver's decisions -- the frame parse,
 the begin refusal ladder and the chunk state machine, lifted out of
 MapTransferReceiver.cpp so the host can reach them at all. A new refusal or gate
