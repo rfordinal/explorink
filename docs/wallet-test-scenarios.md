@@ -34,6 +34,9 @@ report says "W7 failed" and that has to mean the same thing next month.
   the pattern gate cannot be opened by anything, and a board nobody recorded a
   pattern for is the same problem. **Do not guess one** -- ten wrong walks
   refuse the wrap and the board then needs a re-provision (W12).
+  **A bench board's pattern is recorded in the parent repo's
+  `tools/devices.json`** (field `wallet`), which is private; never in this repo,
+  which is public. A board missing from it has an unknown pattern.
 - **A provisioned board shows the gate whatever its card holds** (T-2109,
   `walletEntryDecide()` in `src/activities/wallet/WalletEntryDecide.h`). Before
   that fix the card decided: a provisioned board with an empty card drew "No
@@ -244,9 +247,22 @@ it, so one process holds the port for the whole run.
 | W22 | `OK 74812 37a63be3` |
 | gate | 74,812 B push, `CMD:BUTTON back` 5 s in: `transfer failed: screen closed`, no reset; no `.part` and no file afterwards |
 
-**Not run:** W44, W14 and W16 on the C3, which need its key. Getting one means
-re-provisioning the X3 (`CMD:WALLETPROVISION force`), which destroys its current
-wallet -- the maintainer's call.
+**Then with a key, on `fe69ac89` plus T-2112 (`detach()` waits without a bound).**
+The X3 was re-provisioned with `CMD:WALLETPROVISION ... force` (maintainer's call,
+2026-11-28) and unlocked with `CMD:WALLETUNLOCK`.
+
+| # | Result |
+|---|---|
+| W27 | `OK 2652 1d900447`, `sealed manifest installed` |
+| W14 | `OK 52304 dbc8ea61` |
+| W15 | the card's copy pulled over `GET /download` and decrypted with K and the content IV: payload byte-identical to the 52,272 B sent, `sha256[0:8]` matches the header, and only `flags` changed (`00` to `03`) |
+| W44 | 585,750 B asset, `CMD:WALLETLOCK` 6 s into the push: `ERR encrypt failed`; `wallet/5a/` empty afterwards |
+| gate | same asset, `CMD:BUTTON back` 6 s in: `transfer failed: screen closed`, no reset |
+| W23 / W16 | the list, then the W14 page drawn: 792x528, 2,497 ms |
+
+The same build on `t5s3pro-b` repeated W44 and the screen-close case with the
+same results. Neither run logged `detach: frame still in flight`, so no frame
+was inside for 500 ms when the screen closed.
 
 ### S3: `t5s3pro-b`, 2026-11-28 (T-2108)
 
