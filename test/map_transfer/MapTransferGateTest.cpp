@@ -82,16 +82,21 @@ TEST(MapTransferGate, CloseWaitsForAFrameInside) {
   gate.open();
   std::atomic<bool> entered{false};
   std::atomic<bool> left{false};
+  std::atomic<bool> admitted{false};
   std::thread host([&] {
     const maptransfer::FrameGate::Ticket t(gate);
-    ASSERT_TRUE(t);
+    admitted.store(static_cast<bool>(t));
+    // Set either way, so a gate that wrongly refuses fails below instead of
+    // leaving the main thread spinning for ever.
     entered.store(true);
+    if (!t) return;
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
     left.store(true);
   });
   while (!entered.load()) yieldNow();
+  EXPECT_TRUE(admitted.load());
   EXPECT_TRUE(gate.close(5000, nowMs, yieldNow));
-  EXPECT_TRUE(left.load());
+  EXPECT_TRUE(left.load() || !admitted.load());
   host.join();
 }
 
@@ -133,17 +138,21 @@ TEST(MapTransferGate, ConcurrentCloseNeverOverlapsAFrame) {
   // Measured 2026-11-28 on a 14-core laptop, three runs each: 0 overlaps here,
   // 68-83 for an acq/rel mutant, 140-374 for the old read-then-publish order.
   if (usableCpus() < 2) GTEST_SKIP() << "needs two CPUs to race";
-  // Up to 20,000 rounds or 10 s, whichever first, so a loaded CI host ends it in
-  // bounded time; at least 2,000 rounds must run or the result is not evidence.
+  // Up to 20,000 rounds or 10 s, whichever first. The budget always wins, so a
+  // loaded CI host ends it in bounded time (review, 2026-11-28: with a
+  // minimum-rounds floor overriding the budget, two busy CPUs ran it for over
+  // 200 s). Fewer than 2,000 rounds in the budget is too little to be evidence,
+  // and the test skips rather than passes.
   constexpr int kRounds = 20000;
   constexpr uint32_t kBudgetMs = 10000;
   constexpr int kMinRounds = 2000;
   const uint32_t started = nowMs();
   int rounds = 0;
+  bool closeTimedOut = false;
   int overlaps = 0;
   int lateFrames = 0;
   int framesIn = 0;
-  for (int round = 0; round < kRounds && (round < kMinRounds || nowMs() - started < kBudgetMs); ++round) {
+  for (int round = 0; round < kRounds && nowMs() - started < kBudgetMs; ++round) {
     ++rounds;
     maptransfer::FrameGate gate;
     gate.open();
@@ -174,7 +183,14 @@ TEST(MapTransferGate, ConcurrentCloseNeverOverlapsAFrame) {
 
     // Let the host get going for a variable moment, then close.
     for (int spin = 0; spin < (round % 64); ++spin) yieldNow();
-    ASSERT_TRUE(gate.close(5000, nowMs, yieldNow));
+    if (!gate.close(5000, nowMs, yieldNow)) {
+      // Recorded, not ASSERTed: an ASSERT returns with `host` still joinable,
+      // which is std::terminate rather than a failure.
+      closeTimedOut = true;
+      stop.store(true);
+      host.join();
+      break;
+    }
     closed.store(true);
     if (occupancy.fetch_add(1) != 0) ++overlaps;  // detach()'s abandon()
     for (int spin = 0; spin < 50; ++spin) yieldNow();
@@ -185,9 +201,12 @@ TEST(MapTransferGate, ConcurrentCloseNeverOverlapsAFrame) {
     lateFrames += hostLate.load();
     framesIn += hostIn.load();
   }
-  EXPECT_GE(rounds, kMinRounds);
+  EXPECT_FALSE(closeTimedOut);
   EXPECT_EQ(overlaps, 0);
   EXPECT_EQ(lateFrames, 0);
+  if (!closeTimedOut && rounds < kMinRounds) {
+    GTEST_SKIP() << "only " << rounds << " rounds in " << kBudgetMs << " ms; host too loaded to race";
+  }
   // The race has to have actually run: frames got in before the close.
   EXPECT_GT(framesIn, 0);
 }

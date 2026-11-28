@@ -281,8 +281,8 @@ class MapTransferReceiver {
   // followed by a re-check of it: detach() can time out its wait and abandon
   // the transfer underneath a frame (kDetachWaitMs), and the re-check is how the
   // frame notices. A plain bool made that a bet that the compiler reloads the
-  // member after a call into another translation unit. seq_cst by default; it is
-  // a byte, and on neither chip is the fence measurable next to an SD write.
+  // member after a call into another translation unit. seq_cst by default; the
+  // cost of its fences next to an SD write has not been measured.
   std::atomic<bool> active_{false};
   uint32_t declaredTotal_ = 0;
   uint32_t declaredCrc_ = 0;
@@ -351,6 +351,7 @@ class MapTransferReceiver {
 
   // Whether this receiver accepts work, and whether the host task is inside a
   // callback right now. The handshake and why its orderings are seq_cst are in
-  // MapTransferGate.h, host-tested in test/map_transfer.
+  // MapTransferGate.h, host-tested in test/map_transfer;
+  // docs/transfer-receiver-threading.md has what it does not close.
   maptransfer::FrameGate gate_;
 };

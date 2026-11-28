@@ -15,14 +15,17 @@
 // out, or detach sees inFrame_ true and waits. Never both missing each other.
 //
 // **Why seq_cst and not release/acquire.** This is a store followed by a load of
-// a *different* variable on each side -- Dekker's shape. Release/acquire orders
-// a store against later stores and a load against later loads; it does not stop
-// a store being overtaken by a later load. Under acq/rel both sides may read the
-// other flag's old value, and the frame runs while detach() tears down under it.
-// Only seq_cst forbids that (C++20 [atomics.order], the single total order S).
-// The plan for T-2104 asked for release/acquire; that is not enough for this
-// pattern, and the host test MapTransferGate.ConcurrentCloseNeverOverlapsAFrame
-// is there to catch it.
+// a *different* variable on each side -- Dekker's shape. A release store keeps
+// earlier accesses before it, and an acquire load keeps later accesses after it;
+// neither stops a later load from being performed before an earlier store. Under
+// acq/rel both sides may read the other flag's old value, and the frame runs
+// while detach() tears down under it. Only seq_cst forbids that (C++20
+// [atomics.order], the single total order S). The plan for T-2104 asked for
+// release/acquire; that is not enough for this pattern, and the host test
+// MapTransferGate.ConcurrentCloseNeverOverlapsAFrame is there to catch it.
+//
+// docs/transfer-receiver-threading.md has the measurement and what the gate does
+// not close.
 //
 // **The order used to be the losing one.** onFrame read attached_ first and
 // published inFrame_ after, and detach() wrote attached_ then read inFrame_. On a
