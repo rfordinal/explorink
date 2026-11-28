@@ -521,13 +521,17 @@ TEST(WalletIngest, ACipherThatFailsMidTransferEndsIt) {
   EXPECT_EQ(status, wallet::IngestStatus::CipherFailed);
 }
 
-TEST(WalletIngest, AWalletLockedMidTransferAbandonsInsteadOfSealingWrong) {
-  // T-2104, item 1, with the device's own shape: the cipher borrows the key
-  // from a KeySlot per chunk, exactly as walletCipher() in
-  // MapTransferReceiver.cpp does, and the slot is cleared part-way through.
-  // The transfer must end with CipherFailed -- which the receiver turns into
-  // abandon(), deleting the part file -- and every byte written before that
-  // must have been enciphered under the whole key, never a partly wiped one.
+TEST(WalletIngest, AWalletLockedMidTransferEndsWithCipherFailed) {
+  // T-2104, item 1, with the device's borrow shape: the cipher takes a KeyCopy
+  // from a KeySlot per call, as walletCipher() in MapTransferReceiver.cpp does,
+  // and the slot is cleared part-way through. The sealer must end with
+  // CipherFailed (the receiver turning that into abandon() is read off its code,
+  // not run here), and the bytes written before it must decrypt back under the
+  // real key.
+  //
+  // Single-threaded, so the clear lands between borrows and can never tear one:
+  // the decrypt-back check guards the sealer's offsets across a failed call, not
+  // the race. The race is WalletKeySlot.ACopyIsNeverTornByAConcurrentClear.
   struct SlotCipher {
     wallet::KeySlot<std::mutex>* slot = nullptr;
     size_t chunks = 0;

@@ -106,15 +106,15 @@ struct FrameGuard {
 // wipes it when this returns (WalletKeySlot.h). A lock that lands mid-transfer
 // makes the *next* call refuse, the sealer ends with CipherFailed, and the
 // receiver abandons without the rename (WalletAssetIngest.h). The host test
-// `WalletIngest.AWalletLockedMidTransferAbandonsInsteadOfSealingWrong` drives
-// the sealer with this same borrow against a slot cleared mid-transfer; it does
-// not drive this function or the receiver's abandon, which rest on reading the
-// code above and below.
+// `WalletIngest.AWalletLockedMidTransferEndsWithCipherFailed` drives the sealer
+// with this same borrow against a slot cleared mid-transfer; it does not drive
+// this function or the receiver's abandon, which rest on reading the code above
+// and below.
 //
-// Called per sealer scratch block (at most 512 B, WalletAssetIngest.h), not per
-// BLE chunk, so a large chunk borrows more than once. Cost per call is a 32-byte
-// copy and a 32-byte wipe against AES over up to 512 bytes. Not measured; a
-// claim of "free" would need a timing.
+// Called per sealer scratch block of at most 512 B (WalletAssetIngest.h). The
+// largest BLE chunk at any MTU is 509 B, so in practice once per chunk. Cost per
+// call is a 32-byte copy and a 32-byte wipe against AES over the same block. Not
+// measured; a claim of "free" would need a timing.
 //
 // `ctx` is unused and stays in the signature because the sealer's callback
 // contract is shared with the host tests, which do bind a key to it.
