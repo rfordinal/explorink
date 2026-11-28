@@ -118,9 +118,11 @@ void countCardAssets(uint16_t& assets, uint16_t& codes);
 // indexed from the first byte of the payload. Getting that one wrong decrypts to
 // noise 32 bytes out of phase, which looks like a wrong key.
 //
-// `key` null means the asset is cleartext. `dest` rows are `destRowBytes` apart,
-// which is the panel's stride; `srcRowBytes` is the image's, which is larger.
-bool readPlaneWindow(HalFile& file, const uint8_t* key, const uint8_t iv[kAssetIvLen], uint32_t planeBase,
+// `encrypted` false means the asset is cleartext and no key is touched. True
+// borrows the session key per row, after that row's read; a lock between rows
+// ends with Error::Locked. `dest` rows are `destRowBytes` apart, which is the
+// panel's stride; `srcRowBytes` is the image's, which is larger.
+bool readPlaneWindow(HalFile& file, bool encrypted, const uint8_t iv[kAssetIvLen], uint32_t planeBase,
                      uint32_t srcRowBytes, uint32_t xByte, uint32_t y, uint32_t rows, uint8_t* dest,
                      uint32_t destRowBytes, Error& error);
 

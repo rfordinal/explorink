@@ -1,0 +1,253 @@
+// The wallet key's holder and the one way out of it -- T-2104, item 1.
+//
+// What these tests are for: the **contract** a caller relies on. A copy is the
+// whole key or nothing, a copy after clear() fails, and a KeyCopy wipes what it
+// held. The two sealer tests that prove a failing copy ends a transfer rather
+// than finishing it wrong sit next to the sealers they drive
+// (WalletIngestTest.cpp, WalletManifestSealTest.cpp).
+//
+// The host binds the lock to std::mutex; the device binds a portMUX spinlock
+// (WalletCryptoDevice.h). So the race test below proves KeySlot takes its lock
+// around every touch of the bytes. It cannot prove that portENTER_CRITICAL is
+// exclusive across an S3's two cores -- that is ESP-IDF's claim, not ours.
+
+#include <gtest/gtest.h>
+
+#include <atomic>
+#include <chrono>
+#include <cstring>
+#include <mutex>
+#include <new>
+#include <thread>
+
+#include "WalletKeySlot.h"
+
+#if defined(__linux__)
+#include <sched.h>
+#endif
+
+namespace {
+
+// CPUs this process may actually run on; hardware_concurrency() ignores
+// affinity, so under `taskset -c 0` it still reports every core. Same helper as
+// test/map_transfer/MapTransferGateTest.cpp.
+unsigned usableCpus() {
+#if defined(__linux__)
+  cpu_set_t set;
+  if (sched_getaffinity(0, sizeof(set), &set) == 0) return static_cast<unsigned>(CPU_COUNT(&set));
+#endif
+  return std::thread::hardware_concurrency();
+}
+
+using HostSlot = wallet::KeySlot<std::mutex>;
+
+void fillKey(uint8_t out[wallet::kWalletKeyLen], uint8_t seed) {
+  // No zero byte anywhere, so a partial wipe always shows up as a zero.
+  for (size_t i = 0; i < wallet::kWalletKeyLen; ++i) out[i] = static_cast<uint8_t>(seed + i) | 0x01u;
+}
+
+bool allZero(const uint8_t* p, size_t len) {
+  for (size_t i = 0; i < len; ++i)
+    if (p[i] != 0) return false;
+  return true;
+}
+
+}  // namespace
+
+TEST(WalletKeySlot, AnEmptySlotRefusesAndZeroesTheOutput) {
+  HostSlot slot;
+  uint8_t out[wallet::kWalletKeyLen];
+  std::memset(out, 0xAA, sizeof(out));
+  EXPECT_FALSE(slot.has());
+  EXPECT_FALSE(slot.copyKey(out));
+  // A caller that ignored the return would hold zeros, not stale bytes from a
+  // buffer it reused.
+  EXPECT_TRUE(allZero(out, sizeof(out)));
+}
+
+TEST(WalletKeySlot, CopyReturnsTheKeyThatWasSet) {
+  HostSlot slot;
+  uint8_t key[wallet::kWalletKeyLen];
+  fillKey(key, 7);
+  slot.set(key);
+  uint8_t out[wallet::kWalletKeyLen] = {0};
+  EXPECT_TRUE(slot.has());
+  ASSERT_TRUE(slot.copyKey(out));
+  EXPECT_EQ(std::memcmp(out, key, sizeof(key)), 0);
+}
+
+TEST(WalletKeySlot, CopyFailsAfterClear) {
+  // The plan's done test, in its plainest form.
+  HostSlot slot;
+  uint8_t key[wallet::kWalletKeyLen];
+  fillKey(key, 7);
+  slot.set(key);
+  EXPECT_TRUE(slot.clear());
+  EXPECT_FALSE(slot.has());
+  uint8_t out[wallet::kWalletKeyLen];
+  std::memset(out, 0xAA, sizeof(out));
+  EXPECT_FALSE(slot.copyKey(out));
+  EXPECT_TRUE(allZero(out, sizeof(out)));
+  // A second clear has nothing to wipe, which is what Session::clear() logs on.
+  EXPECT_FALSE(slot.clear());
+}
+
+TEST(WalletKeySlot, ACopyTakenBeforeClearSurvivesIt) {
+  // The point of a copy over a pointer: clear() wipes the slot, not what a
+  // caller already borrowed for the chunk it is enciphering.
+  HostSlot slot;
+  uint8_t key[wallet::kWalletKeyLen];
+  fillKey(key, 7);
+  slot.set(key);
+  const wallet::KeyCopy borrowed(slot);
+  ASSERT_TRUE(borrowed);
+  slot.clear();
+  EXPECT_EQ(std::memcmp(borrowed.bytes(), key, sizeof(key)), 0);
+  // And the next borrow is refused.
+  const wallet::KeyCopy next(slot);
+  EXPECT_FALSE(next);
+  EXPECT_EQ(next.bytes(), nullptr);
+}
+
+TEST(WalletKeySlot, TheGenerationSaysWhichKeyItWas) {
+  // A borrow that succeeds is not the same key as the last one. Locked,
+  // re-provisioned and unlocked between two chunks, the sealer must see the
+  // difference (MapTransferReceiver.cpp, walletCipher).
+  HostSlot slot;
+  uint8_t a[wallet::kWalletKeyLen];
+  uint8_t b[wallet::kWalletKeyLen];
+  fillKey(a, 7);
+  fillKey(b, 40);
+  slot.set(a);
+  const wallet::KeyCopy first(slot);
+  const wallet::KeyCopy again(slot);
+  ASSERT_TRUE(first);
+  EXPECT_EQ(first.generation(), again.generation());
+  // The number alone, without a copy, names the same key -- the receiver reads
+  // it this way at begin.
+  EXPECT_EQ(slot.generation(), first.generation());
+
+  // clear() alone moves it: a borrow that finds the slot empty and then the
+  // same generation again later would be naming a key that was wiped.
+  const uint32_t beforeClear = slot.generation();
+  slot.clear();
+  EXPECT_NE(slot.generation(), beforeClear);
+  slot.set(b);
+  const wallet::KeyCopy later(slot);
+  ASSERT_TRUE(later);
+  EXPECT_NE(later.generation(), first.generation());
+
+  // A set() over a key still held moves it too, with no clear() between --
+  // each check above has a clear() in front of its set(), and clear() alone
+  // would move the counter (review round 7, 2026-11-28).
+  slot.set(a);
+  const wallet::KeyCopy overHeld(slot);
+  ASSERT_TRUE(overHeld);
+  EXPECT_NE(overHeld.generation(), later.generation());
+
+  // Even the same bytes set again count as a new key: the slot cannot tell a
+  // re-unlock from a re-provision, and the sealer must not have to.
+  slot.set(a);
+  const wallet::KeyCopy same(slot);
+  EXPECT_NE(same.generation(), overHeld.generation());
+}
+
+TEST(WalletKeySlot, ClearWipesTheBytesNotJustTheFlag) {
+  // A clear() that only dropped the flag would pass every test above: no
+  // borrow can reach the bytes afterwards. The wipe is the point of a lock --
+  // the RAM is what a device in someone else's hands keeps (review round 9,
+  // 2026-11-28). Built in raw storage and searched for the key's bytes, so the
+  // test needs no access to the slot's members and no knowledge of its layout.
+  uint8_t key[wallet::kWalletKeyLen];
+  fillKey(key, 7);
+  alignas(HostSlot) unsigned char storage[sizeof(HostSlot)];
+  std::memset(storage, 0, sizeof(storage));
+  auto* slot = new (storage) HostSlot();
+  const auto holdsKey = [&] {
+    for (size_t at = 0; at + sizeof(key) <= sizeof(storage); ++at)
+      if (std::memcmp(storage + at, key, sizeof(key)) == 0) return true;
+    return false;
+  };
+  slot->set(key);
+  // The search must be able to find it, or the check below proves nothing.
+  ASSERT_TRUE(holdsKey());
+  slot->clear();
+  EXPECT_FALSE(holdsKey());
+  slot->~HostSlot();
+}
+
+TEST(WalletKeySlot, AKeyCopyWipesItselfOnScopeExit) {
+  // Read through placement storage, so the bytes are inspected after the
+  // destructor without touching an object whose lifetime ended.
+  HostSlot slot;
+  uint8_t key[wallet::kWalletKeyLen];
+  fillKey(key, 7);
+  slot.set(key);
+  alignas(wallet::KeyCopy) unsigned char storage[sizeof(wallet::KeyCopy)];
+  auto* copy = new (storage) wallet::KeyCopy(slot);
+  ASSERT_TRUE(*copy);
+  const auto* bytes = reinterpret_cast<const uint8_t*>(storage);
+  EXPECT_FALSE(allZero(bytes, wallet::kWalletKeyLen));
+  copy->~KeyCopy();
+  EXPECT_TRUE(allZero(bytes, wallet::kWalletKeyLen));
+}
+
+TEST(WalletKeySlot, ACopyIsNeverTornByAConcurrentClear) {
+  // The race from the review: one thread locks and unlocks the wallet as fast as
+  // it can, the other borrows the key as fast as it can. Every borrow must be
+  // either the whole key or a refusal -- never the half-zeroed key that the old
+  // pointer accessor could hand mbedtls on a dual-core board.
+  //
+  // **Needs two CPUs to be evidence.** On one CPU a torn copy needs the locker
+  // to be preempted mid-copy, which is rare: a copy without its lock passed 4 of
+  // 5 runs there (review, 2026-11-28, `taskset -c 0`). Skipped rather than
+  // passed.
+  if (usableCpus() < 2) GTEST_SKIP() << "needs two CPUs to race";
+  HostSlot slot;
+  uint8_t key[wallet::kWalletKeyLen];
+  fillKey(key, 7);
+  std::atomic<bool> stop{false};
+  // Two lockers, not one. With one, a set() never runs while its own clear() is
+  // still wiping, so a wipe moved outside the lock passed this test (mutation
+  // run, 2026-11-28, `scripts/mutation_check.py`): a set() landing before that
+  // late wipe leaves zeros in the slot with the flag up.
+  const auto lockLoop = [&] {
+    while (!stop.load()) {
+      slot.set(key);
+      slot.clear();
+    }
+  };
+  std::thread locker(lockLoop);
+  std::thread locker2(lockLoop);
+
+  size_t whole = 0;
+  size_t refused = 0;
+  size_t torn = 0;
+  // At least one second and 200,000 borrows, and on until both outcomes were
+  // seen -- a host that schedules the locker late must not turn this into a
+  // vacuous pass. A count alone was not enough: a copy moved out of the lock
+  // (the has_ check still inside it) survived 5 of 30 runs on a loaded 14-core
+  // host at 200,000 borrows (review, 2026-11-28). The cap keeps it bounded.
+  const auto started = std::chrono::steady_clock::now();
+  const auto elapsed = [&] { return std::chrono::steady_clock::now() - started; };
+  for (long i = 0; i < 50000000 && (i < 200000 || elapsed() < std::chrono::seconds(1) || whole == 0 || refused == 0);
+       ++i) {
+    const wallet::KeyCopy borrowed(slot);
+    if (!borrowed) {
+      ++refused;
+    } else if (std::memcmp(borrowed.bytes(), key, sizeof(key)) == 0) {
+      ++whole;
+    } else {
+      ++torn;
+    }
+  }
+  stop.store(true);
+  locker.join();
+  locker2.join();
+
+  EXPECT_EQ(torn, 0u);
+  // Both outcomes have to have actually happened, or the test proved nothing
+  // about the interleaving it claims to cover.
+  EXPECT_GT(whole, 0u);
+  EXPECT_GT(refused, 0u);
+}

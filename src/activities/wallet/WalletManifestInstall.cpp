@@ -95,13 +95,14 @@ ManifestInstallStatus finishManifestInstall() {
       why = "no memory to read it back";
     } else if (error == Error::Locked || !Session::instance().hasKey()) {
       // The second half of that test is not belt and braces. `Error::Locked`
-      // only comes out when the key was already gone at the top of the read; a
-      // lock landing a moment later, **inside** the GCM decrypt, surfaces as a
-      // tag mismatch -- which would otherwise be reported as "wrong key, or the
+      // comes out when the key was gone at the top of the read or at the
+      // borrow right before the decrypt. A lock after that borrow does not
+      // touch the decrypt -- it runs on a copy (WalletKeySlot.h) -- so the read
+      // succeeds and this branch is not reached. Any other failure with no key
+      // in the session by the time we are standing here is still best
+      // explained by the lock, and must not be reported as "wrong key, or the
       // wallet list was altered" about a file this device had just written
-      // correctly. If the session has no key by the time we are standing here,
-      // that is the explanation, whatever the read called it (review,
-      // 2026-11-27).
+      // correctly (review, 2026-11-27; borrow by copy since T-2104).
       status = ManifestInstallStatus::Locked;
       why = "the wallet locked while it was being written";
     }

@@ -16,8 +16,10 @@ constexpr const char* kLogTag = "WALLETCRY";
 
 // The block-encrypt callback ctrXorInPlace() drives. One AES-ECB block, which on
 // the C3 is the hardware accelerator through mbedtls.
-void encryptBlock(void* ctx, const uint8_t in[kAesBlockLen], uint8_t out[kAesBlockLen]) {
-  mbedtls_aes_crypt_ecb(static_cast<mbedtls_aes_context*>(ctx), MBEDTLS_AES_ENCRYPT, in, out);
+// Its return is the whole point: the DMA driver zeroises `out` and returns -1 on
+// a failure (WalletCrypto.h, BlockEncrypt), and a zero keystream is plaintext.
+bool encryptBlock(void* ctx, const uint8_t in[kAesBlockLen], uint8_t out[kAesBlockLen]) {
+  return mbedtls_aes_crypt_ecb(static_cast<mbedtls_aes_context*>(ctx), MBEDTLS_AES_ENCRYPT, in, out) == 0;
 }
 
 }  // namespace
@@ -36,9 +38,10 @@ bool ctrDecryptInPlace(const uint8_t key[kWalletKeyLen], const uint8_t iv[kAsset
     LOG_ERR(kLogTag, "AES setkey failed");
     return false;
   }
-  ctrXorInPlace(encryptBlock, &aes, iv, offset, data, len);
+  const bool ok = ctrXorInPlace(encryptBlock, &aes, iv, offset, data, len);
   mbedtls_aes_free(&aes);
-  return true;
+  if (!ok) LOG_ERR(kLogTag, "AES block failed; %u bytes left unusable", static_cast<unsigned>(len));
+  return ok;
 }
 
 GcmResult gcmDecryptInPlace(const uint8_t key[kWalletKeyLen], const uint8_t* nonce, const size_t nonceLen,
@@ -178,17 +181,16 @@ Session& Session::instance() {
 
 void Session::setKey(const uint8_t key[kWalletKeyLen]) {
   if (key == nullptr) return;
-  std::memcpy(key_, key, kWalletKeyLen);
-  hasKey_ = true;
+  slot_.set(key);
   lastTouchMs_ = millis();
   LOG_INF(kLogTag, "wallet unlocked; key held for %u s of idle", static_cast<unsigned>(kIdleTimeoutMs / 1000));
 }
 
 void Session::clear(const char* reason) {
-  if (hasKey_) LOG_INF(kLogTag, "wallet locked (%s)", reason != nullptr ? reason : "?");
-  secureWipe(key_, sizeof(key_));
-  hasKey_ = false;
+  // Logged after the wipe, not before: the log is slow and the wipe is the point.
+  const bool had = slot_.clear();
   lastTouchMs_ = 0;
+  if (had) LOG_INF(kLogTag, "wallet locked (%s)", reason != nullptr ? reason : "?");
   // The retry gate is deliberately NOT reset: locking must not be a way to clear a
   // delay the rate limiter is enforcing.
 }
@@ -198,7 +200,7 @@ void Session::touch() { lastTouchMs_ = millis(); }
 uint32_t Session::retryWaitMs() const { return retry_.waitMs(millis()); }
 
 uint32_t Session::idleLeftMs() const {
-  if (!hasKey_) return 0;
+  if (!hasKey()) return 0;
   const uint32_t gone = millis() - lastTouchMs_;
   return gone >= kIdleTimeoutMs ? 0 : kIdleTimeoutMs - gone;
 }
@@ -222,7 +224,7 @@ void Session::armRetryDelay(const uint8_t failures) {
 }
 
 bool Session::expireIfIdle() {
-  if (!hasKey_) return false;
+  if (!hasKey()) return false;
   // millis() wraps after 49 days; the subtraction is unsigned, so a wrap makes the
   // difference large and the key dies early. Erring towards locked is the right
   // direction for this particular bug.

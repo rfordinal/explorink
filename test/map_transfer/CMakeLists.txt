@@ -1,5 +1,8 @@
 add_executable(MapTransferTest
   MapTransferDecideTest.cpp
+  # The host-task/activity-task handshake (T-2104). Header-only, two real
+  # threads; the device binds the same gate to millis() and vTaskDelay.
+  MapTransferGateTest.cpp
 )
 
 # MapTransferDecide.h and MapTransferPath.h only. Both are header-only and pure

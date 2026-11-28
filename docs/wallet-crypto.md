@@ -499,13 +499,14 @@ of an uppercase path was done on the C3 above, and the arithmetic is chip
 independent; the S3 evidence after the fix is the plaintext-CRC reply and the
 refusals, not a decrypt.
 
-**And one thing nothing on the bench can reach**: the wallet locking *during* a
+**And one thing this run could not reach**: the wallet locking *during* a
 transfer, which is what `walletCipher()` re-reading the key per chunk protects
-against. Locking needs the serial console, opening the serial port resets the
-board, and a reset ends the transfer -- so there is no way to lock mid-push from
-here. It is covered by the host test (`ACipherThatFailsMidTransferEndsIt`) and
-by reading `Session::clear()`, and that is all it is covered by. A second control
-channel would settle it.
+against. Locking needs the serial console, and the tool used here reset the board
+when it opened the port, which ends the transfer. Since T-2104 it is covered by
+host tests (`WalletKeySlot.*`, `WalletIngest.AWalletLockedMidTransferEndsWithCipherFailed`,
+`WalletIngest.ADifferentKeyMidTransferEndsWithCipherFailed`) and by W44, a C3-only
+regression check not yet run (`wallet-test-scenarios.md`, which says what is open
+about reaching the console mid-push).
 
 **An incidental confirmation.** The T5's gate accepted the walk and the wallet
 screen then said "Wrong key, or the wallet list was altered" -- its card still
@@ -871,6 +872,146 @@ and the wrap is AES-256-GCM over K under that KEK (`WalletKeyStore.cpp`).
   release build may drop it, which is exactly how a key survives a "zeroize"; a
   destructor is a promise about a code path, and the sleep path is not one to make
   promises about.
+
+### How a caller borrows K
+
+**By copy, for one unit of work, and never by pointer.** K lives in
+`wallet::KeySlot` (`src/activities/wallet/WalletKeySlot.h`), held by `Session`.
+There are two ways in and no third:
+
+- `Session::hasKey()` -- a hint, read off the lock. For a gate that decides
+  whether to start (the receiver's wallet gate, the read path's "locked" check
+  before it opens a file). It can be stale by the time the caller acts.
+- `wallet::KeyCopy key(Session::instance())` -- 32 bytes copied under the same
+  critical section `clear()` takes, so the copy is the whole key or a refusal,
+  never part of one. Wiped by the destructor when it leaves scope.
+
+**One copy, one crypto call.** The copy is taken right before the call and dies
+right after it (a failing primitive's own `LOG_ERR` runs inside that window; logs
+go to serial and the RAM ring, never to the card as bytes of the key): one sealer block of a transfer, at most 512 B (`walletCipher()`;
+the largest BLE chunk at any MTU is 509 B, `WalletAssetIngest.h`, so one borrow
+per chunk), one manifest seal (`walletSealManifest()`), one manifest decrypt
+(`feedEncryptedManifestAt()`, after the card read), one row of a page window or
+grey band (`readPlaneWindow()`, after that row's card read), one whole-screen
+decrypt (`readWholeScreen()`, before the hash check). The next call borrows
+again.
+
+Two reasons for that tightness, and one place it does not reach:
+
+- **Never across a transfer.** A `KeyCopy` held across a whole transfer would
+  bring back the bug it replaced, one level up: a key that survives a lock.
+- **Never across a card read or write.** On a C3 a panic copies 1 KB of the
+  faulting task's stack into RTC memory, and the next boot writes it as hex to
+  `/crash_report.txt` on the card (`lib/hal/HalSystem.cpp`,
+  `__wrap_panic_print_backtrace` and `checkPanic()`). A destructor does not run on
+  a panic. A copy alive while a card fault panics is a key written to the card in
+  the clear, which is the one thing the wallet promises the card never holds.
+  Security review, 2026-11-28. The window cannot be zero: mbedtls's own AES
+  context holds the key on the stack for the length of the call, as it did before
+  T-2104. The S3 writes no stack to the card (`#if !__riscv`).
+- **The flash core dump is a different place, and it is inside the boundary.**
+  `CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH=y` in ELF format (the framework's prebuilt
+  `framework-arduinoespressif32-libs/<chip>/sdkconfig`, both `esp32c3` and
+  `esp32s3`, read 2026-11-28; partition `coredump` at `0xFF0000`,
+  `partitions.csv`; boards write it, `crash-reporting.md`)
+  saves task stacks on both chips on any panic, so a `KeyCopy`, an mbedtls context or plaintext alive at that moment
+  lands in flash. Flash is already declared readable with a cable in hand ("The
+  threat boundary, first"), so this widens nothing the wallet promises; it is
+  written here so nobody reads "never across a card read" as "never in a dump".
+
+Gates that only decide whether to start use `hasKey()`, which reads no bytes.
+The sealer remembers which key it started under with `keyGeneration()`, which
+reads a number and no bytes.
+
+**Why not a pointer.** Until T-2104, `Session::key()` returned a pointer into
+the session's own array, and `clear()` wiped that array in place. On a dual-core
+board (`env:x4pro`, `env:t5s3pro`: NimBLE on core 0, the Arduino task on core 1,
+`CONFIG_FREERTOS_UNICORE` unset) a sleep -- `clear("sleep")`, the only lock those
+builds can land during a transfer, because `CMD:WALLETLOCK` sits behind
+`ENABLE_WALLET_TEST_CMDS`, which only the single-core `env:default` sets, and the
+idle lock runs only on wallet screens -- could land between
+the null check and `mbedtls_aes_setkey_enc()`, or inside it. The asset sealer then
+enciphered the rest of the file under a half-zeroed key, the hash and the CRC
+passed because both are over the plaintext, and the file was renamed over the
+previous good one. Read off the code; never reproduced on a board.
+
+**Why no lock across the AES.** The lock is a `portMUX` critical section, and the
+AES call cannot run inside one: on both chips the ESP-IDF AES driver is the DMA
+one, and it takes a blocking lock for the peripheral (framework-espidf 5.5.2,
+`components/mbedtls/port/aes/dma/esp_aes.c`, `AES_LOCK()` ->
+`esp_crypto_sha_aes_lock_acquire()` -> `_lock_acquire()`). Blocking with
+interrupts masked is not allowed. The lock covers a 32-byte memcpy; the AES runs
+on the copy.
+
+**The lock is a `portMUX` critical section.** On an S3 it is a spinlock between
+the cores. On the C3 the pinned ESP-IDF ignores the mux and masks interrupts
+(framework-espidf 5.5.2, riscv `portmacro.h`, `portENTER_CRITICAL(mux)` under
+`CONFIG_FREERTOS_UNICORE`), which is as exclusive on one core.
+
+**What a lock mid-transfer does now.** The next block's borrow fails,
+`AssetIngest` ends with `CipherFailed`, and the receiver calls `abandon()`, which
+deletes the `.part` file and never renames. The previous good asset stays. A
+manifest ends with `SealFailed` the same way.
+
+**A different key mid-transfer ends it too.** "There is a key" is not "it is the
+same key". The slot counts generations: every `set()` and every `clear()` moves
+it, and `KeyCopy::generation()` says which one a borrow saw. **The same key set
+again counts as new too**: the slot cannot tell a re-unlock from a re-provision.
+So `CMD:WALLETUNLOCK` sent to an already unlocked `env:default` board while an
+asset arrives now ends that transfer with `ERR encrypt failed`, where before
+T-2104 it finished. Fails safe, devel console only. The receiver takes
+the generation at begin and hands it to `walletCipher()` as the sealer's
+context; a borrow under any other generation refuses like a locked wallet. Without
+it, a wallet locked, re-provisioned (`CMD:WALLETPROVISION force`) and unlocked
+between two chunks sealed the rest of the asset under the new key, and the file
+was renamed over the good one. Reachable only from the devel console, because
+the unlock screen needs the map screen gone first. The manifest needs no such
+check: it is sealed once, at the end, under whichever key is there then.
+Host-tested: `WalletKeySlot.TheGenerationSaysWhichKeyItWas`,
+`WalletIngest.ADifferentKeyMidTransferEndsWithCipherFailed` (the sealer driven
+with the same check, not `walletCipher()` itself).
+
+**A failed AES block is a refusal, not a zero.** On both chips the ESP-IDF AES
+driver is the DMA one. On an allocation failure, an ISR init failure or any AES
+failure it zeroises the output block and returns -1 (framework-espidf 5.5.2,
+`components/mbedtls/port/aes/dma/esp_aes_dma_core.c`, the comment above
+`esp_aes_process_dma`). Until 2026-11-28 the CTR loop ignored that return, so a
+failed block left the plaintext as it was: on the ingest path a document written
+to the card in the clear under an `OK`, since both end-of-transfer checks are over
+the plaintext. Older than T-2104; found by its security review. Now
+`BlockEncrypt` returns whether it worked, `ctrXorInPlace()` stops and answers
+false, `ctrDecryptInPlace()` passes that up, and `walletCipher()` ends the
+transfer with `CipherFailed`. GCM was never affected: with
+`CONFIG_MBEDTLS_HARDWARE_AES=y` the build uses ESP-IDF's own GCM
+(`MBEDTLS_GCM_ALT`, `components/mbedtls/port/aes/esp_aes_gcm.c`), which checks
+the AES return at every step. A wallet asset's `close()` is checked too now: it
+gets no read-back, so a close that failed to flush would otherwise let a
+truncated ciphertext be renamed over a good document. Host-tested (`WalletCryptoCtr.AFailedBlockIsReportedNotLeftAsPlaintext`);
+whether DMA memory runs out during a push on a board is not measured.
+
+**Verified on the host, not on a board** (`test/wallet/WalletKeySlotTest.cpp`,
+and the slot-bound tests in `WalletIngestTest.cpp` and
+`WalletManifestSealTest.cpp`). The slot-bound tests drive the sealers with the
+same borrow the device binds and show the sealer ends with `CipherFailed` /
+`SealFailed`; they do not run `walletCipher()` itself or the receiver's
+`abandon()`, which are read off the code. The race test runs two threads against a
+`std::mutex`-bound slot for at least one second and 200,000 borrows and sees zero
+torn copies. Two broken slots it catches, measured 2026-11-28 on a 14-core laptop,
+`-O2`:
+
+- **a no-op lock**: fails every run on a multi-core host, 5,700 to 182,000 torn
+  copies across four review passes at varying load;
+- **the copy moved out of the lock, the `has_` check still inside**: 0 of 20 runs
+  passed with every core busy-looped. A count-only loop (200,000 borrows, no time
+  floor) passed it 4 of 20 under the same load, which is why the floor exists.
+
+On one CPU a torn copy needs preemption mid-copy and the no-op lock passed 4 of 5
+runs, so the test skips with fewer than two usable CPUs. It shows `KeySlot` takes
+its lock around the copy and the wipe. It does not prove `portENTER_CRITICAL` is
+exclusive across an S3's cores; that is ESP-IDF's claim.
+
+**Cost per block: a 32-byte copy and a 32-byte wipe, against AES over up to
+512 B.** Not measured on a board.
 
 The walked pattern is wiped by the gate after every attempt
 (`PatternLockActivity::submit()`), the normalised copy is wiped by

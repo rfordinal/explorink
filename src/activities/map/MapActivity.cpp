@@ -1940,7 +1940,7 @@ void MapActivity::expireAutoSync() {
   // Rendered directly here rather than by clearing the receiver's stuck
   // `active_`: doing that from the activity task would mean writing
   // MapTransferReceiver's state without the host-task handshake detach()
-  // uses (waiting on inFrame_, MapTransferReceiver.cpp's detach()) --
+  // uses (waiting on gate_, MapTransferReceiver.cpp's detach()) --
   // exactly the two-tasks-mutate-the-same-state shape T3.2 exists to
   // prevent. This only ever reads transfer_.status() (the established
   // pattern every other call site here already uses) and renders on its

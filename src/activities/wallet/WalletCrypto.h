@@ -146,15 +146,38 @@ inline void advanceCounter(const uint8_t iv[kAssetIvLen], uint32_t blocks, uint8
 // accelerated on the C3); the host tests bind it to OpenSSL. Deliberately a
 // callback rather than two copies of the loop below: the loop is the part that
 // gets an offset wrong, so it exists once and is host-tested once.
-using BlockEncrypt = void (*)(void* ctx, const uint8_t in[kAesBlockLen], uint8_t out[kAesBlockLen]);
+//
+// **It answers, and a false is not ignorable.** On both chips the ESP-IDF AES
+// driver is the DMA one, and on an allocation failure, an ISR init failure or any
+// AES failure it zeroises the output block and returns -1 (framework-espidf
+// 5.5.2, components/mbedtls/port/aes/dma/esp_aes_dma_core.c, the comment above
+// esp_aes_process_dma). A zero keystream block XORed in is the plaintext left as
+// it was: on the ingest path that is a document written to the card in the
+// clear, under an `OK`, because both end-of-transfer checks are over the
+// plaintext. Found by the T-2104 security review, 2026-11-28.
+using BlockEncrypt = bool (*)(void* ctx, const uint8_t in[kAesBlockLen], uint8_t out[kAesBlockLen]);
+
+// Defined at the end of this file; ctrXorInPlace() below wipes with it.
+inline void secureWipe(void* data, size_t len);
 
 // XORs `len` bytes at `data` with the keystream for payload offset `offset`.
 // Symmetric: the same call encrypts and decrypts. **In place, always** -- the
 // data is already in the framebuffer and a second 48 KB buffer would not fit
 // (../../../docs/map-memory.md:57).
-inline void ctrXorInPlace(BlockEncrypt encrypt, void* ctx, const uint8_t iv[kAssetIvLen], uint32_t offset,
+//
+// False when a block failed to encrypt. `data` is then partly XORed and must be
+// treated as nothing: the caller refuses the whole unit (walletCipher() ends the
+// transfer, the read path reports a decrypt failure). The keystream and counter
+// are wiped on every return, so no keystream this loop holds outlives the call.
+// (What mbedtls or the ESP-IDF driver keep inside their own frames is theirs.)
+// The wipe has no host test: it is of locals, and reading a returned frame is
+// undefined behaviour. Read off the code.
+inline bool ctrXorInPlace(BlockEncrypt encrypt, void* ctx, const uint8_t iv[kAssetIvLen], uint32_t offset,
                           uint8_t* data, size_t len) {
-  if (encrypt == nullptr || data == nullptr || len == 0) return;
+  // Nothing to do is success, whatever the pointer: an empty buffer's data() may
+  // be null, and that must not read as a failed block.
+  if (len == 0) return true;
+  if (encrypt == nullptr || data == nullptr) return false;
   const CtrStart start = ctrStartForOffset(offset);
   uint8_t counter[kAesBlockLen];
   advanceCounter(iv, start.block, counter);
@@ -162,8 +185,12 @@ inline void ctrXorInPlace(BlockEncrypt encrypt, void* ctx, const uint8_t iv[kAss
   uint8_t keystream[kAesBlockLen];
   size_t at = 0;
   size_t skip = start.skip;
+  bool ok = true;
   while (at < len) {
-    encrypt(ctx, counter, keystream);
+    if (!encrypt(ctx, counter, keystream)) {
+      ok = false;
+      break;
+    }
     for (size_t i = skip; i < kAesBlockLen && at < len; ++i) data[at++] ^= keystream[i];
     skip = 0;
     // Increment the counter block, big-endian, exactly as CTR does.
@@ -171,6 +198,9 @@ inline void ctrXorInPlace(BlockEncrypt encrypt, void* ctx, const uint8_t iv[kAss
       if (++counter[i] != 0) break;
     }
   }
+  secureWipe(keystream, sizeof(keystream));
+  secureWipe(counter, sizeof(counter));
+  return ok;
 }
 
 // ---------------------------------------------------------------------------

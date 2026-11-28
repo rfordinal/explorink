@@ -913,8 +913,8 @@ kill above was.
 
 Rendered from `expireAutoSync()` itself rather than by clearing the
 receiver's stuck `active_`: writing `MapTransferReceiver` state from the
-activity task without the host-task handshake `detach()` uses (waiting on
-`inFrame_`) is exactly the two-tasks-mutate-the-same-state shape T3.2 exists
+activity task without the host-task handshake `detach()` uses (closing
+`FrameGate` and waiting a frame out, `src/activities/map/MapTransferGate.h`) is exactly the two-tasks-mutate-the-same-state shape T3.2 exists
 to prevent, and adding a second such path was rejected for that reason. This
 fix only reads `transfer_.status()` -- the pattern every other call site
 here already uses -- and renders on its own account.

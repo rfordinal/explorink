@@ -7,6 +7,7 @@
 
 #include "HalStorage.h"
 #include "MapTilePath.h"
+#include "MapTransferGate.h"
 #include "MapTransferPath.h"
 
 #if defined(ENABLE_WALLET) && ENABLE_WALLET
@@ -95,10 +96,15 @@ class GfxRenderer;
 //
 // detach() is the one exception -- it runs on the activity task and it *does*
 // write transfer state, because its whole job is to tear a transfer down. So
-// it waits the host task out first: inFrame_ says whether a frame is inside
-// the callback right now, and detach() spins on it before touching anything
-// (see detach() below for the bound and what happens if it is exceeded).
-// Without that wait, a frame that already passed the attached_ gate and is
+// it waits the host task out first through gate_ (MapTransferGate.h): a frame
+// publishes that it is inside before it checks that the receiver is attached,
+// and detach() withdraws the receiver before it checks for a frame inside, so
+// one of the two always sees the other. detach() waits without a bound (T-2112):
+// a timed-out wait used to let it abandon under a frame, and a bound bought
+// nothing because both owners call BlePositionServer::end() next, which waits
+// for the host task without one. The disconnect hook goes through the same
+// gate, so it and detach() never both run abandon().
+// Without that wait, a frame that already passed the gate and is
 // blocked in file_.write() resumes into state abandon() has already reset,
 // and runs a completion pass on a file that is closed and deleted.
 //
@@ -144,10 +150,10 @@ class MapTransferReceiver {
   // file. Call **before** BlePositionServer::end(): a hook still registered
   // when the activity is deleted is a callback that outlives its owner.
   //
-  // Blocks for up to kDetachWaitMs waiting for a frame already inside the
-  // callback to leave it, because that frame and this call would otherwise
-  // mutate the same state from two tasks. A normal Back press mid-transfer
-  // hits this, so it is the common case and not an error path.
+  // Blocks until a frame already inside the callback leaves it, because that
+  // frame and this call would otherwise mutate the same state from two tasks.
+  // No bound (T-2112). A normal Back press mid-transfer hits this, so it is the
+  // common case and not an error path.
   void detach();
 
   // Counters for the map screen's debug readout. Activity task.
@@ -219,14 +225,12 @@ class MapTransferReceiver {
   // not mistaken for a dead sender.
   static constexpr uint32_t kStaleTransferMs = 30000;
 
-  // How long detach() waits for the host task to leave the frame callback.
-  // Covers a single chunk's SD write with room for a card doing an internal
-  // erase cycle; it does **not** cover the completion pass, which reads the
-  // whole .part back to check the CRC and takes seconds on a 75 KB tile. The
-  // bound is a bound, not a guarantee -- exceeding it is handled rather than
-  // waited out, because a wedged card must not wedge the UI. handleChunk's
-  // active_ re-checks are what make the exceeded case safe.
-  static constexpr uint32_t kDetachWaitMs = 500;
+  // After this long detach() logs that a frame is still inside, then keeps
+  // waiting. Not a bound: a wait that gave up let detach() abandon a transfer
+  // under the frame still writing it (T-2112). A wedged card therefore holds
+  // the screen exit -- as BlePositionServer::end(), called right after, already
+  // did -- and the log line is how that shows.
+  static constexpr uint32_t kDetachLogAfterMs = 500;
 
   // True if `path` is a safe relative path under the root: no leading slash,
   // no `..` component, no empty component, printable ASCII only. This is what
@@ -267,9 +271,15 @@ class MapTransferReceiver {
   const char* rootDir_;
   const GfxRenderer* renderer_;
 
-  // Host task only, all of it.
+  // Host task only, all of it -- except active_, below.
   HalFile file_;
-  bool active_ = false;
+  // True while a transfer is in flight. Written by the host task and by
+  // detach()'s abandon() on the activity task, and read by both, which is why
+  // it alone of this block is atomic. A plain bool written by two tasks is a
+  // data race even when, as since T-2112, the gate orders the writes. seq_cst
+  // by default; the cost of its fences next to an SD write has not been
+  // measured.
+  std::atomic<bool> active_{false};
   uint32_t declaredTotal_ = 0;
   uint32_t declaredCrc_ = 0;
   uint32_t received_ = 0;
@@ -310,6 +320,10 @@ class MapTransferReceiver {
   // that a tile push has no use for -- and this object lives for as long as the
   // map screen is open (MapActivity, TileSyncActivity both hold one).
   std::unique_ptr<wallet::AssetIngest> walletIngest_;
+  // Which session key the asset in flight is being sealed under
+  // (Session::keyGeneration(), a number, no key bytes). Host task only: set in handleBegin, read by
+  // walletCipher() through the sealer's ctx.
+  uint32_t walletKeyGeneration_ = 0;
   // The same, for the transfer that is the wallet's list of documents. A
   // separate machine rather than a mode on the one above, because the two are
   // opposites: an asset is encrypted chunk by chunk and never held, a manifest
@@ -335,18 +349,9 @@ class MapTransferReceiver {
   // The one thing both tasks touch. Written by publish(), read by status().
   Status snapshot_;
 
-  // Checked at the top of every frame so a frame that has not entered the
-  // callback yet when detach() ran cannot open a new file behind it. It says
-  // nothing about a frame already past that check -- inFrame_ below is for
-  // that one.
-  volatile bool attached_ = false;
-
-  // True for exactly as long as the host task is inside onFrame. Set by an
-  // RAII guard, so every return path clears it, including the ones added
-  // later by somebody who never read this comment.
-  //
-  // The handshake with detach(): release on the clear, acquire on detach()'s
-  // load, so seeing false also means every write the frame made to active_,
-  // received_, declaredTotal_ and file_ is visible to the activity task.
-  std::atomic<bool> inFrame_{false};
+  // Whether this receiver accepts work, and whether the host task is inside a
+  // callback right now. The handshake and why its orderings are seq_cst are in
+  // MapTransferGate.h, host-tested in test/map_transfer;
+  // docs/transfer-receiver-threading.md has what it does not close.
+  maptransfer::FrameGate gate_;
 };

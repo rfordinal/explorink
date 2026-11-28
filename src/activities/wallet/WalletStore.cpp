@@ -56,8 +56,9 @@ bool feedEncryptedManifestAt(const char* path, ManifestParser& parser, Error& er
     return false;
   }
 
-  const uint8_t* key = Session::instance().key();
-  if (key == nullptr) {
+  // A hint only, so a locked wallet costs no 32 KB allocation and no read. The
+  // key itself is borrowed below, after the read, right before the decrypt.
+  if (!Session::instance().hasKey()) {
     file.close();
     error = Error::Locked;
     return false;
@@ -87,8 +88,23 @@ bool feedEncryptedManifestAt(const char* path, ManifestParser& parser, Error& er
     return false;
   }
   uint8_t* cipher = buffer.get() + envelope.ciphertextOffset;
-  const GcmResult decrypted = gcmDecryptInPlace(key, envelope.nonce, kGcmNonceLen, buffer.get() + envelope.tagOffset,
-                                                kGcmTagLen, cipher, envelope.ciphertextLen);
+  // **Borrowed here, after the SD read, and for the decrypt alone** (plus the
+  // primitive's own failure log, which goes to serial and RAM, not the card). On a
+  // C3 a panic copies 1 KB of the faulting task's stack into
+  // /crash_report.txt on the card (lib/hal/HalSystem.cpp,
+  // __wrap_panic_print_backtrace and checkPanic), and a destructor does not run
+  // on a panic. A copy held across a card read is a copy a card fault can write
+  // to the card in the clear (security review, 2026-11-28).
+  GcmResult decrypted = GcmResult::Failed;
+  {
+    const KeyCopy key(Session::instance());
+    if (!key) {
+      error = Error::Locked;
+      return false;
+    }
+    decrypted = gcmDecryptInPlace(key.bytes(), envelope.nonce, kGcmNonceLen, buffer.get() + envelope.tagOffset,
+                                  kGcmTagLen, cipher, envelope.ciphertextLen);
+  }
   if (decrypted != GcmResult::Ok) {
     // **Two different messages, because these are two different facts.** A tag
     // mismatch is wrong key or an altered file, and GCM cannot tell those apart.
@@ -96,6 +112,11 @@ bool feedEncryptedManifestAt(const char* path, ManifestParser& parser, Error& er
     // AES DMA driver out of memory, which is the same "too big for this device"
     // the cap above reports and must not read as "somebody changed your wallet"
     // (WalletCryptoDevice.h, GcmResult). Nothing has been parsed either way.
+    //
+    // Wiped here as on the success path: a primitive that failed part-way may
+    // have left some of the list decrypted in the buffer, and that buffer is about
+    // to be freed (T-2104 security review, 2026-11-28).
+    secureWipe(buffer.get(), fileSize);
     error = decrypted == GcmResult::AuthFailed ? Error::ManifestAuth : Error::ManifestTooBig;
     return false;
   }
@@ -484,7 +505,7 @@ bool Store::lookupCode(const int itemIndex, const int codeIndex, CodeLookup& out
   return true;
 }
 
-bool readPlaneWindow(HalFile& file, const uint8_t* const key, const uint8_t iv[kAssetIvLen], const uint32_t planeBase,
+bool readPlaneWindow(HalFile& file, const bool encrypted, const uint8_t iv[kAssetIvLen], const uint32_t planeBase,
                      const uint32_t srcRowBytes, const uint32_t xByte, const uint32_t y, const uint32_t rows,
                      uint8_t* const dest, const uint32_t destRowBytes, Error& error) {
   error = Error::None;
@@ -500,9 +521,20 @@ bool readPlaneWindow(HalFile& file, const uint8_t* const key, const uint8_t iv[k
       error = Error::ShortRead;
       return false;
     }
-    if (key != nullptr && !ctrDecryptInPlace(key, iv, payloadOffset, row, destRowBytes)) {
-      error = Error::AssetDecrypt;
-      return false;
+    if (encrypted) {
+      // Borrowed per row, after that row's card read and for nothing but its
+      // decrypt: a copy held across the read is one a C3 panic can write to
+      // /crash_report.txt on the card (feedEncryptedManifestAt() has the
+      // mechanism). A wallet locked between two rows ends the window here.
+      const KeyCopy key(Session::instance());
+      if (!key) {
+        error = Error::Locked;
+        return false;
+      }
+      if (!ctrDecryptInPlace(key.bytes(), iv, payloadOffset, row, destRowBytes)) {
+        error = Error::AssetDecrypt;
+        return false;
+      }
     }
   }
   // This is the whole reason the format uses CTR. Every one of those rows starts at
@@ -546,7 +578,7 @@ bool PageReader::open(const PageImageSpec& page, const GfxRenderer& renderer, Er
   }
 
   const PanelGeometry live = livePanel(renderer);
-  const bool haveKey = Session::instance().key() != nullptr;
+  const bool haveKey = Session::instance().hasKey();
   switch (checkPageImage(raw, sizeof(raw), page, live, header_, haveKey)) {
     case AssetCheck::Ok:
       break;
@@ -628,8 +660,10 @@ bool PageReader::readWindow(const uint32_t x, const uint32_t y, GfxRenderer& ren
     return false;
   }
 
-  const uint8_t* const key = encrypted_ ? Session::instance().key() : nullptr;
-  if (encrypted_ && key == nullptr) {
+  // A hint, so a locked wallet is refused before the first seek. The key is
+  // borrowed per row inside readPlaneWindow(); a cleartext asset borrows none, and
+  // a locked wallet does not stop one from drawing.
+  if (encrypted_ && !Session::instance().hasKey()) {
     error = Error::Locked;
     return false;
   }
@@ -640,8 +674,8 @@ bool PageReader::readWindow(const uint32_t x, const uint32_t y, GfxRenderer& ren
   // No plaintext hash check here: a window is a fraction of the payload, so there is
   // nothing to check it against. A wrong key cannot get this far anyway -- the
   // manifest that named this asset would not have authenticated.
-  return readPlaneWindow(file_, key, iv_, /*planeBase=*/0, spec_.rowBytes, xByte, y, rows, renderer.getFrameBuffer(),
-                         rowBytes, error);
+  return readPlaneWindow(file_, encrypted_, iv_, /*planeBase=*/0, spec_.rowBytes, xByte, y, rows,
+                         renderer.getFrameBuffer(), rowBytes, error);
 }
 
 namespace {
@@ -690,7 +724,7 @@ bool readWholeScreen(const char* assetId, const Gate gate, GfxRenderer& renderer
   const PanelGeometry live = livePanel(renderer);
   // A key in hand is what lets an encrypted asset through the gate at all; without
   // one it is refused rather than drawn as noise.
-  const bool haveKey = Session::instance().key() != nullptr;
+  const bool haveKey = Session::instance().hasKey();
   const AssetCheck check = gate == Gate::Code ? checkCodeAsset(raw, sizeof(raw), live, header, haveKey)
                                               : checkAssetForPanel(raw, sizeof(raw), live, header, haveKey);
   switch (check) {
@@ -757,15 +791,26 @@ bool readWholeScreen(const char* assetId, const Gate gate, GfxRenderer& renderer
     // (../../../docs/map-memory.md:57), so CTR runs over those bytes in place --
     // one screen, offset 0, one pass.
     uint8_t iv[kAssetIvLen];
-    const uint8_t* key = Session::instance().key();
-    if (key == nullptr || !buildAssetIvForAsset(header.flags, assetId, header.sha256Prefix, sizeof(header.sha256Prefix),
-                                                header.version, iv)) {
-      error = Error::Locked;
-      return false;
-    }
-    if (!ctrDecryptInPlace(key, iv, 0, renderer.getFrameBuffer(), want)) {
+    if (!buildAssetIvForAsset(header.flags, assetId, header.sha256Prefix, sizeof(header.sha256Prefix), header.version,
+                              iv)) {
+      // Not Locked, which this said before T-2104: the wallet is unlocked and the
+      // IV could not be built from the header, which is a decrypt that cannot
+      // start (security review round 4, 2026-11-28).
       error = Error::AssetDecrypt;
       return false;
+    }
+    // Borrowed for the decrypt alone and wiped before the hash check below
+    // (WalletKeySlot.h: never held longer than the crypto call).
+    {
+      const KeyCopy key(Session::instance());
+      if (!key) {
+        error = Error::Locked;
+        return false;
+      }
+      if (!ctrDecryptInPlace(key.bytes(), iv, 0, renderer.getFrameBuffer(), want)) {
+        error = Error::AssetDecrypt;
+        return false;
+      }
     }
     // The header's sha256 prefix covers the PLAINTEXT, so it is checked here and
     // nowhere earlier -- and on an encrypted asset it earns its keep twice: it

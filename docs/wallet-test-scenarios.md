@@ -34,6 +34,9 @@ report says "W7 failed" and that has to mean the same thing next month.
   the pattern gate cannot be opened by anything, and a board nobody recorded a
   pattern for is the same problem. **Do not guess one** -- ten wrong walks
   refuse the wrap and the board then needs a re-provision (W12).
+  **A bench board's pattern is recorded in the parent repo's
+  `tools/devices.json`** (field `wallet`), which is private; never in this repo,
+  which is public. A board missing from it has an unknown pattern.
 - **A provisioned board shows the gate whatever its card holds** (T-2109,
   `walletEntryDecide()` in `src/activities/wallet/WalletEntryDecide.h`). Before
   that fix the card decided: a provisioned board with an empty card drew "No
@@ -154,6 +157,7 @@ Build a cleartext tree with `tools/walletgen.py` (no `--key`) and push it with
 | W20 | Push a wallet asset while the wallet is locked | Refused at `begin`, nothing on the card | Storing the plaintext "for now" is what this rung exists to prevent |
 | W21 | Push an asset that already carries the encrypted flag | Refused | It was sealed under a key this board does not have |
 | W22 | Push a map tile | Unchanged behaviour, read-back CRC included | **Regression.** The tile path must not notice the wallet exists |
+| W44 | Push a large wallet asset to an unlocked board and lock the wallet with `CMD:WALLETLOCK` while bytes are still arriving | `ERR encrypt failed`, the `.part` file gone, the previous good asset still on the card and still opening | T-2104, item 1. Before it, a lock mid-copy could seal the rest under a half-zeroed key, pass both plaintext checks and rename over the good file. **A regression check of a lock between chunks, not a proof of item 1.** A `CMD:WALLETLOCK` lands between chunks, milliseconds apart; the race item 1 closes is microseconds inside one AES call, and the build before T-2104 already re-read the key per chunk, so it passes this row too. Item 1 is host-only (`WalletKeySlot.*`, `WalletIngest.AWalletLockedMidTransferEndsWithCipherFailed`). Locking needs the console while the push runs. Whether opening the port resets the board depends on the tool (`debugging_monitor.py` resets on open, `mapcmd.py` does not, parent repo notes); a port held open for the whole run is the untried way in (T-2104 plan, step 3). **Runs on a C3 only** (`env:default`): `CMD:WALLETLOCK` is behind `ENABLE_WALLET_TEST_CMDS`, which no S3 environment sets. **Not the power button**: sleep clears the key and then resets the chip, and whether the `ERR` and the `.part` removal finish before that is not established -- either way the good file is never renamed over by one sealed under a wrong or missing key (a last chunk borrowed just before the clear completes correctly sealed under K, and that replace is legitimate), and a `.part` left behind is truncated only when the same asset is pushed again (`O_TRUNC`, `MapTransferReceiver.cpp`, "A leftover .part") |
 
 ## CM. The manifest: the device seals the list (T-2096)
 
@@ -205,6 +209,60 @@ arrived under.
 
 One line per scenario per chip family, newest run only. A scenario with no S3
 row and no C3 row has not run on that family.
+
+### T-2104 on both chip families, 2026-11-28
+
+Firmware `t2104-frame-gate` `4c9c9159` (contains `t2104-key-copy`). Archived in the
+parent repo as `docs/firmware-builds/2026-11-28-t5s3pro-b-t2104-frame-gate-testcmds-4-good`
+and `...-x3-t2104-frame-gate-4-good`. Trees from `walletgen.py --demo` (the
+`wallet-cardroot` copy, for `--panel t5s3`), cleartext, pushed with
+`blepush.py --chunk 180 --address <board>`. Card read back over the web server
+(`GET /api/files`).
+
+**S3: `t5s3pro-b`, `env:t5s3pro` plus `-DENABLE_WALLET_TEST_CMDS=1`.** Unlocked with
+`CMD:WALLETUNLOCK` and the board's pattern (parent repo, T-2108 entry). Both cores
+run here, so this is the board where the gate and the key borrow can race.
+
+| # | Result |
+|---|---|
+| W27 | `OK 2656 6913015b`, `sealed manifest installed` |
+| W14 | `OK 64832 65814f29` |
+| W17 | `ERR hash mismatch`; `wallet/51/` empty afterwards |
+| W22 | plain file `test/t2104-w22.tib`: `OK 74812 37a63be3` |
+| W44 | 585,750 B asset, `CMD:WALLETLOCK` 5 s into the push: `ERR encrypt failed`; `wallet/83/` empty afterwards, no `.part` |
+| W20 / W34 | `ERR wallet locked` for an asset and for the manifest |
+| gate | 585,750 B asset, `CMD:GOTO_WALLET` 5 s into the push: `transfer failed: screen closed`, no reset; `wallet/83/` empty afterwards |
+| W23 / W16 | after a reboot and unlock, the list off the device-sealed manifest, then the W14 page drawn: FIT, 960x540, 1,581 ms |
+
+**C3: X3, `env:default`.** Its wallet is locked and **nobody recorded its pattern**
+(see W9a), so only the scenarios that need no key ran. The X3 dropped its USB link
+once on the map, about 3 s after the frame was drawn, and a `CMD:` every 2 s kept
+it up for the whole next run. The 10 MHz idle clock (every `CMD:` handler leaves
+power saving) is the suspected cause, not a measured one. Opening the port resets
+it, so one process holds the port for the whole run.
+
+| # | Result |
+|---|---|
+| W20 / W34 | `ERR wallet locked` for an asset and for the manifest |
+| W22 | `OK 74812 37a63be3` |
+| gate | 74,812 B push, `CMD:BUTTON back` 5 s in: `transfer failed: screen closed`, no reset; no `.part` and no file afterwards |
+
+**Then with a key, on `4b82ed08` (T-2112: `detach()` waits without a bound).**
+The X3 was re-provisioned with `CMD:WALLETPROVISION ... force` (maintainer's call,
+2026-11-28) and unlocked with `CMD:WALLETUNLOCK`.
+
+| # | Result |
+|---|---|
+| W27 | `OK 2652 1d900447`, `sealed manifest installed` |
+| W14 | `OK 52304 dbc8ea61` |
+| W15 | the card's copy pulled over `GET /download` and decrypted with K and the content IV: payload byte-identical to the 52,272 B sent, `sha256[0:8]` matches the header, and only `flags` changed (`00` to `03`) |
+| W44 | 585,750 B asset, `CMD:WALLETLOCK` 6 s into the push: `ERR encrypt failed`; `wallet/5a/` empty afterwards |
+| gate | same asset, `CMD:BUTTON back` 6 s in: `transfer failed: screen closed`, no reset |
+| W23 / W16 | the list, then the W14 page drawn: 792x528, 2,497 ms |
+
+The same build on `t5s3pro-b` repeated W44 and the screen-close case with the
+same results. Neither run logged `detach: frame still in flight`, so no frame
+was inside for 500 ms when the screen closed.
 
 ### S3: `t5s3pro-b`, 2026-11-28 (T-2108)
 

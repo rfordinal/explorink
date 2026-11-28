@@ -58,22 +58,6 @@ constexpr size_t kCrcFallbackReadBufferBytes = 128;
 
 portMUX_TYPE g_mux = portMUX_INITIALIZER_UNLOCKED;
 
-// Holds MapTransferReceiver::inFrame_ true for the lifetime of the frame
-// callback, so detach() on the activity task can wait the frame out.
-//
-// A guard object rather than a set/clear pair, even though onFrame has a single
-// exit today: a clear left behind by a later early `return` would leave
-// inFrame_ stuck true, and a stuck-true flag makes every later detach() burn
-// its whole kDetachWaitMs bound and log a failure that did not happen. A
-// destructor cannot be skipped.
-struct FrameGuard {
-  std::atomic<bool>& flag;
-  explicit FrameGuard(std::atomic<bool>& f) : flag(f) { flag.store(true, std::memory_order_relaxed); }
-  ~FrameGuard() { flag.store(false, std::memory_order_release); }
-  FrameGuard(const FrameGuard&) = delete;
-  FrameGuard& operator=(const FrameGuard&) = delete;
-};
-
 #if defined(ENABLE_WALLET) && ENABLE_WALLET
 // --- The wallet's three primitives, bound to this device --------------------
 //
@@ -85,29 +69,51 @@ struct FrameGuard {
 // AES-256-CTR, which is symmetric -- the same call the read path decrypts with
 // encrypts here.
 //
-// **The key is fetched here, every chunk, and never captured at begin.** A
-// pointer taken once would still be a valid, non-null pointer after the wallet
-// locked: `Session::clear()` wipes `key_` in place and drops a flag, it does not
-// move or free anything (`WalletCryptoDevice.cpp`). So a lock part-way through a
-// transfer -- the rider pressing power, which calls `clear("sleep")` several
-// hundred milliseconds before the chip actually resets (`main.cpp`), or
-// `CMD:WALLETLOCK` -- would have silently enciphered the rest of the asset under
-// 32 zero bytes.
+// **The key is borrowed here, every chunk, and never captured at begin.** Two
+// ways to get this wrong, both found in review:
 //
-// That failure had no error in it anywhere, which is what made it worth a
-// re-read per chunk rather than a comment: both end-of-transfer checks are over
-// the **plaintext**, so the hash and the CRC would both still have passed, and
-// the half-good file would have been renamed over the previous good one.
-// Permanently undecryptable, and the asset it replaced gone. Found in review,
-// 2026-11-27.
+// 1. A key taken once at begin outlives a lock. A rider pressing power calls
+//    `clear("sleep")` several hundred milliseconds before the chip resets
+//    (`main.cpp`), and `CMD:WALLETLOCK` clears it outright; the rest of the asset
+//    would be enciphered under a key that no longer exists. 2026-11-27.
+// 2. A pointer into the session, re-read per chunk, still raced the wipe. On a
+//    dual-core board `clear()` runs on the other core and can land between the
+//    null check and `mbedtls_aes_setkey_enc()`, or inside it, giving a
+//    half-zeroed key. T-2104, item 1.
 //
-// Cost is a flag test and a pointer load per chunk, against AES over the same
-// bytes. `ctx` is unused and stays in the signature because the sealer's
-// callback contract is shared with the host tests, which do bind a key to it.
-bool walletCipher(void*, const uint8_t* iv, uint32_t payloadOffset, uint8_t* data, size_t len) {
-  const uint8_t* key = wallet::Session::instance().key();
-  if (key == nullptr) return false;
-  return wallet::ctrDecryptInPlace(key, iv, payloadOffset, data, len);
+// Either way there is no error anywhere: both end-of-transfer checks are over the
+// **plaintext**, so the hash and the CRC pass, and the half-good file is renamed
+// over the previous good one. Permanently undecryptable, and the asset it
+// replaced gone.
+//
+// `KeyCopy` takes the whole key or nothing under the lock `clear()` takes, and
+// wipes it when this returns (WalletKeySlot.h). A lock that lands mid-transfer
+// makes the *next* call refuse, the sealer ends with CipherFailed, and the
+// receiver abandons without the rename (WalletAssetIngest.h). The host test
+// `WalletIngest.AWalletLockedMidTransferEndsWithCipherFailed` drives the sealer
+// with this same borrow against a slot cleared mid-transfer; it does not drive
+// this function or the receiver's abandon, which rest on reading the code above
+// and below.
+//
+// Called per sealer scratch block of at most 512 B (WalletAssetIngest.h). The
+// largest BLE chunk at any MTU is 509 B, so in practice once per chunk. Cost per
+// call is a 32-byte copy and a 32-byte wipe against AES over the same block. Not
+// measured; a claim of "free" would need a timing.
+//
+// `ctx` is the generation the transfer began under, a uint32_t owned by the
+// receiver. The host tests pass their own struct holding a host KeySlot; the one
+// that covers a changed key (ADifferentKeyMidTransferEndsWithCipherFailed) also
+// carries the starting generation and repeats this check.
+bool walletCipher(void* ctx, const uint8_t* iv, uint32_t payloadOffset, uint8_t* data, size_t len) {
+  const wallet::KeyCopy key(wallet::Session::instance());
+  if (!key) return false;
+  // `ctx` is the key generation the transfer began under (handleBegin). A key
+  // that is present but different -- locked, re-provisioned and unlocked between
+  // two chunks -- ends the transfer too: half a file under each of two keys is
+  // the same loss as half under a wiped one.
+  const uint32_t* const begunUnder = static_cast<const uint32_t*>(ctx);
+  if (begunUnder == nullptr || key.generation() != *begunUnder) return false;
+  return wallet::ctrDecryptInPlace(key.bytes(), iv, payloadOffset, data, len);
 }
 
 // The ROM's CRC-32, which is the one that has to produce the number the phone
@@ -126,13 +132,15 @@ bool walletSink(void* ctx, const uint8_t* data, size_t len) {
 // key with one nonce over two different plaintexts breaks GCM outright.
 void walletRandom(void*, uint8_t* out, size_t len) { wallet::randomBytes(out, len); }
 
-// The key is read here, at the end of the transfer, for the same reason
-// walletCipher() reads it per chunk: a wallet locked while the manifest was
-// arriving must end the transfer, not seal the list under 32 zero bytes.
+// The key is borrowed here, at the end of the transfer: a wallet locked while
+// the manifest was arriving must end the transfer, not seal the list under a
+// wiped key. Unlike walletCipher() there is no generation check, on purpose: the
+// list is sealed once, whole, so a key that changed while it arrived seals all of
+// it under the new key, which is the key the device then reads it with.
 bool walletSealManifest(void*, const uint8_t* nonce, uint8_t* data, size_t len, uint8_t* tag) {
-  const uint8_t* key = wallet::Session::instance().key();
-  if (key == nullptr) return false;
-  return wallet::gcmEncryptInPlace(key, nonce, wallet::kGcmNonceLen, data, len, tag, wallet::kGcmTagLen);
+  const wallet::KeyCopy key(wallet::Session::instance());
+  if (!key) return false;
+  return wallet::gcmEncryptInPlace(key.bytes(), nonce, wallet::kGcmNonceLen, data, len, tag, wallet::kGcmTagLen);
 }
 
 // "Is this a wallet manifest, and which version does it say it is?" -- asked
@@ -233,9 +241,34 @@ MapTransferReceiver::MapTransferReceiver(const char* rootDir, const GfxRenderer*
 }
 
 MapTransferReceiver::~MapTransferReceiver() {
-  // No status to send and nobody to send it to by now -- just don't leave a
-  // .part behind. detach() is the ordinary path; this is the backstop.
-  if (active_) abandon(nullptr);
+  // detach() is the ordinary path; this is the backstop, and it goes through
+  // detach() itself when the hooks are still ours, so a frame already inside is
+  // waited out rather than abandoned under (T-2104, item 4).
+  //
+  // **It does not make destruction safe on its own.** BlePositionServer copies
+  // the hooks under its lock and calls them after releasing it, so a frame
+  // copied before detach() cleared the hooks, but not yet inside the gate when
+  // close() looked, reaches this object after it is freed. Only the owner
+  // stopping the host task (BlePositionServer::end()) before the receiver dies
+  // closes that window -- end() waits for the host task without a bound, so any
+  // dispatched hook has returned by then -- and both owners do today
+  // (MapActivity, TileSyncActivity).
+  //
+  // Only when still attached: detach() clears the server's hooks, and once this
+  // receiver is detached those may belong to another receiver. "Attached" is
+  // this receiver's own gate, not proof the hooks are still its own: an owner
+  // that attached a second receiver without detaching the first would have this
+  // clear the second one's hooks. Both owners detach() first today.
+  //
+  // One behaviour differs from the old silent backstop: through detach(), a
+  // transfer still in flight ends with `ERR screen closed` and counts in failed_.
+  // Unreachable today -- both owners detach() first -- and the honest answer if
+  // a future owner forgets: the screen did close.
+  if (gate_.attached()) {
+    detach();
+  } else if (active_) {
+    abandon(nullptr);
+  }
 }
 
 bool MapTransferReceiver::resetCounters() {
@@ -260,41 +293,50 @@ void MapTransferReceiver::attach() {
   hooks.ctx = this;
   hooks.onFrame = &frameTrampoline;
   hooks.onDisconnect = &disconnectTrampoline;
-  attached_ = true;
+  // Open before the hooks go in, so the first frame they deliver is accepted.
+  gate_.open();
   freeink::BlePositionServer::getInstance().setTransferHooks(hooks);
 }
 
 void MapTransferReceiver::detach() {
-  // Flag first, hooks second: a frame that has not reached the attached_ check
-  // yet sees false and returns without opening anything, and clearing the
-  // hooks stops any further frame from arriving at all.
-  attached_ = false;
-  freeink::BlePositionServer::getInstance().setTransferHooks(freeink::BlePositionServer::TransferHooks{});
-
-  // A frame already *past* that check is the one that matters, and it is the
-  // normal case: a Back press mid-transfer lands here while the host task sits
-  // in file_.write() on the card. abandon() below closes file_, deletes the
-  // .part and zeroes active_/received_/declaredTotal_ -- all of it state that
-  // frame reads and writes when its write returns. Two tasks, no lock, so wait
-  // the frame out instead.
+  // Hooks off, then close the gate and wait. MapTransferGate.h has why the
+  // order inside the gate is what makes this exclusive on two cores.
+  //
+  // Clearing the hooks does not stop a call already dispatched:
+  // BlePositionServer copies the hooks under its lock and calls them after
+  // releasing it (BlePositionServer.cpp, onCentralDisconnect), so a frame or a
+  // disconnect can arrive after this line. The gate is what turns it away.
+  //
+  // A frame already *inside* is the one that matters, and it is the normal
+  // case: a Back press mid-transfer lands here while the host task sits in
+  // file_.write() on the card. abandon() below closes file_, deletes the .part
+  // and zeroes active_/received_/declaredTotal_ -- all of it state that frame
+  // reads and writes when its write returns. So wait the frame out.
   //
   // vTaskDelay, not a busy spin: this runs on the activity task, which is
   // priority 1 against the NimBLE host task's configMAX_PRIORITIES - 4
   // (nimble_port_freertos.c:44). A busy spin would still be preempted, it
   // would just burn the CPU the frame needs to finish.
-  const uint32_t waitStart = millis();
-  while (inFrame_.load(std::memory_order_acquire)) {
-    if (millis() - waitStart >= kDetachWaitMs) {
-      // The completion pass reads a whole tile back off the card and can
-      // outlast the bound (MapTransferReceiver.h, kDetachWaitMs). Proceeding
-      // is deliberate: a stuck card would otherwise hold the screen on a Back
-      // press for as long as it stays stuck. handleChunk re-checks active_
-      // after every blocking call and bails, so the frame notices.
-      LOG_ERR(kLogTag, "detach: frame still in flight after %lu ms, proceeding",
-              static_cast<unsigned long>(kDetachWaitMs));
-      break;
+  //
+  // **No bound (T-2112).** This used to give up after 500 ms and abandon with
+  // the frame still inside -- two tasks in one transfer, which could remove the
+  // previous good document while the frame was renaming over it. The bound was
+  // meant to keep a stuck card from holding the screen, and it never did: both
+  // owners call BlePositionServer::end() right after detach() (MapActivity,
+  // TileSyncActivity), and end() reaches nimble_port_stop(), which waits with
+  // BLE_NPL_TIME_FOREVER until the host task returns from that same frame
+  // (NimBLE-Arduino src/nimble/porting/nimble/src/nimble_port.c). So waiting here
+  // costs nothing end() did not already cost. A long wait is logged once.
+  freeink::BlePositionServer::getInstance().setTransferHooks(freeink::BlePositionServer::TransferHooks{});
+  const auto nowMs = [] { return static_cast<uint32_t>(millis()); };
+  const auto yield = [] { vTaskDelay(1); };
+  if (!gate_.close(kDetachLogAfterMs, nowMs, yield)) {
+    LOG_ERR(kLogTag, "detach: frame still in flight after %lu ms, waiting it out",
+            static_cast<unsigned long>(kDetachLogAfterMs));
+    const uint32_t waitStart = nowMs();
+    while (!gate_.close(kDetachLogAfterMs, nowMs, yield)) {
     }
-    vTaskDelay(1);
+    LOG_INF(kLogTag, "detach: frame left after a further %lu ms", static_cast<unsigned long>(nowMs() - waitStart));
   }
 
   if (active_) abandon("screen closed");
@@ -306,6 +348,13 @@ void MapTransferReceiver::frameTrampoline(void* ctx, const uint8_t* data, size_t
 
 void MapTransferReceiver::disconnectTrampoline(void* ctx) {
   auto* self = static_cast<MapTransferReceiver*>(ctx);
+  // The same gate as a frame. This runs on the host task, so it never overlaps
+  // a frame; it does overlap detach() on the activity task, and without the
+  // gate both could run abandon() on one object at once -- two closes of one
+  // file_, two removes of one .part, failed_ counted twice (T-2104, item 4).
+  // detach() waits for this call to leave the gate before it abandons.
+  const maptransfer::FrameGate::Ticket ticket(self->gate_);
+  if (!ticket) return;
   if (self->active_) {
     LOG_ERR(kLogTag, "link dropped at %lu/%lu bytes, dropping %s", static_cast<unsigned long>(self->received_),
             static_cast<unsigned long>(self->declaredTotal_), self->partPath_);
@@ -319,36 +368,23 @@ void MapTransferReceiver::disconnectTrampoline(void* ctx) {
 void MapTransferReceiver::onFrame(const uint8_t* data, size_t len) {
   // What this frame is. The dispatch is arithmetic over one byte, so it lives
   // in MapTransferDecide.h with the rest of the decisions -- including the
-  // `Ignore` that returns here, before the guard below, rather than falling
-  // through to the shared tail (T-2106).
-  const maptransfer::FrameAction action = maptransfer::decideFrame(attached_, data, len);
+  // `Ignore` that returns here rather than falling through to the shared tail
+  // (T-2106).
+  //
+  // The gate comes first, before even the one-byte dispatch: a frame publishes
+  // that it is inside and only then asks whether the receiver is still
+  // attached. The old order -- read attached_, then publish inFrame_ -- let
+  // detach() on the other core of an S3 see "no frame inside" while this frame
+  // sat between the two lines, and abandon the transfer underneath it.
+  // MapTransferGate.h has the orderings (T-2104, item 2).
+  //
+  // A Ticket, not a set/clear pair: a clear left behind by a later early
+  // `return` would leave the gate marked "inside" for good, and since T-2112
+  // detach() waits for that mark without a bound -- the screen would never
+  // close.
+  const maptransfer::FrameGate::Ticket ticket(gate_);
+  const maptransfer::FrameAction action = maptransfer::decideFrame(static_cast<bool>(ticket), data, len);
   if (action == maptransfer::FrameAction::Ignore) return;
-
-  // Everything below can touch transfer state, so from here on detach() must
-  // wait for this call to return. Declared before the dispatch and never
-  // cleared by hand.
-  //
-  // Today every switch case `break`s into the shared lastFrameMs_/publish()
-  // tail, so there is exactly one exit past this line -- falling off the end.
-  // The guard is still a guard and not a clear-at-the-bottom, because the next
-  // person to add an early `return` inside the switch will not come back up
-  // here to add the clear.
-  //
-  // **The gap between the attached_ read above and this store is a real hole on
-  // the S3 boards**, and this comment used to deny it. The old argument was
-  // "the ESP32-C3 is single core and the host task outranks the activity task,
-  // so the activity task cannot run between two adjacent instructions of this
-  // task". That holds on the C3 and not on `env:x4pro` or `env:t5s3pro`:
-  // `CONFIG_FREERTOS_UNICORE` is unset there and NimBLE is pinned to core 0
-  // against the Arduino task on core 1, so detach() can read `inFrame_` as
-  // false while this frame is between the two lines and proceed to abandon()
-  // underneath it.
-  //
-  // The order is also the losing one -- to exclude properly the frame would
-  // publish `inFrame_` first and re-check `attached_` after. Both belong to the
-  // transfer receiver's threading rather than to the wallet, so they are
-  // written down as T-2104 and not changed here (review, 2026-11-27).
-  FrameGuard guard(inFrame_);
 
   switch (action) {
     case maptransfer::FrameAction::Begin:
@@ -534,7 +570,7 @@ void MapTransferReceiver::handleBegin(const uint8_t* body, size_t len) {
   // `/explorink`).
   const maptransfer::WalletGateDecision walletGate = maptransfer::decideWalletGates({
       target,
-      wallet::Session::instance().key() != nullptr,
+      wallet::Session::instance().hasKey(),
       renderer_ != nullptr,
       total,
       static_cast<uint32_t>(wallet::kMaxManifestPlaintextBytes),
@@ -596,11 +632,17 @@ void MapTransferReceiver::handleBegin(const uint8_t* body, size_t len) {
     }
     wallet::AssetIngest::Callbacks cb;
     cb.cipher = walletCipher;
-    // No key is carried: walletCipher() asks the session for it on every chunk,
-    // so a wallet locked mid-transfer ends the transfer instead of sealing the
-    // rest of it under zeros. The `key == nullptr` check above is the "do not
-    // even start" half of the same rule.
-    cb.cipherCtx = nullptr;
+    // No key is carried: walletCipher() borrows a copy from the session on every
+    // call, so a wallet locked mid-transfer ends the transfer instead of sealing
+    // the rest of it under a wiped key. The `hasKey()` gate above is the "do not
+    // even start" half of the same rule. What is carried is *which* key the
+    // transfer starts under, so a different key later is refused as well. Read
+    // as a number, not as a borrowed copy: a copy here would be key bytes on this
+    // task's stack for nothing. A lock between the gate and this line needs no
+    // test here either -- the first chunk's borrow refuses, because clear() moves
+    // the generation and empties the slot.
+    walletKeyGeneration_ = wallet::Session::instance().keyGeneration();
+    cb.cipherCtx = &walletKeyGeneration_;
     cb.crc32 = walletCrc32;
     cb.write = walletSink;
     // Stable for the life of this object, and nothing is written through it
@@ -744,12 +786,21 @@ void MapTransferReceiver::handleChunk(const uint8_t* body, size_t len) {
     // counters below are unchanged, because the file is the same length sealed
     // as it was in the clear.
     const wallet::IngestStatus fed = walletIngest_->feed(payload, payloadLen);
-    // feed() writes to the card, so detach() can have abandoned this transfer
-    // underneath it -- same re-check, same reason as the plain path below.
+    // Same re-check, same reason as the plain path below.
     if (!active_) return;
     if (fed != wallet::IngestStatus::Ok && fed != wallet::IngestStatus::Complete) {
       LOG_ERR(kLogTag, "wallet ingest refused %s: %s", finalPath_, wallet::ingestStatusReason(fed));
       abandon(wallet::ingestStatusReason(fed));
+      return;
+    }
+    // The commit below is keyed on the receiver's own byte count. Asked of the
+    // sealer too, so "verified before rename" holds here rather than by an
+    // argument that two counters fed the same total always agree: on the last
+    // chunk only Complete -- hash and CRC checked -- may go on to the rename
+    // (T-2104 security review, 2026-11-28).
+    if (chunk.completesTransfer && fed != wallet::IngestStatus::Complete) {
+      LOG_ERR(kLogTag, "wallet ingest not complete at the last chunk of %s", finalPath_);
+      abandon("asset length");
       return;
     }
   } else
@@ -765,23 +816,11 @@ void MapTransferReceiver::handleChunk(const uint8_t* body, size_t len) {
       return;
     }
   }
-  // Every blocking call below is a place detach() can have run its full wait,
-  // given up, and abandoned this transfer underneath us -- file closed, .part
-  // deleted, counters zeroed. Re-checking active_ after each one turns that
-  // from a bogus completion pass (spurious ERR to the phone, double-counted
-  // failed_) into a silent bail, which is the correct answer: the screen this
-  // transfer belonged to is gone.
-  //
-  // A plain read of a plain bool, which is **not** as safe as this comment used
-  // to claim. "Single core" is true of the C3 and false of both S3
-  // environments: `sdkconfig.x4pro` leaves `CONFIG_FREERTOS_UNICORE` unset and
-  // pins NimBLE to core 0 against the Arduino task on core 1, so the two tasks
-  // genuinely run at once there. What the check still rests on is that each one
-  // sits directly after a call into another translation unit (HalStorage, no
-  // LTO in platformio.ini), so the compiler must reload the member -- a bet on
-  // codegen rather than a guarantee, and one build flag from not holding.
-  // `active_` should be std::atomic<bool>; that is T-2104, not this rung
-  // (review, 2026-11-27).
+  // These active_ re-checks after blocking calls guarded a detach() that gave
+  // up waiting and abandoned under the frame. Since T-2112 it does not give up,
+  // so they guard no reachable interleaving; they stay because a frame that
+  // somehow resumed into an abandoned transfer must bail rather than run a
+  // completion pass on a closed, deleted file.
   if (!active_) return;
   received_ += payloadLen;
 
@@ -810,8 +849,30 @@ void MapTransferReceiver::handleChunk(const uint8_t* body, size_t len) {
   // asserts on a handle that was never opened (HalStorage.cpp,
   // HAL_FILE_WRAPPED_CALL) -- isOpen() is the one accessor that tolerates it,
   // which is why abandon() has used this exact shape all along.
-  if (file_.isOpen()) file_.close();
+  // `closedHere` is true only when this task closed the file and the close
+  // reported success. A handle closed by someone else is not a clean close and
+  // must not open the way to the rename below (closing review, 2026-11-28).
+  // Since T-2112 detach() cannot close it under a frame; the check does not
+  // lean on that.
+  const bool wasOpen = file_.isOpen();
+  const bool closedHere = wasOpen && file_.close();
   if (!active_) return;
+#if defined(ENABLE_WALLET) && ENABLE_WALLET
+  // **A wallet asset's close is checked; a tile's is left as it was.** A wallet
+  // asset gets no read-back: its OK is computed over the plaintext, so a
+  // truncated ciphertext would pass and be renamed over the good document
+  // (T-2104 security review, 2026-11-28). A tile is read back and CRC-checked
+  // below, but through SdFat's volume cache, so whether that catches a close
+  // whose flush failed is not established (review round 11). Not changed here,
+  // because T-2104 does not change tile behaviour.
+  if (walletIngest_ && !closedHere) {
+    LOG_ERR(kLogTag, "close failed on %s; not renaming", partPath_);
+    abandon("write failed");
+    return;
+  }
+#else
+  (void)closedHere;
+#endif
 
   uint32_t actualCrc = 0;
 #if defined(ENABLE_WALLET) && ENABLE_WALLET
@@ -993,12 +1054,9 @@ void MapTransferReceiver::abandon(const char* reason) {
   activeTileValid_ = false;
 #if defined(ENABLE_WALLET) && ENABLE_WALLET
   // Wiped, **not freed**. This is the one place a transfer ends on the activity
-  // task (detach(), past its kDetachWaitMs bound), and the host task can be
-  // inside feed() right now -- deleting the object under it would be a
-  // use-after-free, where overwriting its buffers is the same kind of data race
-  // the file_ close/remove above already is, and ends the same way: a failed
-  // write and a transfer that is already being abandoned. The memory goes back
-  // at the next begin, which is host-task only.
+  // task (detach()). Since T-2112 detach() waits for every frame to leave first,
+  // so the host task is not inside feed() here; the memory still goes back only
+  // at the next begin, which is host-task only, so freeing stays single-task.
   //
   // **The manifest's buffer is taken rather than wiped in place**, because the
   // host task may be giving the same buffer back right now (the install hands
@@ -1087,7 +1145,7 @@ bool MapTransferReceiver::computePartCrc32(uint32_t& outCrc) const {
   // One-shot 4096 B heap buffer for this read loop only -- see the arithmetic
   // above kCrcReadBufferBytes. makeUniqueNoThrow, not bare new (firmware
   // CLAUDE.md, heap-discipline skill): this runs on the NimBLE host task,
-  // inside onFrame's inFrame_ window that detach() spins on, and an OOM here
+  // inside onFrame's gate_ window that detach() waits on, and an OOM here
   // must degrade, not abort() the firmware. `heapBuffer` frees itself at this
   // function's return, well before the caller sends the OK/ERR status line.
   auto heapBuffer = makeUniqueNoThrow<uint8_t[]>(kCrcReadBufferBytes);
