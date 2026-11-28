@@ -154,6 +154,7 @@ Build a cleartext tree with `tools/walletgen.py` (no `--key`) and push it with
 | W20 | Push a wallet asset while the wallet is locked | Refused at `begin`, nothing on the card | Storing the plaintext "for now" is what this rung exists to prevent |
 | W21 | Push an asset that already carries the encrypted flag | Refused | It was sealed under a key this board does not have |
 | W22 | Push a map tile | Unchanged behaviour, read-back CRC included | **Regression.** The tile path must not notice the wallet exists |
+| W44 | Push a large wallet asset to an unlocked board and lock the wallet while bytes are still arriving (`CMD:WALLETLOCK`, or the power button) | `ERR encrypt failed`, the `.part` file gone, the previous good asset still on the card and still opening | T-2104, item 1. Before it, a lock mid-copy could seal the rest under a half-zeroed key, pass both plaintext checks and rename over the good file. **Host-only so far** (`WalletKeySlot.*`, `WalletIngest.AWalletLockedMidTransferAbandonsInsteadOfSealingWrong`): locking needs the console, and opening the port resets the board. Needs an S3, where the two tasks really run at once |
 
 ## CM. The manifest: the device seals the list (T-2096)
 
