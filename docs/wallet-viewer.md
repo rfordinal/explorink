@@ -26,7 +26,16 @@ the same whether the tree is encrypted or not.
 
 Home menu row **Wallet**, between *Sync map tiles* and *Settings*
 (`src/activities/home/HomeActivity.cpp:14-21`, `:121-134`), opening through
-`ActivityManager::goToWallet()` (`src/activities/ActivityManager.cpp:222`).
+`ActivityManager::goToWallet()`. Which screen it opens is
+`walletEntryDecide()` (`src/activities/wallet/WalletEntryDecide.h`, host test
+`test/wallet/WalletEntryTest.cpp`): **a wrap in NVS means the gate, whatever the
+card holds.** No wrap and no tree is the setup offer, no wrap and an encrypted
+tree is the "set up somewhere else" dead end, no wrap and a cleartext tree
+browses with no key. The card used to decide, so a provisioned board with an
+empty card got the list and no gate, and a locked board refuses every wallet
+push -- the first sync could never arrive (T-2109). After an unlock on an empty
+card the list says "No wallet on the card", and that is then the truth, not the
+bug.
 
 The regression suite for the whole wallet chain is
 [`wallet-test-scenarios.md`](wallet-test-scenarios.md). Run all of it after any

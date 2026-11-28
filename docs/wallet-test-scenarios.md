@@ -34,15 +34,13 @@ report says "W7 failed" and that has to mean the same thing next month.
   the pattern gate cannot be opened by anything, and a board nobody recorded a
   pattern for is the same problem. **Do not guess one** -- ten wrong walks
   refuse the wrap and the board then needs a re-provision (W12).
-- **A board whose card holds no wallet shows no gate at all**, so `press.py`
-  has nothing to walk. `goToWallet()` sends a key-less board to the gate only
-  when `treeIsEncrypted()` (`src/activities/ActivityManager.cpp`, the
-  `treeIsEncrypted() && !hasKey()` branch), and that reads the card, not NVS.
-  A provisioned board with an empty card draws "No wallet on the card"
-  instead -- measured on `t5s3pro-b`, 2026-11-28. So the **first** unlock on
-  such a board is `CMD:WALLETUNLOCK` (a dev build, `ENABLE_WALLET_TEST_CMDS`)
-  or nothing; push a manifest (W27) under that key, reboot, and from then on
-  the gate is there and the buttons open it. T-2109 is the rider's half of this.
+- **A provisioned board shows the gate whatever its card holds** (T-2109,
+  `walletEntryDecide()` in `src/activities/wallet/WalletEntryDecide.h`). Before
+  that fix the card decided: a provisioned board with an empty card drew "No
+  wallet on the card" and no gate -- measured on `t5s3pro-b`, 2026-11-28 -- and
+  the first unlock there was `CMD:WALLETUNLOCK` or nothing. A board on firmware
+  older than that fix still behaves the old way; ask the board which build it
+  runs before reading a missing gate as a regression.
 - **Traps the S3 run of 2026-11-28 paid for**, in the order they bite:
   1. **A T5 S3 Pro with `mapGnssPosition=1` never starts BLE on the map**, so
      every push finds no board (`ble-advertising.md`, "When it advertises").
@@ -128,6 +126,8 @@ chunk by chunk) and the stale-transfer reclaim at its exact 30 s boundary.
 | W7 | Walk shorter than 8 points | Refused before any PBKDF2 runs | The wallet's floor is 8, not the gate's default of 4 |
 | W8 | Board with a wrap made before the pattern gate (no start cell) | Says "This wallet predates the pattern lock / Set it up again" -- **not** "no wallet key" | Two different states; the panel said the wrong one once already (2026-11-26) |
 | W9 | Board with no wallet key, card holds an encrypted wallet | Says "No wallet key on this device / This card was set up somewhere else" | The safety branch: never offer to mint a new key over documents it cannot see |
+| W9a | Provisioned board, **empty** wallet directory, reboot, Home > Wallet | The gate, reached with buttons only. After the unlock: "No wallet on the card", and a push is then accepted | T-2109. The card used to decide, and a rider who rebooted between setup and the first sync could never unlock -- a locked board refuses every push. Run on both chip families |
+| W9b | Provisioned board, **cleartext** tree on the card, key not in the session | The gate, then the cleartext list | The wrap decides, not the card. A locked board would refuse a sync onto this card too |
 
 ## B. The session key (T-2094)
 
