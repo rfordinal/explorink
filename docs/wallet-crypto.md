@@ -910,8 +910,10 @@ Two reasons for that tightness, and one place it does not reach:
   context holds the key on the stack for the length of the call, as it did before
   T-2104. The S3 writes no stack to the card (`#if !__riscv`).
 - **The flash core dump is a different place, and it is inside the boundary.**
-  `CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH=y` in ELF format (`sdkconfig.defaults`,
-  partition `coredump` at `0xFF0000`; boards write it, `crash-reporting.md`)
+  `CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH=y` in ELF format (the framework's prebuilt
+  `framework-arduinoespressif32-libs/<chip>/sdkconfig`, both `esp32c3` and
+  `esp32s3`, read 2026-11-28; partition `coredump` at `0xFF0000`,
+  `partitions.csv`; boards write it, `crash-reporting.md`)
   saves task stacks on both chips on any panic, so a `KeyCopy`, an mbedtls context or plaintext alive at that moment
   lands in flash. Flash is already declared readable with a cable in hand ("The
   threat boundary, first"), so this widens nothing the wallet promises; it is
