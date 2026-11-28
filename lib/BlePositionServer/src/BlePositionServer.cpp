@@ -396,10 +396,13 @@ bool BlePositionServer::begin(const char* deviceName) {
     g_indicateAckSem = xSemaphoreCreateBinary();
   }
 
-  // No pairing/bonding -- short range (~0.5-1m, see architecture-plan.md),
-  // low-stakes write-only channel. Keeping the phone-side BLE code to
-  // "connect + write" (no pairing UI/passkey flow) is worth more here than
-  // link security.
+  // No pairing/bonding. Written when this was a short-range, low-stakes,
+  // write-only position channel, and still right for that channel. It stopped
+  // being the whole story when wallet documents started crossing it (T-2095):
+  // link security here would protect them, but BLE pairing covers BLE only and
+  // binds to the phone rather than the app, so the documents get their own
+  // encrypted channel above GATT instead (docs/sync-channel.md, T-2098). Do not
+  // read this line as "the link carries nothing worth protecting".
   NimBLEDevice::setSecurityAuth(/*bonding=*/false, /*mitm=*/false, /*sc=*/false);
 
   g_server = NimBLEDevice::createServer();
