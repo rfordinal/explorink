@@ -88,12 +88,17 @@ portMUX_TYPE g_mux = portMUX_INITIALIZER_UNLOCKED;
 //
 // `KeyCopy` takes the whole key or nothing under the lock `clear()` takes, and
 // wipes it when this returns (WalletKeySlot.h). A lock that lands mid-transfer
-// makes the *next* chunk refuse, the sealer ends with CipherFailed, and the
+// makes the *next* call refuse, the sealer ends with CipherFailed, and the
 // receiver abandons without the rename (WalletAssetIngest.h). The host test
-// `WalletKeySlot.LockMidTransferAbandons` drives exactly that.
+// `WalletIngest.AWalletLockedMidTransferAbandonsInsteadOfSealingWrong` drives
+// the sealer with this same borrow against a slot cleared mid-transfer; it does
+// not drive this function or the receiver's abandon, which rest on reading the
+// code above and below.
 //
-// Cost is a 32-byte copy and a 32-byte wipe per chunk, against AES over the same
-// chunk. Not measured; a claim of "free" would need a timing.
+// Called per sealer scratch block (at most 512 B, WalletAssetIngest.h), not per
+// BLE chunk, so a large chunk borrows more than once. Cost per call is a 32-byte
+// copy and a 32-byte wipe against AES over up to 512 bytes. Not measured; a
+// claim of "free" would need a timing.
 //
 // `ctx` is unused and stays in the signature because the sealer's callback
 // contract is shared with the host tests, which do bind a key to it.
@@ -593,9 +598,9 @@ void MapTransferReceiver::handleBegin(const uint8_t* body, size_t len) {
     }
     wallet::AssetIngest::Callbacks cb;
     cb.cipher = walletCipher;
-    // No key is carried: walletCipher() asks the session for it on every chunk,
-    // so a wallet locked mid-transfer ends the transfer instead of sealing the
-    // rest of it under zeros. The `key == nullptr` check above is the "do not
+    // No key is carried: walletCipher() borrows a copy from the session on every
+    // call, so a wallet locked mid-transfer ends the transfer instead of sealing
+    // the rest of it under a wiped key. The `hasKey()` gate above is the "do not
     // even start" half of the same rule.
     cb.cipherCtx = nullptr;
     cb.crc32 = walletCrc32;

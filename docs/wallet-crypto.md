@@ -872,6 +872,63 @@ and the wrap is AES-256-GCM over K under that KEK (`WalletKeyStore.cpp`).
   destructor is a promise about a code path, and the sleep path is not one to make
   promises about.
 
+### How a caller borrows K
+
+**By copy, for one unit of work, and never by pointer.** K lives in
+`wallet::KeySlot` (`src/activities/wallet/WalletKeySlot.h`), held by `Session`.
+There are two ways in and no third:
+
+- `Session::hasKey()` -- a hint, read off the lock. For a gate that decides
+  whether to start (the receiver's wallet gate, the read path's "locked" check
+  before it opens a file). It can be stale by the time the caller acts.
+- `wallet::KeyCopy key(Session::instance())` -- 32 bytes copied under the same
+  critical section `clear()` takes, so the copy is the whole key or a refusal,
+  never part of one. Wiped by the destructor when it leaves scope.
+
+The unit is one sealer block of a transfer, at most 512 B (`walletCipher()`;
+a BLE chunk larger than that borrows more than once), one manifest seal
+(`walletSealManifest()`), one manifest decrypt (`ManifestReader`), one window or
+grey band (`PageReader`, `GreyPageReader`). The next unit borrows again. A
+`KeyCopy` held across a whole transfer would bring back the bug it replaced, one
+level up.
+
+**Why not a pointer.** Until T-2104, `Session::key()` returned a pointer into
+the session's own array, and `clear()` wiped that array in place. On a dual-core
+board (`env:x4pro`, `env:t5s3pro`: NimBLE on core 0, the Arduino task on core 1,
+`CONFIG_FREERTOS_UNICORE` unset) a sleep or `CMD:WALLETLOCK` could land between
+the null check and `mbedtls_aes_setkey_enc()`, or inside it. The asset sealer then
+enciphered the rest of the file under a half-zeroed key, the hash and the CRC
+passed because both are over the plaintext, and the file was renamed over the
+previous good one. Read off the code; never reproduced on a board.
+
+**Why no lock across the AES.** A 585 KB asset is seconds of work on the BLE host
+task. A lock held that long blocks sleep and the BLE stack. The lock covers a
+32-byte memcpy.
+
+**The lock is a `portMUX` critical section.** On an S3 it is a spinlock between
+the cores. On the C3 the pinned ESP-IDF ignores the mux and masks interrupts
+(framework-espidf 5.5.2, riscv `portmacro.h`, `portENTER_CRITICAL(mux)` under
+`CONFIG_FREERTOS_UNICORE`), which is as exclusive on one core.
+
+**What a lock mid-transfer does now.** The next block's borrow fails,
+`AssetIngest` ends with `CipherFailed`, and the receiver calls `abandon()`, which
+deletes the `.part` file and never renames. The previous good asset stays. A
+manifest ends with `SealFailed` the same way.
+
+**Verified on the host, not on a board** (`test/wallet/WalletKeySlotTest.cpp`,
+and the slot-bound tests in `WalletIngestTest.cpp` and
+`WalletManifestSealTest.cpp`). The slot-bound tests drive the sealers with the
+same borrow the device binds; they do not run `walletCipher()` itself or the
+receiver's `abandon()`, which are read off the code. The race test runs two threads against a
+`std::mutex`-bound slot and sees zero torn copies in at least 200,000 borrows;
+the same loop with a no-op lock gave 1.2 to 1.4 million torn copies out of 2
+million (measured 2026-11-28, laptop, `-O2`). It proves `KeySlot` takes its lock
+around every touch of the bytes. It does not prove `portENTER_CRITICAL` is
+exclusive across an S3's cores; that is ESP-IDF's claim.
+
+**Cost per block: a 32-byte copy and a 32-byte wipe, against AES over up to
+512 B.** Not measured on a board.
+
 The walked pattern is wiped by the gate after every attempt
 (`PatternLockActivity::submit()`), the normalised copy is wiped by
 `KeyStore::tryUnlock()`, and the KDF password buffer -- which holds the pattern

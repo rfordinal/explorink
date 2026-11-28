@@ -166,7 +166,6 @@ TEST(WalletManifestSeal, Crc32KnownAnswer) {
   EXPECT_EQ(crc32Bitwise(0, reinterpret_cast<const uint8_t*>(kCheck), 9), 0xCBF43926u);
 }
 
-// The round trip: what the device seals, the read path opens, byte for byte.
 // The device's walletSealManifest() shape: the key is borrowed from the slot at
 // seal time, never held from begin (MapTransferReceiver.cpp).
 bool slotSeal(void* ctx, const uint8_t* nonce, uint8_t* data, size_t len, uint8_t* tag) {
@@ -193,6 +192,7 @@ TEST(WalletManifestSeal, AWalletLockedBeforeTheSealSealsNothing) {
   EXPECT_TRUE(locked.sealed.empty());
 }
 
+// The round trip: what the device seals, the read path opens, byte for byte.
 TEST(WalletManifestSeal, SealedManifestOpensWithTheReadPath) {
   const std::string json = kManifest;
   const SealRun run = sealManifest(json, 180, crcOf(json));
