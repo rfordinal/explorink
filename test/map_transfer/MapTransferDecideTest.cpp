@@ -78,6 +78,7 @@ WalletGateFacts walletFacts(const BeginTarget target) {
   f.havePanel = true;
   f.declaredTotal = 1024;
   f.manifestCapBytes = 32000;
+  f.sealedSession = true;
   return f;
 }
 
@@ -89,6 +90,25 @@ ChunkFacts chunkFacts(const uint32_t offset, const uint32_t received, const uint
   f.received = received;
   f.declaredTotal = total;
   return f;
+}
+
+// T-2098: a wallet document arrives only inside a sync-channel session.
+TEST(TransferDecisions, WalletTransferOutsideASessionIsRefusedFirst) {
+  for (const BeginTarget t : {BeginTarget::WalletAsset, BeginTarget::WalletManifest}) {
+    WalletGateFacts f = walletFacts(t);
+    f.sealedSession = false;
+    EXPECT_EQ(maptransfer::decideWalletGates(f).gate, WalletGate::NotPaired);
+    EXPECT_STREQ(maptransfer::decideWalletGates(f).reason, "not paired");
+    // Ahead of the lock: a stranger must not learn whether the wallet is open.
+    f.walletUnlocked = false;
+    EXPECT_EQ(maptransfer::decideWalletGates(f).gate, WalletGate::NotPaired);
+  }
+}
+
+TEST(TransferDecisions, TilesNeedNoSession) {
+  WalletGateFacts f = walletFacts(BeginTarget::Plain);
+  f.sealedSession = false;
+  EXPECT_EQ(maptransfer::decideWalletGates(f).gate, WalletGate::None);
 }
 
 }  // namespace
@@ -529,7 +549,7 @@ TEST(TransferDecisions, EveryReasonThisLayerCanGiveIsOneOfTheReceiversOwnStrings
   const std::vector<std::string> owned = {
       "bad opcode",  "short begin",   "bad path length",  "bad length", "bad path",          "status not subscribed",
       "busy",        "wallet locked", "manifest too big", "no panel",   "not a wallet file", "no transfer",
-      "short chunk", "offset",        "overrun",
+      "short chunk", "offset",        "overrun",    "not paired",
   };
   std::vector<std::string> seen;
 
@@ -556,6 +576,9 @@ TEST(TransferDecisions, EveryReasonThisLayerCanGiveIsOneOfTheReceiversOwnStrings
   seen.emplace_back(maptransfer::decideBeginGates(g).reason);
 
   WalletGateFacts w = walletFacts(BeginTarget::WalletAsset);
+  w.sealedSession = false;
+  seen.emplace_back(maptransfer::decideWalletGates(w).reason);
+  w = walletFacts(BeginTarget::WalletAsset);
   w.walletUnlocked = false;
   seen.emplace_back(maptransfer::decideWalletGates(w).reason);
   w = walletFacts(BeginTarget::WalletAsset);
@@ -610,6 +633,9 @@ TEST(TransferDecisions, TheGateAndTheReasonAlwaysAgree) {
   EXPECT_EQ(maptransfer::decideBeginGates(g).gate, BeginGate::None);
 
   WalletGateFacts w = walletFacts(BeginTarget::WalletAsset);
+  w.sealedSession = false;
+  EXPECT_EQ(maptransfer::decideWalletGates(w).gate, WalletGate::NotPaired);
+  w = walletFacts(BeginTarget::WalletAsset);
   w.walletUnlocked = false;
   EXPECT_EQ(maptransfer::decideWalletGates(w).gate, WalletGate::Locked);
   w = walletFacts(BeginTarget::WalletAsset);

@@ -574,6 +574,15 @@ void MapTransferReceiver::handleBegin(const uint8_t* body, size_t len) {
       renderer_ != nullptr,
       total,
       static_cast<uint32_t>(wallet::kMaxManifestPlaintextBytes),
+      // No frame reaches this receiver through the sync channel yet: the
+      // channel belongs to the wallet screen, and the wallet screen does not
+      // own the BLE server until T-2097 moves it there (docs/sync-channel.md,
+      // "Where the channel lives"). So today every wallet transfer is refused
+      // "not paired", on the map and on tile sync alike -- which is T-2097's
+      // rule 1 for those two screens, arriving early. Tiles are untouched.
+      // T-2097 replaces this `false` with "this frame came out of
+      // SyncChannel::onFrame as DeliverInner".
+      false,
   });
   if (walletGate.gate != maptransfer::WalletGate::None) {
     if (walletGate.gate == maptransfer::WalletGate::ManifestTooBig) {

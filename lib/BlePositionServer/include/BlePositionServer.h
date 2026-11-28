@@ -530,7 +530,11 @@ class BlePositionServer {
   // does not exist. Contrast advertisingDown_ below, which is atomic precisely
   // because it *is* read outside any lock, by serviceAdvertising().
   static constexpr size_t kPendingStatusSlots = 2;
-  static constexpr size_t kPendingStatusBytes = 64;
+  // 128, not 64, for the sync channel (T-2098): a sealed status line is
+  // `NXS ` plus base64 of up to 63 + 16 bytes, 112 characters, and a newline
+  // (src/activities/wallet/SyncChannel.h, kMaxOutLineLen = 127). Two slots, so
+  // 128 bytes of DRAM more than before.
+  static constexpr size_t kPendingStatusBytes = 128;
   char pendingStatus_[kPendingStatusSlots][kPendingStatusBytes] = {};
   uint8_t pendingStatusLen_[kPendingStatusSlots] = {};
   uint32_t pendingStatusHead_ = 0;  // next write, host task

@@ -61,13 +61,13 @@ inline bool gcm(bool enc, const uint8_t key[32], const uint8_t nonce[12], const 
   return ok;
 }
 
-inline bool aeadSeal(const uint8_t key[32], const uint8_t nonce[12], const uint8_t* ad, size_t adLen,
-                     const uint8_t* pt, size_t len, uint8_t* out) {
+inline bool aeadSeal(const uint8_t key[32], const uint8_t nonce[12], const uint8_t* ad, size_t adLen, const uint8_t* pt,
+                     size_t len, uint8_t* out) {
   return gcm(true, key, nonce, ad, adLen, pt, len, out, out + len);
 }
 
-inline bool aeadOpen(const uint8_t key[32], const uint8_t nonce[12], const uint8_t* ad, size_t adLen,
-                     const uint8_t* ct, size_t ctLen, uint8_t* out) {
+inline bool aeadOpen(const uint8_t key[32], const uint8_t nonce[12], const uint8_t* ad, size_t adLen, const uint8_t* ct,
+                     size_t ctLen, uint8_t* out) {
   if (ctLen < 16) return false;
   uint8_t tag[16];
   std::memcpy(tag, ct + ctLen - 16, 16);
@@ -78,8 +78,8 @@ inline bool sha256(const uint8_t* a, size_t aLen, const uint8_t* b, size_t bLen,
   EVP_MD_CTX* c = EVP_MD_CTX_new();
   unsigned int n = 0;
   const bool ok = c && EVP_DigestInit_ex(c, EVP_sha256(), nullptr) == 1 &&
-                  (aLen == 0 || EVP_DigestUpdate(c, a, aLen) == 1) && (bLen == 0 || EVP_DigestUpdate(c, b, bLen) == 1) &&
-                  EVP_DigestFinal_ex(c, out, &n) == 1 && n == 32;
+                  (aLen == 0 || EVP_DigestUpdate(c, a, aLen) == 1) &&
+                  (bLen == 0 || EVP_DigestUpdate(c, b, bLen) == 1) && EVP_DigestFinal_ex(c, out, &n) == 1 && n == 32;
   EVP_MD_CTX_free(c);
   return ok;
 }

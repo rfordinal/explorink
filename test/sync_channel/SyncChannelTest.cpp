@@ -47,7 +47,8 @@ std::vector<uint8_t> unb64(const std::string& s) {
 
 std::vector<uint8_t> fromHex(const std::string& s) {
   std::vector<uint8_t> out;
-  for (size_t i = 0; i + 1 < s.size(); i += 2) out.push_back(static_cast<uint8_t>(std::stoi(s.substr(i, 2), nullptr, 16)));
+  for (size_t i = 0; i + 1 < s.size(); i += 2)
+    out.push_back(static_cast<uint8_t>(std::stoi(s.substr(i, 2), nullptr, 16)));
   return out;
 }
 
@@ -236,7 +237,7 @@ TEST(SyncChannelPairing, EveryCodeIsANewSecret) {
   ASSERT_TRUE(r.ch.issueCode(r.now));
   const std::string b = r.qr();
   EXPECT_EQ(a.substr(0, sizeof(kQrPrefix) - 1 + 64), b.substr(0, sizeof(kQrPrefix) - 1 + 64));  // same device key
-  EXPECT_NE(a, b);  // different psk
+  EXPECT_NE(a, b);                                                                              // different psk
 }
 
 // A stranger who reads the device's public key (it is not secret) but not the

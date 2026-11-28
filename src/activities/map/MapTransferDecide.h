@@ -274,11 +274,20 @@ struct WalletGateFacts {
   uint32_t declaredTotal = 0;
   // ...what this device can seal in one shot (wallet::kMaxManifestPlaintextBytes).
   // A fact, not an include: this header stays free of the wallet.
-  uint32_t manifestCapBytes = 0;
+  uint32_t manifestCapBytes = 0;  // The begin frame arrived inside a sync-channel session: a phone the rider
+  // paired, a fresh Noise session, the frame opened under its key
+  // (SyncChannel.h, T-2098). **False is the default and the refusal**: a wallet
+  // document from anything else -- a stranger in radio range, a plain BLE write,
+  // the map screen -- is refused before the lock is even asked about, because
+  // plaintext on the air is the thing the channel exists to end.
+  bool sealedSession = false;
 };
 
 enum class WalletGate : uint8_t {
   None,
+  // Not inside a sync session. First in the ladder: whether the wallet is
+  // locked is nothing a stranger should learn.
+  NotPaired,
   Locked,
   // Logged with both numbers, because the person reading it has to decide what
   // to drop from the wallet -- which is why this one needs a gate and not just
@@ -295,6 +304,8 @@ struct WalletGateDecision {
 // `gate == None` means the wallet has nothing to object to -- which includes
 // every transfer that is not a wallet transfer at all.
 inline WalletGateDecision decideWalletGates(const WalletGateFacts& f) {
+  const bool walletTarget = f.target == BeginTarget::WalletManifest || f.target == BeginTarget::WalletAsset;
+  if (walletTarget && !f.sealedSession) return {WalletGate::NotPaired, "not paired"};
   if (f.target == BeginTarget::WalletManifest) {
     if (!f.walletUnlocked) return {WalletGate::Locked, "wallet locked"};
     // The list of documents is buffered whole and sealed once, so this refusal

@@ -1190,10 +1190,12 @@ void BlePositionServer::maybeEnterSlowAdvertising() {
 bool BlePositionServer::sendTransferStatus(const char* line) {
   if (!begun_ || g_transferStatusChar == nullptr || line == nullptr) return false;
 
-  // Status lines are short by design (a verdict and two numbers), so this
-  // buffer is generous. Same newline as the command channel so a receiver
-  // that concatenates indications reads a normal line stream.
-  char buf[64];
+  // A plain status line is short (a verdict and two numbers); a sealed one
+  // from the sync channel is up to 112 characters (kPendingStatusBytes). One
+  // size for both, so a line that fits here also fits the parking slot. Same
+  // newline as the command channel so a receiver that concatenates
+  // indications reads a normal line stream.
+  char buf[kPendingStatusBytes];
   const int written = snprintf(buf, sizeof(buf), "%s\n", line);
   if (written <= 0) return false;
   const size_t length = static_cast<size_t>(written) < sizeof(buf) ? static_cast<size_t>(written) : sizeof(buf) - 1;

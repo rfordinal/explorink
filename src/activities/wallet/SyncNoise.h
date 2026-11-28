@@ -125,8 +125,7 @@ class CipherState {
   // DecryptWithAd. **The nonce advances only on success**, as the spec says: a
   // forged frame must not desynchronise the counter. The channel above kills the
   // session on the first failure anyway, so this never gets a second chance.
-  bool decryptWithAd(const Crypto& c, const uint8_t* ad, size_t adLen, const uint8_t* ct, size_t ctLen,
-                     uint8_t* out) {
+  bool decryptWithAd(const Crypto& c, const uint8_t* ad, size_t adLen, const uint8_t* ct, size_t ctLen, uint8_t* out) {
     if (!hasKey_) {
       if (out != ct && ctLen > 0) std::memmove(out, ct, ctLen);
       return true;

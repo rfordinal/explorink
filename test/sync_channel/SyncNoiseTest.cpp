@@ -28,7 +28,8 @@ using syncnoise::Role;
 
 std::vector<uint8_t> hex(const std::string& s) {
   std::vector<uint8_t> out;
-  for (size_t i = 0; i + 1 < s.size(); i += 2) out.push_back(static_cast<uint8_t>(std::stoi(s.substr(i, 2), nullptr, 16)));
+  for (size_t i = 0; i + 1 < s.size(); i += 2)
+    out.push_back(static_cast<uint8_t>(std::stoi(s.substr(i, 2), nullptr, 16)));
   return out;
 }
 
@@ -58,11 +59,14 @@ const Vector kIK = {
     "669c8640d9e42a3cda2f232f78597ceefb01daa6e3df81181ccce6fc6b5026bf",
     {
         {"4c756477696720766f6e204d69736573",
-         "ca35def5ae56cec33dc2036731ab14896bc4c75dbb07a61f879f8e3afa4c79444e417bc55c7a8166c993356c1be41ef67818a292426f30"
-         "1556c7f26b21d25ddb097153891a9a956cff47b83e63ad8d701c1342c209cff1ca5ecd43402762ac249e3bd3a4c0a145fe07cb5dae28ea"
+         "ca35def5ae56cec33dc2036731ab14896bc4c75dbb07a61f879f8e3afa4c79444e417bc55c7a8166c993356c1be41ef67818a292426f3"
+         "0"
+         "1556c7f26b21d25ddb097153891a9a956cff47b83e63ad8d701c1342c209cff1ca5ecd43402762ac249e3bd3a4c0a145fe07cb5dae28e"
+         "a"
          "13a3"},
         {"4d757272617920526f746862617264",
-         "95ebc60d2b1fa672c1f46a8aa265ef51bfe38e7ccb39ec5be34069f144808843af2ccf9972e22afc67aeafcd25162f7f98c363b7762e3e"
+         "95ebc60d2b1fa672c1f46a8aa265ef51bfe38e7ccb39ec5be34069f144808843af2ccf9972e22afc67aeafcd25162f7f98c363b7762e3"
+         "e"
          "4cb7d272e39f27a5"},
         {"462e20412e20486179656b", "66acfc92e3197de166809e6d4d5d003dcc819a84bc3522ca53c9d9"},
         {"4361726c204d656e676572", "71f89aa6533a6de70b0826864dd75f60806ee40170c16290189eb3"},
@@ -83,11 +87,14 @@ const Vector kIKpsk2 = {
     "48c3f1eb397c797af6b139032c6074cb41282ff033ee25d5aee4a4badd3a2c3f",
     {
         {"4c756477696720766f6e204d69736573",
-         "ca35def5ae56cec33dc2036731ab14896bc4c75dbb07a61f879f8e3afa4c79445a1baf339186d7867062b0dd31f5de322d370165d21793"
-         "9b2b7ed9e2bae7840458ea65c2ce1554e0e8077fe7334c4bd514c658fd04d97b86d216f58f59714a7e24144155045c8f36bed85a2cb0fd"
+         "ca35def5ae56cec33dc2036731ab14896bc4c75dbb07a61f879f8e3afa4c79445a1baf339186d7867062b0dd31f5de322d370165d2179"
+         "3"
+         "9b2b7ed9e2bae7840458ea65c2ce1554e0e8077fe7334c4bd514c658fd04d97b86d216f58f59714a7e24144155045c8f36bed85a2cb0f"
+         "d"
          "9af7"},
         {"4d757272617920526f746862617264",
-         "95ebc60d2b1fa672c1f46a8aa265ef51bfe38e7ccb39ec5be34069f1448088432fe8d675e949799d2a968211a66cc7ba2b0f4cad8eda3c"
+         "95ebc60d2b1fa672c1f46a8aa265ef51bfe38e7ccb39ec5be34069f1448088432fe8d675e949799d2a968211a66cc7ba2b0f4cad8eda3"
+         "c"
          "2bd37eae737bbf88"},
         {"462e20412e20486179656b", "38cbf3835c78b7802df0dd0d9640ff8575debd0cb61cfb52590da1"},
         {"4361726c204d656e676572", "ffc365ff6955fc66c5d809b31ac995f812c5770bd29f0df12f0ffd"},

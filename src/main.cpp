@@ -125,6 +125,9 @@ static inline void sampleInput() {
 #include "activities/wallet/WalletCryptoDevice.h"
 #include "activities/wallet/WalletGreyPage.h"
 #include "activities/wallet/WalletKeyStore.h"
+#if defined(ENABLE_WALLET_TEST_CMDS) && ENABLE_WALLET_TEST_CMDS
+#include "activities/wallet/SyncCryptoDevice.h"
+#endif
 #include "activities/wallet/WalletStore.h"
 #include "components/lock/PatternLock.h"
 #endif
@@ -4399,6 +4402,21 @@ void loop() {
           // its route path exists either.
           logSerial.printf("GOTO_WALLET_OK item=%d code=%d\n", itemArg, codeArg);
         }
+      } else if (cmd == "SYNCSELFTEST") {
+        // The sync channel's mbedtls binding against the published Noise_IK
+        // vector, responder side, on this chip (T-2098). The host suite checks
+        // the same vector through OpenSSL and cannot reach mbedtls; this is the
+        // other half, plus the two numbers the host cannot give: the handshake
+        // time and the heap low-water during it (docs/sync-channel.md, "What the
+        // host cannot reach"). Read-only, but it is a bench instrument, so it
+        // stays with the other wallet test commands, out of every release env.
+        uint32_t micros = 0;
+        uint32_t heapBefore = 0;
+        uint32_t heapMin = 0;
+        const bool ok = syncdevice::selfTest(micros, heapBefore, heapMin);
+        logSerial.printf("SYNCSELFTEST_%s handshake_us=%lu heap_free=%lu heap_min=%lu\n", ok ? "OK" : "FAIL",
+                         static_cast<unsigned long>(micros), static_cast<unsigned long>(heapBefore),
+                         static_cast<unsigned long>(heapMin));
       } else if (cmd.startsWith("WALLETPROVISION ")) {
         // ## TEST PATH. Not how a device gets provisioned in the end.
         //

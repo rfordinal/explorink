@@ -4,6 +4,7 @@
 #include <Logging.h>
 #include <Preferences.h>
 
+#include "SyncPairingStore.h"
 #include "WalletCryptoDevice.h"
 #include "components/lock/PatternLock.h"
 
@@ -285,6 +286,11 @@ void KeyStore::forgetWrap() {
   prefs.remove(kKeyPatternStart);
   prefs.putUChar(kKeyFails, 0);
   prefs.end();
+  // The phones paired to this wallet go with it (T-2098, plan invariant 5): a
+  // device given away or re-provisioned must not keep trusting the old owner's
+  // phone. The device secret above is identity for the wrap and stays; the sync
+  // key is identity towards phones and does not.
+  syncstore::forgetAll();
   LOG_INF(kLogTag, "wrap forgotten; the device secret stays");
 }
 
