@@ -232,10 +232,15 @@ MapTransferReceiver::MapTransferReceiver(const char* rootDir, const GfxRenderer*
 
 MapTransferReceiver::~MapTransferReceiver() {
   // detach() is the ordinary path; this is the backstop, and it goes through
-  // detach() itself when the hooks are still ours. Abandoning directly from here
-  // would skip both the hook removal and the wait for a frame in flight -- safe
-  // only while every owner happens to call detach() and then
-  // BlePositionServer::end() first, which nothing here enforces (T-2104, item 4).
+  // detach() itself when the hooks are still ours, so a frame already inside is
+  // waited out rather than abandoned under (T-2104, item 4).
+  //
+  // **It does not make destruction safe on its own.** BlePositionServer copies
+  // the hooks under its lock and calls them after releasing it, so a frame
+  // copied before detach() cleared the hooks, but not yet inside the gate when
+  // close() looked, reaches this object after it is freed. Only the owner
+  // stopping the host task (BlePositionServer::end()) before the receiver dies
+  // closes that window; both owners do today (MapActivity, TileSyncActivity).
   //
   // Only when still attached: detach() clears the server's hooks, and once this
   // receiver is detached those may belong to another receiver.
@@ -320,6 +325,8 @@ void MapTransferReceiver::disconnectTrampoline(void* ctx) {
   // a frame; it does overlap detach() on the activity task, and without the
   // gate both could run abandon() on one object at once -- two closes of one
   // file_, two removes of one .part, failed_ counted twice (T-2104, item 4).
+  // Within kDetachWaitMs the gate excludes that. Past it -- this abandon()
+  // stuck behind a wedged card -- detach() proceeds and both still can.
   const maptransfer::FrameGate::Ticket ticket(self->gate_);
   if (!ticket) return;
   if (self->active_) {

@@ -101,7 +101,9 @@ class GfxRenderer;
 // and detach() withdraws the receiver before it checks for a frame inside, so
 // one of the two always sees the other (see detach() below for the bound and
 // what happens if it is exceeded). The disconnect hook goes through the same
-// gate, so it and detach() cannot both run abandon().
+// gate, so within that bound it and detach() cannot both run abandon(). Past
+// the bound -- a card stuck longer than kDetachWaitMs -- detach() proceeds and
+// both can; that is the price of not holding the screen on a wedged card.
 // Without that wait, a frame that already passed the gate and is
 // blocked in file_.write() resumes into state abandon() has already reset,
 // and runs a completion pass on a file that is closed and deleted.

@@ -21,6 +21,10 @@
 
 #include "MapTransferGate.h"
 
+#if defined(__linux__)
+#include <sched.h>
+#endif
+
 namespace {
 
 uint32_t nowMs() {
@@ -29,6 +33,17 @@ uint32_t nowMs() {
 }
 
 void yieldNow() { std::this_thread::yield(); }
+
+// CPUs this process may actually run on. Not hardware_concurrency(): that counts
+// the machine's cores and ignores affinity, so under `taskset -c 0` or a
+// one-CPU container quota it still answers 14 and the race test would not skip.
+unsigned usableCpus() {
+#if defined(__linux__)
+  cpu_set_t set;
+  if (sched_getaffinity(0, sizeof(set), &set) == 0) return static_cast<unsigned>(CPU_COUNT(&set));
+#endif
+  return std::thread::hardware_concurrency();
+}
 
 }  // namespace
 
@@ -109,11 +124,27 @@ TEST(MapTransferGate, ConcurrentCloseNeverOverlapsAFrame) {
   //
   // `occupancy` counts who is in a teardown right now. Every round reopens the
   // gate, so the close lands at a different point in the host's loop each time.
+  //
+  // **Needs two CPUs.** A memory-ordering bug shows only when the two threads
+  // really run at once; on one CPU they interleave, nothing reorders, and a
+  // release/acquire mutant passes. Worse, the host thread busy-spins, so on one
+  // CPU every yield below hands it a whole timeslice and the test took over 90 s
+  // (review, 2026-11-28, `taskset -c 0`). Skipped there rather than passed.
+  // Measured 2026-11-28 on a 14-core laptop, three runs each: 0 overlaps here,
+  // 68-83 for an acq/rel mutant, 140-374 for the old read-then-publish order.
+  if (usableCpus() < 2) GTEST_SKIP() << "needs two CPUs to race";
+  // Up to 20,000 rounds or 10 s, whichever first, so a loaded CI host ends it in
+  // bounded time; at least 2,000 rounds must run or the result is not evidence.
   constexpr int kRounds = 20000;
+  constexpr uint32_t kBudgetMs = 10000;
+  constexpr int kMinRounds = 2000;
+  const uint32_t started = nowMs();
+  int rounds = 0;
   int overlaps = 0;
   int lateFrames = 0;
   int framesIn = 0;
-  for (int round = 0; round < kRounds; ++round) {
+  for (int round = 0; round < kRounds && (round < kMinRounds || nowMs() - started < kBudgetMs); ++round) {
+    ++rounds;
     maptransfer::FrameGate gate;
     gate.open();
     std::atomic<int> occupancy{0};
@@ -126,7 +157,14 @@ TEST(MapTransferGate, ConcurrentCloseNeverOverlapsAFrame) {
     std::thread host([&] {
       while (!stop.load(std::memory_order_relaxed)) {
         const maptransfer::FrameGate::Ticket t(gate);
-        if (!t) continue;
+        if (!t) {
+          // Turned away: the close has landed. Give a time-shared CPU back so
+          // the activity thread finishes its round. Not on the success path,
+          // which is where the race lives -- yielding there cut the acq/rel
+          // mutant's overlaps from 45-72 to 3-5 per run.
+          yieldNow();
+          continue;
+        }
         hostIn.fetch_add(1, std::memory_order_relaxed);
         if (closed.load()) hostLate.fetch_add(1, std::memory_order_relaxed);
         if (occupancy.fetch_add(1) != 0) hostOverlaps.fetch_add(1, std::memory_order_relaxed);
@@ -147,6 +185,7 @@ TEST(MapTransferGate, ConcurrentCloseNeverOverlapsAFrame) {
     lateFrames += hostLate.load();
     framesIn += hostIn.load();
   }
+  EXPECT_GE(rounds, kMinRounds);
   EXPECT_EQ(overlaps, 0);
   EXPECT_EQ(lateFrames, 0);
   // The race has to have actually run: frames got in before the close.
